@@ -116,6 +116,9 @@ def cmd_dataset(args: argparse.Namespace) -> int:
             path = write_jsonl(args.output, (row.to_dict() for row in dataset.rows))
         print(f"dataset -> {path}", file=sys.stderr)
 
+    if not dataset.rows and not (args.metrics or args.json or args.report):
+        print(f"no rows in window for {args.ticker}", file=sys.stderr)
+
     if args.metrics:
         _emit_json(dataset_flat_metrics(dataset))
     elif args.json:
