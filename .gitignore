@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+
+# uv cache relocated into the project by the dev shell (flake.nix)
+.uv-cache/
+
+# Environment / secrets
+.env
+
+# Logs
+*.log
+
+# Test / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Nix
+result
+result-*
+
+# project-local Jupyter data dir, if tools/install_kernel.py is pointed at it
+.jupyter-data/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

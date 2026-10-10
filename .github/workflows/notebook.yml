@@ -1,0 +1,40 @@
+name: Unified notebook smoke test
+
+# Executes notebooks/unified.ipynb against the LIVE upstream pipelines. This
+# hits real free APIs, so it is manual/scheduled only — never part of the
+# default PR checks (offline testing lives in ci.yml).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"  # Mondays 04:23 UTC
+
+jobs:
+  notebook:
+    name: validate notebooks/unified.ipynb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/tickerkit
+          path: tickerkit
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/ticker-news-signals
+          path: ticker-news-signals
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: sync
+        working-directory: rl-crypto
+        run: uv sync --group dev
+      - name: register project kernel (same spec Zed uses)
+        working-directory: rl-crypto
+        run: uv run python tools/install_kernel.py
+      - name: execute notebook
+        # Runs under the pinned `rl-crypto` kernel.
+        working-directory: rl-crypto
+        run: uv run python tools/validate_notebook.py --kernel rl-crypto --timeout 180

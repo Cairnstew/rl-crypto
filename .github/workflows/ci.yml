@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: lint + build notebook + offline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+      # rl-crypto consumes its upstreams as sibling path sources (../tickerkit,
+      # ../ticker-news-signals) — the same layout every local checkout has.
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/tickerkit
+          path: tickerkit
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/ticker-news-signals
+          path: ticker-news-signals
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      # Upstream main can drift its dependencies; `uv sync` (not `--locked`)
+      # re-resolves so CI tracks the latest sibling checkouts like any local dev.
+      - name: sync
+        working-directory: rl-crypto
+        run: uv sync --group dev
+      - name: ruff
+        working-directory: rl-crypto
+        run: uv run ruff check src/ tests/ examples/ tools/
+      - name: build notebook (offline)
+        working-directory: rl-crypto
+        run: uv run python tools/build_notebook.py
+      - name: offline test suite
+        # The `live` markers hit the real upstream pipelines by hand and are
+        # excluded on CI, exactly like the parent projects.
+        working-directory: rl-crypto
+        run: uv run python -m pytest -m "not live"

@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rl-crypto"
+version = "0.1.0"
+description = "Unified RL data pipeline: join tickerkit market snapshots/history with ticker-news-signals news-sentiment into one per-(ticker, hour) dataset."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+keywords = ["crypto", "reinforcement-learning", "trading", "market-data", "news-sentiment"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+# The two upstream pipelines are consumed as libraries. They are declared here
+# (not just wired through Nix) so `uv sync` / `pip install` resolve the whole
+# graph, including their PyPI-only deps (ccxt, gnews, vaderSentiment) that are
+# deliberately absent from nixpkgs.
+dependencies = [
+    "tickerkit>=0.1",
+    "ticker-news-signals>=0.2",
+    "httpx>=0.27",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "basedpyright>=1.20",
+    "jupyterlab>=4.2",
+    "ipykernel>=6.29",
+]
+
+[project.scripts]
+rl-crypto = "rl_crypto.cli:main"
+
+# The upstreams live as sibling checkouts during development; path sources keep
+# local edits live (editable) and mirror the `../tickerkit` layout the flake
+# composes for its hermetic build. Swap to a git+https source to pin a release.
+[tool.uv.sources]
+tickerkit = { path = "../tickerkit", editable = true }
+ticker-news-signals = { path = "../ticker-news-signals", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "basedpyright>=1.20",
+    "jupyterlab>=4.2",
+    "ipykernel>=6.29",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rl_crypto"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: opt-in test that hits live upstream APIs (deselect with '-m \"not live\"')"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC", "C4", "PTH", "TID"]
+ignore = ["B008", "RUF001", "RUF002", "RUF003", "TID252"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.basedpyright]
+include = ["src/rl_crypto"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportPrivateUsage = false
