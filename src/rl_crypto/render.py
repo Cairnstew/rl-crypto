@@ -14,9 +14,12 @@ never ``0``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .models import Dataset, UnifiedRecord
+
+if TYPE_CHECKING:
+    from .ml.types import Outlook
 
 NA = "-"
 
@@ -140,9 +143,32 @@ def render_dataset(dataset: Dataset, *, max_rows: int = 24) -> str:
     return "\n".join(lines)
 
 
+def render_outlook(outlook: Outlook) -> str:
+    """A short human-readable block for a Tier-2 :class:`Outlook`."""
+    lines = [
+        f"outlook {outlook.ticker}  (horizon {outlook.horizon})",
+        f"  generated  {outlook.generated_at or NA}",
+        f"  features @ {outlook.feature_timestamp or NA}",
+    ]
+    if outlook.signal is not None:
+        confidence = "" if outlook.confidence is None else f"  confidence {outlook.confidence:.2f}"
+        lines.append(f"  signal     {outlook.signal:+d}{confidence}")
+    if outlook.predictions:
+        lines.append("  predictions")
+    for target, value in outlook.predictions.items():
+        probability = outlook.probabilities.get(target)
+        extra = "" if probability is None else f"  p={probability:.3f}"
+        lines.append(f"    {target:<18} {_num(value, '+.6g'):>14}{extra}")
+    if outlook.notes:
+        lines.append("  notes")
+        lines.extend(f"    - {note}" for note in outlook.notes)
+    return "\n".join(lines)
+
+
 __all__ = [
     "dataset_flat_metrics",
     "render_dataset",
+    "render_outlook",
     "render_unified",
     "render_unified_markdown",
     "unified_flat_metrics",

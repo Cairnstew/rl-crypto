@@ -1,0 +1,28 @@
+{
+  // Jupyter settings, matching the two upstreams (../tickerkit, ../ticker-news-signals).
+  // Verified against zed-industries/zed assets/settings/default.json:
+  //   "jupyter": { "enabled": bool, "kernel_selections": { <language>: <kernel> } }
+  // There is no `jupyter.kernel` object and no `jupyter.auto_open` — the top-level
+  // `auto_open` is unrelated (on_create / on_paste / on_drop).
+  //
+  // Zed discovers kernels via `jupyter kernelspec list` and picks one for Python cells.
+  // The `rl-crypto` kernelspec is written by tools/install_kernel.py, which pins argv to
+  // the project interpreter by absolute path (`.venv/bin/python`, or the `nix develop`
+  // python). The dev shell installs it once on first entry; `nix run .#kernel` re-runs it.
+  // Re-run after any recreation of the virtualenv.
+  "jupyter": {
+    "enabled": true,
+    "kernel_selections": {
+      "python": "rl-crypto"
+    }
+  },
+
+  // Per-language settings live under `languages`. Do NOT put them in `file_types`:
+  // that maps a language to an array of glob patterns, which is what produces
+  // "invalid type: map, expected a set".
+  "languages": {
+    "Python": {
+      "tab_size": 4
+    }
+  }
+}

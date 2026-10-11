@@ -7,6 +7,9 @@ One entry point over two pipelines:
     rl-crypto news-history TICKER --from … --to …   # delegate: archived news
     rl-crypto unified TICKER                        # fused market + news record
     rl-crypto dataset TICKER --from … --to …        # joined hourly dataset
+    rl-crypto features TICKER --from … --to …       # Tier-0 features + targets
+    rl-crypto train TICKER --from … --to …          # fit Tier-1 bundle (json)
+    rl-crypto predict TICKER --model models/….json  # live outlook → feature addition
     rl-crypto sources                               # every upstream source
     rl-crypto version
 
@@ -24,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json as _json
 import sys
+from pathlib import Path
 
 from . import __version__
 from .config import Config
@@ -31,10 +35,12 @@ from .export import write_csv, write_json, write_jsonl
 from .render import (
     dataset_flat_metrics,
     render_dataset,
+    render_outlook,
     render_unified,
     render_unified_markdown,
     unified_flat_metrics,
 )
+from .targets import TARGET_NAMES
 
 
 def _emit_json(payload: object, *, pretty: bool = False) -> None:
@@ -129,6 +135,122 @@ def cmd_dataset(args: argparse.Namespace) -> int:
         for row in dataset.rows:
             _emit_json(row.to_dict())
     return 0
+
+
+# --------------------------------------------------------------------------- ML
+
+
+def cmd_features(args: argparse.Namespace) -> int:
+    """Tier-0 feature rows + forward targets for a window (no learning)."""
+    from .dataset import build_dataset
+    from .samples import build_samples
+
+    config = Config.from_env()
+    dataset = build_dataset(
+        args.ticker,
+        start=args.start,
+        end=args.end,
+        timeframe=args.timeframe or config.timeframe,
+        granularity=args.granularity or config.granularity,
+        limit=args.limit,
+        market_config=config.market_config(),
+        news_config=config.news_config(),
+    )
+    samples = build_samples(dataset.rows, horizon=args.horizon)
+
+    if args.output:
+        fmt = args.format or config.format
+        rows = (sample.to_dict() for sample in samples)
+        path = write_csv(args.output, rows) if fmt == "csv" else write_jsonl(args.output, rows)
+        print(f"features -> {path}", file=sys.stderr)
+    elif args.json:
+        _emit_json([sample.to_dict() for sample in samples], pretty=True)
+    else:
+        for sample in samples:
+            _emit_json(sample.to_dict())
+    return 0
+
+
+def cmd_train(args: argparse.Namespace) -> int:
+    """Fit Tier-1 models from a window's samples and write a JSON bundle."""
+    from .dataset import build_dataset
+    from .ml.store import default_bundle_path
+    from .ml.tier1 import train_tier1
+    from .samples import build_samples
+
+    config = Config.from_env()
+    dataset = build_dataset(
+        args.ticker,
+        start=args.start,
+        end=args.end,
+        timeframe=args.timeframe or config.timeframe,
+        granularity=args.granularity or config.granularity,
+        limit=args.limit,
+        market_config=config.market_config(),
+        news_config=config.news_config(),
+    )
+    samples = build_samples(dataset.rows, horizon=args.horizon)
+    targets = args.target or list(TARGET_NAMES)
+    bundle = train_tier1(samples, horizon=args.horizon, targets=targets)
+
+    path = Path(args.output) if args.output else default_bundle_path(args.ticker)
+    from .ml.store import save_bundle
+
+    save_bundle(bundle, path)
+    print(
+        f"trained {len(bundle.targets)} target(s) from {len(samples)} rows "
+        f"({bundle.n_samples} feature-complete) -> {path}",
+        file=sys.stderr,
+    )
+    for note in bundle.notes:
+        print(f"  - {note}", file=sys.stderr)
+
+    if args.json:
+        _emit_json(bundle.to_dict(), pretty=True)
+    return 0 if bundle.targets else 1
+
+
+def cmd_predict(args: argparse.Namespace) -> int:
+    """Live Tier-1/Tier-2 outlook, attached to the unified record as features."""
+    from .ml.serve import attach_predictions, load_bundle_for, predict_live
+    from .ml.store import default_bundle_path
+    from .unify import build_unified
+
+    config = Config.from_env().with_overrides(lookback_hours=args.lookback_hours)
+    try:
+        bundle = load_bundle_for(args.ticker, args.model)
+    except FileNotFoundError:
+        print(
+            f"error: no model bundle for {args.ticker} — run `rl-crypto train {args.ticker} …` "
+            f"(looked for {args.model or default_bundle_path(args.ticker)})",
+            file=sys.stderr,
+        )
+        return 2
+
+    record = build_unified(
+        args.ticker,
+        lookback_hours=config.lookback_hours,
+        news_config=config.news_config(),
+        quote=args.quote,
+    )
+    outlook = predict_live(
+        args.ticker,
+        bundle,
+        timeframe=args.timeframe or "1h",
+        window=args.window,
+        granularity=args.granularity or config.granularity,
+        market_config=config.market_config(),
+        news_config=config.news_config(),
+    )
+    attach_predictions(record, outlook)
+
+    if args.json:
+        _emit_json(record.to_dict(), pretty=True)
+    else:
+        print(render_unified(record))
+        print()
+        print(render_outlook(outlook))
+    return 0 if (record.market_ok or record.news_ok) else 1
 
 
 def cmd_sources(_: argparse.Namespace) -> int:
@@ -229,6 +351,65 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_flags(p)
     p.add_argument("--report", action="store_true", help="human-readable dataset report")
     p.set_defaults(func=cmd_dataset)
+
+    p = sub.add_parser(
+        "features", help="Tier-0 features + forward targets for a window (no learning)"
+    )
+    p.add_argument("ticker", help="e.g. ETH/USD")
+    p.add_argument("--from", dest="start", required=True, help="window start (ISO)")
+    p.add_argument("--to", dest="end", required=True, help="window end (ISO)")
+    p.add_argument("--timeframe", default=None, help="market interval, e.g. 1h, 1d (default 1d)")
+    p.add_argument(
+        "--granularity", default=None, choices=["hour", "day"], help="news bucket (default hour)"
+    )
+    p.add_argument("--horizon", type=int, default=1, help="forward horizon in intervals")
+    p.add_argument("--limit", type=int, default=None, help="maximum market candles")
+    p.add_argument("--output", default=None, help="output file (default: stdout JSONL)")
+    p.add_argument(
+        "--format", default=None, choices=["jsonl", "csv"], help="output format (default jsonl)"
+    )
+    p.add_argument("--json", action="store_true", help="pretty JSON array of sample rows")
+    p.set_defaults(func=cmd_features)
+
+    p = sub.add_parser(
+        "train", help="fit Tier-1 models from a window's samples into a JSON bundle"
+    )
+    p.add_argument("ticker", help="e.g. ETH/USD")
+    p.add_argument("--from", dest="start", required=True, help="window start (ISO)")
+    p.add_argument("--to", dest="end", required=True, help="window end (ISO)")
+    p.add_argument("--timeframe", default=None, help="market interval, e.g. 1h, 1d (default 1d)")
+    p.add_argument(
+        "--granularity", default=None, choices=["hour", "day"], help="news bucket (default hour)"
+    )
+    p.add_argument("--horizon", type=int, default=1, help="forward horizon in intervals")
+    p.add_argument("--limit", type=int, default=None, help="maximum market candles")
+    p.add_argument(
+        "--target",
+        action="append",
+        choices=list(TARGET_NAMES),
+        help="target metric to fit (repeatable; default: all)",
+    )
+    p.add_argument("--output", default=None, help="bundle path (default models/<slug>.json)")
+    p.add_argument("--json", action="store_true", help="also print the bundle as JSON")
+    p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser(
+        "predict",
+        help="live outlook: run Tier-1 models on a recent window and attach to the record",
+    )
+    p.add_argument("ticker", help="e.g. ETH/USD")
+    p.add_argument("--model", default=None, help="bundle path (default models/<slug>.json)")
+    p.add_argument("--timeframe", default="1h", help="window interval for features (default 1h)")
+    p.add_argument(
+        "--window", type=int, default=200, help="intervals of history to fetch (default 200)"
+    )
+    p.add_argument(
+        "--granularity", default=None, choices=["hour", "day"], help="news bucket (default hour)"
+    )
+    p.add_argument("--lookback-hours", type=int, default=None, help="news window (default 1)")
+    p.add_argument("--quote", default=None, help="market quote currency (default USD)")
+    p.add_argument("--json", action="store_true", help="pretty JSON record with predictions")
+    p.set_defaults(func=cmd_predict)
 
     p = sub.add_parser("sources", help="list news sources and market providers")
     p.set_defaults(func=cmd_sources)

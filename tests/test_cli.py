@@ -101,3 +101,105 @@ def test_dataset_writes_jsonl(monkeypatch, tmp_path):
 def test_version(capsys):
     assert cli.main(["version"]) == 0
     assert "rl-crypto" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- ML commands
+
+
+def test_features_parser_flags():
+    args = cli.build_parser().parse_args(
+        [
+            "features",
+            "ETH/USD",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-02",
+            "--horizon",
+            "3",
+        ]
+    )
+    assert args.command == "features"
+    assert args.horizon == 3
+
+
+def test_train_parser_target_choices():
+    args = cli.build_parser().parse_args(
+        ["train", "ETH/USD", "--from", "a", "--to", "b", "--target", "fwd_return"]
+    )
+    assert args.target == ["fwd_return"]
+
+
+def test_predict_parser_defaults():
+    args = cli.build_parser().parse_args(["predict", "ETH/USD"])
+    assert args.command == "predict"
+    assert args.window == 200
+    assert args.timeframe == "1h"
+
+
+def test_cmd_features_writes_jsonl(monkeypatch, tmp_path):
+    from rl_crypto import config as config_mod
+    from rl_crypto.models import Dataset
+
+    from .conftest import make_dataset_rows
+
+    monkeypatch.setattr(config_mod.Config, "market_config", lambda self: None)
+    monkeypatch.setattr(config_mod.Config, "news_config", lambda self: None)
+    rows = make_dataset_rows(20)
+    fake = Dataset(ticker="ETH/USD", interval="1h", rows=rows)
+    monkeypatch.setattr("rl_crypto.dataset.build_dataset", lambda *a, **k: fake)
+
+    out = tmp_path / "features.jsonl"
+    rc = cli.main(
+        [
+            "features",
+            "ETH/USD",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-02",
+            "--output",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    first = json.loads(out.read_text().splitlines()[0])
+    assert "ret_1" in first
+    assert "fwd_return" in first
+
+
+def test_cmd_train_writes_a_bundle(monkeypatch, tmp_path):
+    from rl_crypto import config as config_mod
+    from rl_crypto.models import Dataset
+
+    from .conftest import make_dataset_rows
+
+    monkeypatch.setattr(config_mod.Config, "market_config", lambda self: None)
+    monkeypatch.setattr(config_mod.Config, "news_config", lambda self: None)
+    rows = make_dataset_rows(100, wiggle=0.04)
+    fake = Dataset(ticker="ETH/USD", interval="1h", rows=rows)
+    monkeypatch.setattr("rl_crypto.dataset.build_dataset", lambda *a, **k: fake)
+
+    out = tmp_path / "eth-usd.json"
+    rc = cli.main(
+        [
+            "train",
+            "ETH/USD",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-02-01",
+            "--output",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["schema"].startswith("rl-crypto/ml/")
+    assert "fwd_return" in payload["targets"]
+
+
+def test_cmd_predict_missing_bundle_is_friendly(monkeypatch, capsys):
+    rc = cli.main(["predict", "ETH/USD", "--model", "/nonexistent/eth-usd.json"])
+    assert rc == 2
+    assert "no model bundle" in capsys.readouterr().err

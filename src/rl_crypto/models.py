@@ -99,6 +99,12 @@ class UnifiedRecord:
 
     notes: tuple[str, ...] = ()
 
+    # -- ML feature addition (Tier 2 outlook; None until attached) --
+    # Set by ``rl_crypto.ml.serve.attach_predictions``: the fused Tier-1/Tier-2
+    # predictions as a JSON-ready dict. Kept as an opaque dict here so the core
+    # models module need not depend on the ML layer.
+    predictions: dict[str, Any] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready dict (stable key order, no datetimes)."""
         return {
@@ -130,6 +136,7 @@ class UnifiedRecord:
                 "errors": self.news_errors,
             },
             "notes": list(self.notes),
+            "predictions": self.predictions,
         }
 
     def to_json(self, *, indent: int | None = 2, sort_keys: bool = False) -> str:

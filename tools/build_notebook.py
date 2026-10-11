@@ -55,6 +55,61 @@ dataset = build_dataset("ETH/USD", start="2026-01-01", end="2026-01-03", timefra
 print(dataset.to_json(indent=2)[:800])
 """
 
+MD_ML = """\
+## Tiered ML — features, targets, outlook
+
+The fused dataset feeds the tiered pipeline. Tier 0 builds **causal** features
+(no future information), Tier 1 fits one model per forward target
+(return/direction/volatility/volume), Tier 2 fuses them into an `Outlook`.
+This section runs **offline on synthetic rows**, so it is deterministic and
+repeatable — swap `synthetic_rows()` for a real `build_dataset` call to train
+on live history.
+"""
+
+CODE_ML_SETUP = """\
+from datetime import UTC, datetime, timedelta
+from math import exp, sin
+
+from rl_crypto import build_samples
+from rl_crypto.ml import train_tier1
+from rl_crypto.ml.serve import outlook_for_rows
+from rl_crypto.models import DatasetRow, to_iso
+
+
+def synthetic_rows(n: int = 120) -> tuple[DatasetRow, ...]:
+    rows: list[DatasetRow] = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for i in range(n):
+        close = 100.0 * exp(0.01 * i + 0.04 * sin(i))
+        rows.append(
+            DatasetRow(
+                ticker="ETH/USD",
+                timestamp=to_iso(start + timedelta(hours=i)) or "",
+                open=close * 0.999, high=close * 1.01, low=close * 0.99,
+                volume=1000.0 + 50.0 * i, close=close,
+                sentiment_score=0.1 + 0.02 * sin(i),
+                article_count=(i % 3) + 1, novelty_flag=(i % 7 == 0),
+                has_price=True, has_news=True,
+            )
+        )
+    return tuple(rows)
+
+
+print("synthetic rows:", len(synthetic_rows()))
+"""
+
+CODE_ML_TRAIN = """\
+rows = synthetic_rows()
+bundle = train_tier1(build_samples(rows, horizon=1), horizon=1)
+print("fitted targets:", {name: model.metrics for name, model in bundle.targets.items()})
+"""
+
+CODE_ML_OUTLOOK = """\
+outlook = outlook_for_rows(rows, bundle, ticker="ETH/USD")
+print("signal:", outlook.signal, "| confidence:", outlook.confidence)
+print(outlook.as_features())
+"""
+
 
 def build() -> nbformat.NotebookNode:
     notebook = new_notebook()
@@ -65,6 +120,10 @@ def build() -> nbformat.NotebookNode:
         new_code_cell(CODE_UNIFIED),
         new_markdown_cell(MD_DATASET),
         new_code_cell(CODE_DATASET),
+        new_markdown_cell(MD_ML),
+        new_code_cell(CODE_ML_SETUP),
+        new_code_cell(CODE_ML_TRAIN),
+        new_code_cell(CODE_ML_OUTLOOK),
     ]
     notebook.metadata = {
         "kernelspec": {
