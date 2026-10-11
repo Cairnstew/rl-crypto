@@ -1,13 +1,13 @@
 {
   "schema": "rl-crypto/pipeline/1",
   "ticker": "ETH/USD",
-  "generated_at": "2026-10-11T03:01:14Z",
+  "generated_at": "2026-10-11T03:18:33Z",
   "timeframe": "1h",
   "granularity": "hour",
   "horizon": 1,
   "train_window": {
-    "start": "2026-09-27T03:01:14Z",
-    "end": "2026-10-11T03:01:14Z"
+    "start": "2026-09-27T03:18:33Z",
+    "end": "2026-10-11T03:18:33Z"
   },
   "dataset": {
     "rows": 336,
@@ -24,9 +24,9 @@
   },
   "targets": {
     "fwd_return": {
-      "rmse": 0.004170612611345228,
-      "mae": 0.002647979819476418,
-      "r2": 0.07985267583064248
+      "rmse": 0.004172258284767603,
+      "mae": 0.002651601396608431,
+      "r2": 0.07937624992707404
     },
     "fwd_direction": {
       "accuracy": 0.6217948717948718,
@@ -34,34 +34,34 @@
       "base_rate": 0.5192307692307693
     },
     "fwd_volatility": {
-      "rmse": 0.0020958393186401385,
-      "mae": 0.0013570652093132386,
-      "r2": 0.11547709930639394
+      "rmse": 0.0020951881410754833,
+      "mae": 0.0013548415556477167,
+      "r2": 0.11486502528894948
     },
     "fwd_volume_ratio": {
-      "rmse": 0.6367340133460039,
-      "mae": 0.4501422675784114,
-      "r2": 0.3834762476622704
+      "rmse": 0.5633416265936013,
+      "mae": 0.43475782973272403,
+      "r2": 0.4278562649712121
     }
   },
   "outlook": {
     "signal": 1,
-    "confidence": 0.960113444712956,
+    "confidence": 0.47600731975666166,
     "predictions": {
-      "fwd_return": 0.0058540738310641,
+      "fwd_return": 0.0016007598722776479,
       "fwd_direction": 1.0,
-      "fwd_volatility": -0.001699167229061475,
-      "fwd_volume_ratio": -0.5915873768070152
+      "fwd_volatility": 0.0004746233389347043,
+      "fwd_volume_ratio": -0.8152063508431664
     },
     "probabilities": {
-      "fwd_direction": 0.980056722356478
+      "fwd_direction": 0.7380036598783308
     },
     "notes": []
   },
   "live": {
     "market_ok": true,
     "news_ok": true,
-    "price": 2507.2,
+    "price": 2502.31,
     "latest_sentiment": -0.4019,
     "notes": []
   }
