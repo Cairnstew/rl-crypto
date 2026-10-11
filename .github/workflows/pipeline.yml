@@ -1,0 +1,90 @@
+# Scheduled production run: exercise the whole rl-crypto pipeline on a ticker,
+# cache the outputs (history / live / bundle / summary) back into the repo.
+#
+# On schedule it uses defaults (ETH/USD); `workflow_dispatch` lets you pass any
+# ticker from the Actions UI. The commit from this workflow does NOT retrigger
+# anything (no push trigger here), but it does re-run the offline CI, which is
+# desirable: every cached state lands in a lint+test-green commit.
+name: "pipeline (scheduled production run)"
+
+on:
+  schedule:
+    # Every 2 hours on the hour (UTC). Adjust to taste; keep concurrency off
+    # so overlapping runs cannot double-commit.
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Ticker to run the full pipeline on"
+        required: false
+        default: "ETH/USD"
+      train_days:
+        description: "Days of history to train the Tier-1 models on"
+        required: false
+        default: "21"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rl-crypto-pipeline
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+
+      # rl-crypto consumes its upstreams as sibling path sources (~/../ layout);
+      # both are public, so the auto GITHUB_TOKEN can read them.
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/tickerkit
+          path: tickerkit
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/ticker-news-signals
+          path: ticker-news-signals
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: sync
+        working-directory: rl-crypto
+        run: uv sync --group dev
+
+      - name: run pipeline (fetch -> features -> train -> live outlook)
+        working-directory: rl-crypto
+        env:
+          TICKER: ${{ inputs.ticker || 'ETH/USD' }}
+          TRAIN_DAYS: ${{ inputs.train_days || '21' }}
+        run: |
+          uv run python tools/run_pipeline.py \
+            --ticker "$TICKER" \
+            --train-days "$TRAIN_DAYS" \
+            --timeframe 1h
+
+      # Commit whatever the run produced. if: always() lets a partial-failure
+      # run still land its notes/summary cache; an empty diff is a no-op.
+      - name: commit cache back to the repo
+        if: always()
+        working-directory: rl-crypto
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add models data
+          if git diff --cached --quiet; then
+            echo "no cache changes to commit"
+          else
+            git commit -m "pipeline: refresh cache at $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push origin HEAD:main
+          fi
