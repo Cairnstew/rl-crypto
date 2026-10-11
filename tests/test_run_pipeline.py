@@ -49,6 +49,7 @@ def test_run_pipeline_writes_the_whole_cache(tmp_path, monkeypatch):
         train_days=21,
         lookback_hours=1,
         limit=None,
+        fetch_timeout=10.0,
         root=str(tmp_path),
     )
     artifacts, summary, exit_code = runner.run_pipeline(args)
@@ -88,7 +89,7 @@ def test_live_cache_is_capped(tmp_path, monkeypatch):
 
     args = argparse.Namespace(
         ticker="ETH/USD", timeframe="1h", granularity="hour", horizon=1, train_days=21,
-        lookback_hours=1, limit=None, root=str(tmp_path),
+        lookback_hours=1, limit=None, fetch_timeout=10.0, root=str(tmp_path),
     )
     runner.LIVE_CAP = 2
     runner.run_pipeline(args)  # run 1
@@ -110,7 +111,7 @@ def test_exit_code_nonzero_when_everything_fails(tmp_path, monkeypatch):
 
     args = argparse.Namespace(
         ticker="ETH/USD", timeframe="1h", granularity="hour", horizon=1, train_days=21,
-        lookback_hours=1, limit=None, root=str(tmp_path),
+        lookback_hours=1, limit=None, fetch_timeout=10.0, root=str(tmp_path),
     )
     _, _, exit_code = runner.run_pipeline(args)
     assert exit_code == 1

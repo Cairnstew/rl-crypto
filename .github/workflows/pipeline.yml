@@ -33,7 +33,7 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,7 +68,8 @@ jobs:
           uv run python tools/run_pipeline.py \
             --ticker "$TICKER" \
             --train-days "$TRAIN_DAYS" \
-            --timeframe 1h
+            --timeframe 1h \
+            --fetch-timeout 300
 
       # Commit whatever the run produced. if: always() lets a partial-failure
       # run still land its notes/summary cache; an empty diff is a no-op.
