@@ -10,7 +10,9 @@ name: "live (high-frequency recorder)"
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    # Intentional re-registration: rewritten from "*\/30" so GH Actions reparses
+    # the schedule (a new cron string forces it to re-register the event).
+    - cron: "15,45 * * * *"
   workflow_dispatch:
     inputs:
       ticker:
