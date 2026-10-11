@@ -29,13 +29,26 @@ derived rows are ever cached stale.
 
 ## Cadence
 
-- **pipeline.yml** — every 2h (and `workflow_dispatch`): grow the archive,
-  retrain, append one live record, commit `models/ + data/`.
-- **live.yml** — every 30 min (and `workflow_dispatch`): load the latest
-  committed bundle, fetch a short market window for features, append one live
-  record (with live news), commit `data/` only. Each run is cheap: no training.
+- **pipeline.yml** (GitHub Actions) — every 2h (and `workflow_dispatch`): grow
+  the archive, retrain, append one live record, commit `models/ + data/`.
+- **Local systemd timer** — every 30 min on this machine, the *primary* frequent
+  live path: `tools/record_live.sh` syncs, records one live point
+  (market + live news + outlook), and pushes `data/`. Install with:
 
-The two workflows share a concurrency group so their write-backs never race.
+  ```bash
+  mkdir -p ~/.config/systemd/user
+  # units rl-crypto-live.service / rl-crypto-live.timer (OnCalendar=*:10/30)
+  systemctl --user daemon-reload
+  systemctl --user enable --now rl-crypto-live.timer
+  ```
+
+- **live.yml** (GitHub Actions) — `workflow_dispatch` only: the on-demand/backup
+  live recorder (its cron was dropped because Actions didn't deliver schedule
+  events for a second scheduled workflow on the young repo).
+
+The Actions pipeline and the local timer both write `data/`; the pipeline also
+owns `models/`. Write-backs from Actions serialize via a shared concurrency
+group, and the timer does a `--ff-only` pull before pushing.
 
 ## Seeding locally (recommended before scheduling)
 

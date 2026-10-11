@@ -1,18 +1,14 @@
-# High-frequency live recorder: append one live record (market + live news +
-# Tier-2 outlook) to data/<slug>/live.jsonl much more often than the 2-hourly
-# pipeline, without retraining. The history archive and model bundles are owned
-# by pipeline.yml — this workflow only touches data/.
+# On-demand live recorder: append one live record (market + live news + Tier-2
+# outlook) to data/<slug>/live.jsonl, no retraining.
 #
-# cadence: every 30 minutes by default (48 runs/day ≈ ~50–90 Actions minutes/
-# day on the free tier — each run is a cold checkout + uv sync + one small fetch
-# + one record; if Actions minutes matter, relax to "0 * * * *" for hourly).
-name: "live (high-frequency recorder)"
+# NOTE: the frequent cadence is owned by a LOCAL systemd timer
+# (tools/record_live.sh -> ~/.config/systemd/user/rl-crypto-live.timer, every 30
+# min) because GitHub Actions failed to deliver schedule events for this second
+# workflow on a young repo. This workflow stays as the on-demand/backup path
+# and can be pointed at any ticker from the Actions UI.
+name: "live (on-demand recorder)"
 
 on:
-  schedule:
-    # Intentional re-registration: rewritten from "*\/30" so GH Actions reparses
-    # the schedule (a new cron string forces it to re-register the event).
-    - cron: "15,45 * * * *"
   workflow_dispatch:
     inputs:
       ticker:

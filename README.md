@@ -64,7 +64,7 @@ models/               trained Tier-1 bundles (JSON, committed)
 data/                 committed pipeline cache (candle archive + live records + summary)
 .zed/settings.json    pins the notebook kernel for the Zed editor
 flake.nix             hermetic uv2nix build + dev shell
-.github/workflows/    ci.yml (offline) + notebook.yml (live) + pipeline.yml (archive) + live.yml (frequent live)
+.github/workflows/    ci.yml (offline) + notebook.yml (live) + pipeline.yml (archive) + live.yml (on-demand live)
 ```
 
 ## Prerequisites
@@ -218,9 +218,10 @@ Two scheduled workflows keep the committed cache growing:
 * [**pipeline.yml**](.github/workflows/pipeline.yml) — **every 2 hours** (and on
   demand): grow the raw-candle archive, retrain the Tier-1 bundle over the whole
   archive, append one live record, commit `models/ + data/`.
-* [**live.yml**](.github/workflows/live.yml) — **every 30 minutes** (and on
-  demand): load the latest committed bundle and append a live record (market +
-  live news + outlook) — no training, cheap runs, commits `data/` only.
+* **Local systemd timer** — the frequent live path: **every 30 min** on this
+  machine, `tools/record_live.sh` records one live point (market + live news +
+  outlook) and pushes `data/` (no training). [**live.yml**](.github/workflows/live.yml)
+  stays available as an on-demand/backup recorder.
 
 ```bash
 uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60   # archive + train
