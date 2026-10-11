@@ -227,6 +227,15 @@ The workflow reuses the sibling-checkout + `uv sync` layout of `ci.yml`, and
 its write-back commit re-triggers CI — every cached state lands green. See
 [`data/README.md`](data/README.md) for the cache contract.
 
+**Seed locally first.** Run the pipeline on your machine once before (or while)
+relying on the cron — local runs reuse the sibling projects' on-disk caches, so
+the heavy Wayback news-history backfill completes here and the scheduled runner
+only refreshes it afterwards:
+
+```bash
+uv run python tools/run_pipeline.py --ticker ETH/USD --train-days 21 --fetch-timeout 600
+```
+
 ## Notebooks
 
 Notebooks are **generated**, so edit the cells in `tools/build_notebook.py`
