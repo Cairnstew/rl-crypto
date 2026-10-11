@@ -1,5 +1,6 @@
-# Scheduled production run: exercise the whole rl-crypto pipeline on a ticker,
-# cache the outputs (history / live / bundle / summary) back into the repo.
+# Scheduled production run: grow the ETH/USD-style candle archive, retrain the
+# Tier-1 bundle over the whole archive, and append one live record — all
+# committed back to the repo.
 #
 # On schedule it uses defaults (ETH/USD); `workflow_dispatch` lets you pass any
 # ticker from the Actions UI. The commit from this workflow does NOT retrigger
@@ -9,8 +10,8 @@ name: "pipeline (scheduled production run)"
 
 on:
   schedule:
-    # Every 2 hours on the hour (UTC). Adjust to taste; keep concurrency off
-    # so overlapping runs cannot double-commit.
+    # Every 2 hours on the hour (UTC). The history archive grows here; the
+    # frequent live records come from the separate live.yml workflow.
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -18,23 +19,24 @@ on:
         description: "Ticker to run the full pipeline on"
         required: false
         default: "ETH/USD"
-      train_days:
-        description: "Days of history to train the Tier-1 models on"
+      history_days:
+        description: "Days of market history to fetch per run (archive is cumulative)"
         required: false
-        default: "21"
+        default: "60"
 
 permissions:
   contents: write
 
+# Same group as live.yml so the two cache writers serialize (no push races).
 concurrency:
-  group: rl-crypto-pipeline
+  group: rl-crypto-cache
   cancel-in-progress: false
 
 jobs:
   produce:
     runs-on: ubuntu-latest
-    # Worst case is three sequential 300s fetch caps + startup; leave margin so
-    # the script's own hard-exit (never a runner cap) ends the job cleanly.
+    # Market history (fast) + one live record under the fetch cap; leave margin
+    # so the script's own hard-exit (never a runner cap) ends the job cleanly.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -61,19 +63,20 @@ jobs:
         working-directory: rl-crypto
         run: uv sync --group dev
 
-      - name: run pipeline (fetch -> features -> train -> live outlook)
+      - name: run pipeline (grow archive -> train -> live outlook)
         working-directory: rl-crypto
         env:
           TICKER: ${{ inputs.ticker || 'ETH/USD' }}
-          TRAIN_DAYS: ${{ inputs.train_days || '21' }}
+          HISTORY_DAYS: ${{ inputs.history_days || '60' }}
         run: |
           uv run python tools/run_pipeline.py \
             --ticker "$TICKER" \
-            --train-days "$TRAIN_DAYS" \
+            --history-days "$HISTORY_DAYS" \
             --timeframe 1h \
             --fetch-timeout 300
-        # --news-history is intentionally NOT passed: training-time news is
-        # reserved for RL training later, so only live news is fetched.
+        # News HISTORY is intentionally never fetched here: training-time news
+        # is reserved for RL training later. Live news flows through the unified
+        # record on every run (and on the frequent live.yml runs).
 
       # Commit whatever the run produced. if: always() lets a partial-failure
       # run still land its notes/summary cache; an empty diff is a no-op.

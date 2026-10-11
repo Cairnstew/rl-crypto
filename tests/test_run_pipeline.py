@@ -1,16 +1,9 @@
-"""Offline test of the production pipeline runner (cache writing + exit code).
-
-The runner itself hits the live upstreams; here its fetch/unify seams are
-monkeypatched with deterministic dataset/unified-record doubles so the whole
-cache-writing path (bundle, history, live capped log, summary) is exercised
-with no network.
-"""
+"""Offline test of the production pipeline runner (archive grow, train, live)."""
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 from pathlib import Path
 
 from rl_crypto.models import Dataset, UnifiedRecord
@@ -28,12 +21,27 @@ def _load_runner():
     return module
 
 
-def test_run_pipeline_writes_the_whole_cache(tmp_path, monkeypatch):
+def _args(tmp_path: Path):
+    return argparse.Namespace(
+        ticker="ETH/USD",
+        timeframe="1h",
+        horizon=1,
+        history_days=21,
+        lookback_hours=1,
+        limit=None,
+        fetch_timeout=10.0,
+        root=str(tmp_path),
+    )
+
+
+def test_run_pipeline_grows_archive_and_writes_cache(tmp_path, monkeypatch):
     runner = _load_runner()
     monkeypatch.setattr(
         runner,
         "build_dataset",
-        lambda *a, **k: Dataset(ticker="ETH/USD", interval="1h", rows=make_dataset_rows(120, wiggle=0.04)),
+        lambda *a, **k: Dataset(
+            ticker="ETH/USD", interval="1h", rows=make_dataset_rows(120, wiggle=0.04)
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -41,66 +49,45 @@ def test_run_pipeline_writes_the_whole_cache(tmp_path, monkeypatch):
         lambda *a, **k: UnifiedRecord(ticker="ETH/USD", market_ok=True, news_ok=True, price=101.0),
     )
 
-    args = argparse.Namespace(
-        ticker="ETH/USD",
-        timeframe="1h",
-        granularity="hour",
-        horizon=1,
-        train_days=21,
-        lookback_hours=1,
-        limit=None,
-        fetch_timeout=10.0,
-        root=str(tmp_path),
-    )
-    artifacts, summary, exit_code = runner.run_pipeline(args)
+    artifacts, summary, exit_code = runner.run_pipeline(_args(tmp_path))
 
     assert exit_code == 0
-    assert summary["ticker"] == "ETH/USD"
+    assert summary["schema"] == "rl-crypto/pipeline/2"
+    assert summary["archive"]["rows"] == 120
     assert summary["targets"].get("fwd_return") is not None
 
     assert (tmp_path / "models" / "eth-usd.json").is_file()
-    history = json.loads((tmp_path / "data" / "eth-usd" / "history.jsonl").read_text().splitlines()[0])
-    assert "ret_1" in history and "fwd_return" in history
+    candles = (tmp_path / "data" / "eth-usd" / "candles.jsonl").read_text().splitlines()
+    assert len(candles) == 120
+    first = jsonl(candles[0])
+    assert "close" in first
 
-    live_path = tmp_path / "data" / "eth-usd" / "live.jsonl"
-    first = json.loads(live_path.read_text().splitlines()[0])
-    assert first["market"]["price"] == 101.0
-    assert first["predictions"]["schema"].startswith("rl-crypto/ml/")
+    live = jsonl((tmp_path / "data" / "eth-usd" / "live.jsonl").read_text().splitlines()[0])
+    assert live["market"]["price"] == 101.0
+    assert live["predictions"]["schema"].startswith("rl-crypto/ml/")
 
-    summary_payload = json.loads((tmp_path / "data" / "eth-usd" / "summary.json").read_text())
-    assert summary_payload["schema"] == "rl-crypto/pipeline/1"
-    assert all(name in artifacts for name in ("bundle", "history", "live", "summary"))
+    summary_payload = jsonl((tmp_path / "data" / "eth-usd" / "summary.json").read_text())
+    assert summary_payload["schema"] == "rl-crypto/pipeline/2"
+    assert set(artifacts) == {"bundle", "candles", "live", "summary"}
 
 
-def test_live_cache_is_capped(tmp_path, monkeypatch):
+def test_run_pipeline_accumulates_across_runs(tmp_path, monkeypatch):
     runner = _load_runner()
+    rows = make_dataset_rows(50)
+    monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: Dataset(ticker="ETH/USD", rows=rows))
     monkeypatch.setattr(
-        runner,
-        "build_dataset",
-        lambda *a, **k: Dataset(ticker="ETH/USD", interval="1h", rows=make_dataset_rows(120)),
+        runner, "build_unified", lambda *a, **k: UnifiedRecord(ticker="ETH/USD", market_ok=True)
     )
-    state = {"run": 0}
 
-    def fake_unified(*a, **k):
-        state["run"] += 1
-        return UnifiedRecord(ticker="ETH/USD", market_ok=True, news_ok=True, price=float(state["run"]))
+    runner.run_pipeline(_args(tmp_path))
+    rows2 = make_dataset_rows(70)
+    monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: Dataset(ticker="ETH/USD", rows=rows2))
 
-    monkeypatch.setattr(runner, "build_unified", fake_unified)
-
-    args = argparse.Namespace(
-        ticker="ETH/USD", timeframe="1h", granularity="hour", horizon=1, train_days=21,
-        lookback_hours=1, limit=None, fetch_timeout=10.0, root=str(tmp_path),
-    )
-    runner.LIVE_CAP = 2
-    runner.run_pipeline(args)  # run 1
-    runner.run_pipeline(args)  # run 2
-    runner.run_pipeline(args)  # run 3
-
-    lines = (tmp_path / "data" / "eth-usd" / "live.jsonl").read_text().splitlines()
-    assert len(lines) == 2
+    _, summary, _ = runner.run_pipeline(_args(tmp_path))
+    assert summary["archive"]["rows"] == 70  # upsert over the shared prefix + new tail
 
 
-def test_exit_code_nonzero_when_everything_fails(tmp_path, monkeypatch):
+def test_run_pipeline_exit_nonzero_when_everything_fails(tmp_path, monkeypatch):
     runner = _load_runner()
     monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: Dataset(ticker="ETH/USD", rows=()))
     monkeypatch.setattr(
@@ -109,9 +96,12 @@ def test_exit_code_nonzero_when_everything_fails(tmp_path, monkeypatch):
         lambda *a, **k: UnifiedRecord(ticker="ETH/USD", market_ok=False, news_ok=False),
     )
 
-    args = argparse.Namespace(
-        ticker="ETH/USD", timeframe="1h", granularity="hour", horizon=1, train_days=21,
-        lookback_hours=1, limit=None, fetch_timeout=10.0, root=str(tmp_path),
-    )
-    _, _, exit_code = runner.run_pipeline(args)
+    _, summary, exit_code = runner.run_pipeline(_args(tmp_path))
     assert exit_code == 1
+    assert summary["archive"]["rows"] == 0
+
+
+def jsonl(text: str) -> dict:
+    import json
+
+    return json.loads(text)

@@ -1,0 +1,87 @@
+# High-frequency live recorder: append one live record (market + live news +
+# Tier-2 outlook) to data/<slug>/live.jsonl much more often than the 2-hourly
+# pipeline, without retraining. The history archive and model bundles are owned
+# by pipeline.yml — this workflow only touches data/.
+#
+# cadence: every 30 minutes by default (48 runs/day ≈ ~50–90 Actions minutes/
+# day on the free tier — each run is a cold checkout + uv sync + one small fetch
+# + one record; if Actions minutes matter, relax to "0 * * * *" for hourly).
+name: "live (high-frequency recorder)"
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Ticker to record live data for"
+        required: false
+        default: "ETH/USD"
+      live_cap:
+        description: "Max live.jsonl records to keep"
+        required: false
+        default: "1000"
+
+permissions:
+  contents: write
+
+# Same group as pipeline.yml so the two cache writers serialize (no push races).
+concurrency:
+  group: rl-crypto-cache
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+
+      # Sibling path sources, both public — same as the other workflows.
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/tickerkit
+          path: tickerkit
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/ticker-news-signals
+          path: ticker-news-signals
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: sync
+        working-directory: rl-crypto
+        run: uv sync --group dev
+
+      - name: record live
+        working-directory: rl-crypto
+        env:
+          TICKER: ${{ inputs.ticker || 'ETH/USD' }}
+          LIVE_CAP: ${{ inputs.live_cap || '1000' }}
+        run: |
+          uv run python tools/record_live.py \
+            --ticker "$TICKER" \
+            --live-cap "$LIVE_CAP" \
+            --fetch-timeout 120
+
+      - name: commit live cache
+        if: always()
+        working-directory: rl-crypto
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add data
+          if git diff --cached --quiet; then
+            echo "no live cache change to commit"
+          else
+            git commit -m "live: record $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push origin HEAD:main
+          fi

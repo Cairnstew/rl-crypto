@@ -1,105 +1,58 @@
 #!/usr/bin/env python3
-"""Production pipeline run for one ticker: history cache, bundle, live outlook.
+"""Production pipeline run for one ticker: grow the archive, train, push live.
 
 This is the deterministic invocation the scheduled GitHub Actions workflow
 (``.github/workflows/pipeline.yml``) runs on a cron and commits back to the repo:
 
-* fetch the market history window (tickerkit OHLCV; news **history** is off
-  by default — its Wayback backfill is slow and training-time news is
-  reserved for RL training later. Live news still flows through the unified
-  record; re-enable history with ``--news-history``),
-* materialise Tier-0 features + forward targets, fit the Tier-1 bundle,
-* take a live unified snapshot and attach the Tier-2 outlook (the feature
-  addition),
-* cache everything under ``models/`` and ``data/<slug>/``.
+* fetch the **market history** window (tickerkit OHLCV; news history stays off
+  until RL training — live news still flows through the unified record),
+* **upsert the candles into a growing archive** ``data/<slug>/candles.jsonl`` —
+  the archive never shrinks and never duplicates, so the repo accumulates as
+  much clean historical data as we can fetch,
+* rebuild features + forward targets over the **whole archive**, fit the
+  Tier-1 bundle, and cache it under ``models/``,
+* take a live unified snapshot (market **and** live news), attach the Tier-2
+  outlook, and append it to ``data/<slug>/live.jsonl`` (capped).
 
-The upstream fetches are **bounded** by :data:`--fetch-timeout`: each side
-(market history, news history, live fused record) runs under a hard wall-clock
-cap in its own worker. A side that times out or raises is recorded as a note
-and the still-good sides continue — so every scheduled run completes quickly
-and writes its cache, even when an upstream is slow or down (partial-failure
-tolerance, exactly like the library). The cache itself is bounded too: the
-training window, bundle, and summary are overwritten each run, and
-``live.jsonl`` is appended but capped at recent records.
+Labels are never cached: a row's forward target only becomes defined once its
+future bar is archived, and training recomputes them every run against the full
+history. Fetches are bounded by ``--fetch-timeout`` per side; a slow/absent
+upstream is recorded as a note and the good sides still land. The run always
+ends with a hard ``os._exit`` so abandoned timeout workers cannot keep it alive
+after the work is flushed.
 
-    uv run python tools/run_pipeline.py --ticker ETH/USD --train-days 21
+    uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60
 """
 
 from __future__ import annotations
 
 import argparse
-import concurrent.futures as cf
-import json
 import os
 import sys
-from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from rl_crypto import build_samples
-from rl_crypto.dataset import (
-    fetch_market_history,
-    fetch_news_history,
-    interval_seconds,
-    join_buckets,
-    parse_iso,
+from rl_crypto.cache import (
+    append_capped,
+    call_with_timeout,
+    candle_dicts_from_rows,
+    candles_path,
+    live_path,
+    load_candles,
+    merge_candles,
+    summary_path,
 )
-from rl_crypto.export import write_json, write_jsonl
-from rl_crypto.ml.serve import attach_predictions, outlook_for_rows
+from rl_crypto.dataset import candle_dicts, fetch_market_history, parse_iso
+from rl_crypto.export import write_json
+from rl_crypto.ml import attach_predictions, outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, save_bundle
 from rl_crypto.ml.tier1 import train_tier1
-from rl_crypto.models import Dataset, UnifiedRecord, to_iso, utcnow
+from rl_crypto.models import Dataset, DatasetRow, UnifiedRecord, to_iso, utcnow
 from rl_crypto.unify import build_unified
 
 ROOT = Path(__file__).resolve().parents[1]
-
-#: Recent live records kept in ``data/<slug>/live.jsonl`` (bounded cache).
-LIVE_CAP = 32
-
-def _call_with_timeout[T](
-    target: Callable[[], T], *, timeout: float, label: str
-) -> tuple[T | None, str]:
-    """Run ``target()`` under a hard wall-clock cap.
-
-    Returns ``(result, note)``; on timeout the orphaned worker keeps running in
-    the background and is abandoned when the process exits — nothing is
-    corrupted, but the run is never allowed to stall on a single upstream.
-    """
-    executor = cf.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(target)
-    try:
-        return future.result(timeout=timeout), ""
-    except cf.TimeoutError:
-        return None, f"{label}: timed out after {timeout:.0f}s"
-    except Exception as exc:  # tolerated, library-style partial failure
-        return None, f"{label}: {type(exc).__name__}: {exc}"
-    finally:
-        executor.shutdown(wait=False)
-
-
-def _candle_dicts(history_result: Any) -> list[dict[str, Any]]:
-    """Normalise a tickerkit HistoryResult to plain candle dicts (public shape)."""
-    candles: list[Any] = []
-    consensus = getattr(history_result, "consensus", None)
-    if consensus is not None and getattr(consensus, "candles", None):
-        candles = list(consensus.candles)
-    else:
-        for series in getattr(history_result, "series", ()) or ():
-            if getattr(series, "candles", None):
-                candles = list(series.candles)
-                break
-    return [
-        {
-            "timestamp": getattr(candle, "timestamp", None),
-            "close": getattr(candle, "close", None),
-            "open": getattr(candle, "open", None),
-            "high": getattr(candle, "high", None),
-            "low": getattr(candle, "low", None),
-            "volume": getattr(candle, "volume", None),
-        }
-        for candle in candles
-    ]
 
 
 def build_dataset(  # local, bounded — patched by tests
@@ -108,121 +61,84 @@ def build_dataset(  # local, bounded — patched by tests
     start: Any,
     end: Any,
     timeframe: str,
-    granularity: str,
     limit: int | None,
     fetch_timeout: float,
-    news_history: bool = False,
 ) -> Dataset:
-    """Fetch market history (and news history only when enabled), then join.
-
-    News **history** is off by default: its Wayback backfill is slow and no
-    downstream consumer uses training-time news yet (that comes with RL
-    training). News is still fetched live via ``build_unified``.
-    """
+    """Fetch the market-history window (capped) as price rows."""
     notes: list[str] = []
 
-    def _fetch_market_candles() -> list[dict[str, Any]]:
-        history = fetch_market_history(
+    histories, market_note = call_with_timeout(
+        lambda: fetch_market_history(
             ticker,
             timeframe=timeframe,
             start=parse_iso(start) or start,
             end=parse_iso(end) or end,
             limit=limit,
-        )
-        return _candle_dicts(history)
-
-    candles, market_note = _call_with_timeout(
-        _fetch_market_candles,
+        ),
         timeout=fetch_timeout,
         label="market history",
     )
     if market_note:
         notes.append(market_note)
-    candles = candles or []
 
-    vectors: list[dict[str, Any]] | None = None
-    if news_history:
-        def _fetch_news_vectors() -> list[dict[str, Any]]:
-            result = fetch_news_history(ticker, granularity=granularity, start=start, end=end)
-            return [vector.to_dict() for vector in getattr(result, "vectors", ()) or ()]
-
-        vectors, news_note = _call_with_timeout(
-            _fetch_news_vectors,
-            timeout=fetch_timeout,
-            label="news history",
+    rows = [
+        DatasetRow(
+            ticker=ticker,
+            timestamp=str(candle.get("timestamp") or ""),
+            open=candle.get("open"),
+            high=candle.get("high"),
+            low=candle.get("low"),
+            close=candle.get("close"),
+            volume=candle.get("volume"),
+            has_price=True,
+            has_news=False,
         )
-        if news_note:
-            notes.append(news_note)
-    else:
-        notes.append(
-            "news history: disabled (reserved for RL training; re-enable with --news-history)"
-        )
-    vectors = vectors or []
-
+        for candle in (candle_dicts(histories) if histories is not None else [])
+        if candle.get("timestamp")
+    ]
     return Dataset(
         ticker=ticker,
         interval=timeframe,
         start=to_iso(parse_iso(start)) or (str(start) if start else None),
         end=to_iso(parse_iso(end)) or (str(end) if end else None),
-        rows=join_buckets(
-            candles,
-            vectors,
-            ticker=ticker,
-            interval_seconds=interval_seconds(timeframe),
-        ),
+        rows=tuple(rows),
         notes=tuple(notes),
         generated_at=to_iso(utcnow()),
     )
 
 
-def _append_capped(path: Path, record: dict, cap: int | None = None) -> None:
-    """Append one JSON record, keeping only the ``cap`` most recent lines.
-
-    ``cap`` resolves at call time (module-level :data:`LIVE_CAP`) so a test can
-    tune it without re-importing.
-    """
-    if cap is None:
-        cap = LIVE_CAP
-    lines: list[str] = []
-    if path.exists():
-        lines = path.read_text(encoding="utf-8").splitlines()
-    keep = max(0, cap - 1)
-    lines = lines[-keep:] if keep > 0 else lines[:0]
-    lines.append(json.dumps(record, ensure_ascii=False, sort_keys=True))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def run_pipeline(args: argparse.Namespace) -> tuple[dict, dict, int]:
-    """Execute the full pipeline and return ``(artifacts, summary, exit_code)``."""
+def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], int]:
+    """Grow the cache (archive -> train -> live) and return the run summary."""
     root = Path(args.root)
     now = utcnow()
-    start = now - timedelta(days=max(1, args.train_days))
+    start = now - timedelta(days=max(1, args.history_days))
     ticker = args.ticker
 
     model_path = default_bundle_path(ticker, directory=root / "models")
-    slug = model_path.stem
-    data_dir = root / "data" / slug
-
-    # 1. history: the fused window (each side capped independently)
-    dataset = build_dataset(
-        ticker,
-        start=start,
-        end=now,
-        timeframe=args.timeframe,
-        granularity=args.granularity,
-        limit=args.limit,
-        fetch_timeout=args.fetch_timeout,
-        news_history=getattr(args, "news_history", False),
+    archive_path = merge_candles(
+        candles_path(root, ticker),
+        candle_dicts_from_rows(
+            build_dataset(
+                ticker,
+                start=start,
+                end=now,
+                timeframe=args.timeframe,
+                limit=args.limit,
+                fetch_timeout=args.fetch_timeout,
+            ).rows
+        ),
     )
 
-    # 2. features + targets -> Tier-1 bundle (trained on the window)
-    samples = build_samples(dataset.rows, horizon=args.horizon)
+    # Train over the WHOLE archive — features and labels are recomputed from the
+    # full, continuously-growing clean history.
+    train_rows = load_candles(archive_path, ticker=ticker)
+    samples = build_samples(train_rows, horizon=args.horizon)
     bundle = train_tier1(samples, horizon=args.horizon)
 
-    # 3. live snapshot fused with an outlook from the newest complete feature row
-    outlook = outlook_for_rows(dataset.rows, bundle, ticker=ticker)
-    live_record, live_note = _call_with_timeout(
+    # Live snapshot (market + live news) fused with an outlook from the newest
+    # archived bar.
+    outlook = outlook_for_rows(train_rows, bundle, ticker=ticker)
+    live_record, live_note = call_with_timeout(
         lambda: build_unified(ticker, lookback_hours=args.lookback_hours),
         timeout=args.fetch_timeout,
         label="live",
@@ -231,29 +147,19 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict, dict, int]:
         live_record = UnifiedRecord(ticker=ticker, notes=(live_note,) if live_note else ())
     attach_predictions(live_record, outlook)
 
-    # 4. cache everything
-    live_path = data_dir / "live.jsonl"
-    _append_capped(live_path, live_record.to_dict())
-    artifacts: dict[str, Path] = {
-        "bundle": save_bundle(bundle, model_path),
-        "history": write_jsonl(data_dir / "history.jsonl", (s.to_dict() for s in samples)),
-        "live": live_path,
-    }
+    live_dest = append_capped(live_path(root, ticker), live_record.to_dict())
 
     summary = {
-        "schema": "rl-crypto/pipeline/1",
+        "schema": "rl-crypto/pipeline/2",
         "ticker": ticker,
         "generated_at": to_iso(now),
         "timeframe": args.timeframe,
-        "granularity": args.granularity,
         "horizon": args.horizon,
-        "train_window": {"start": to_iso(start), "end": to_iso(now)},
-        "dataset": {
-            "rows": len(dataset.rows),
-            "price_rows": dataset.price_rows,
-            "news_rows": dataset.news_rows,
-            "joined_rows": dataset.joined_rows,
-            "notes": list(dataset.notes),
+        "fetch_window": {"start": to_iso(start), "end": to_iso(now)},
+        "archive": {
+            "rows": len(train_rows),
+            "candles_path": str(archive_path),
+            "spans": [train_rows[0].timestamp, train_rows[-1].timestamp] if train_rows else None,
         },
         "samples": {"total": len(samples), "feature_complete": bundle.n_samples},
         "targets": {name: model.metrics for name, model in bundle.targets.items()},
@@ -272,9 +178,16 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict, dict, int]:
             "notes": list(live_record.notes),
         },
     }
-    artifacts["summary"] = write_json(data_dir / "summary.json", summary)
+    summary_path(root, ticker).parent.mkdir(parents=True, exist_ok=True)
+    write_json(summary_path(root, ticker), summary)
 
-    exit_code = 0 if (dataset.rows or live_record.market_ok or live_record.news_ok) else 1
+    artifacts = {
+        "bundle": save_bundle(bundle, model_path),
+        "candles": archive_path,
+        "live": live_dest,
+        "summary": summary_path(root, ticker),
+    }
+    exit_code = 0 if (train_rows or live_record.market_ok or live_record.news_ok) else 1
     return artifacts, summary, exit_code
 
 
@@ -282,19 +195,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticker", default="ETH/USD", help="asset to test the pipeline on")
     parser.add_argument("--timeframe", default="1h", help="market+feature interval")
-    parser.add_argument("--granularity", default="hour", choices=["hour", "day"])
     parser.add_argument("--horizon", type=int, default=1, help="forward horizon in intervals")
-    parser.add_argument("--train-days", type=int, default=14, help="days of history to train on")
+    parser.add_argument(
+        "--history-days", type=int, default=60, help="days of market history to fetch per run"
+    )
     parser.add_argument("--lookback-hours", type=int, default=1, help="live news window")
     parser.add_argument("--limit", type=int, default=None, help="maximum market candles")
     parser.add_argument(
         "--fetch-timeout", type=float, default=300.0, help="per-fetch wall-clock cap (s)"
-    )
-    parser.add_argument(
-        "--news-history",
-        action="store_true",
-        help="also fetch news HISTORY (slow Wayback backfill; off by default — "
-        "training-time news is reserved for RL training later)",
     )
     parser.add_argument("--root", default=str(ROOT), help="repo root for models/ and data/")
     args = parser.parse_args(argv)
@@ -303,9 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         artifacts, summary, exit_code = run_pipeline(args)
         print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
+        archive = summary["archive"]
         print(
-            f"  dataset: {summary['dataset']['rows']} rows "
-            f"(price {summary['dataset']['price_rows']}, news {summary['dataset']['news_rows']})"
+            f"  archive: {archive['rows']} candles"
+            f" ({archive['spans'][0]} .. {archive['spans'][1]})"
+            if archive["spans"]
+            else "  archive: empty"
         )
         print(
             f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
@@ -323,9 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         exit_code = 1
 
-    # Hard exit: anything already reported and written is flushed, and orphaned
-    # worker threads (survivors of a per-fetch timeout) must not keep the
-    # process alive after its work is done.
+    # Hard exit: flushed work is done, but abandoned fetch workers (survivors of
+    # a per-side timeout) must not keep the process alive.
     sys.stdout.flush()
     os._exit(exit_code)
 

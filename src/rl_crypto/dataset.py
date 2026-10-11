@@ -27,6 +27,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from .cache import call_with_timeout
 from .models import Dataset, DatasetRow, finite, to_iso, utcnow
 
 #: Seconds per market timeframe, mirroring tickerkit's history intervals.
@@ -165,6 +166,11 @@ def _candle_dicts(history_result: Any) -> list[dict[str, Any]]:
     ]
 
 
+def candle_dicts(history_result: Any) -> list[dict[str, Any]]:
+    """Public alias of :func:`_candle_dicts` (used by the production runners)."""
+    return _candle_dicts(history_result)
+
+
 def fetch_market_history(
     ticker: str,
     *,
@@ -209,6 +215,36 @@ def fetch_news_history(
     start_dt = parse_iso(start) or start
     end_dt = parse_iso(end) or end
     return fetch_history(ticker, granularity=granularity, start=start_dt, end=end_dt, config=config)
+
+
+def fetch_prices(
+    ticker: str,
+    *,
+    start: Any = None,
+    end: Any = None,
+    timeframe: str = "1h",
+    limit: int | None = None,
+    timeout: float = 300.0,
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    """Fetch a market-history window under a wall-clock cap.
+
+    Returns ``(candle_dicts, notes)``; on timeout/error ``([], (note,))`` so the
+    production runners never stall on one upstream. Plain dicts, ready for
+    :func:`join_buckets` or a cache archive.
+    """
+    result, note = call_with_timeout(
+        lambda: fetch_market_history(
+            ticker,
+            timeframe=timeframe,
+            start=parse_iso(start) or start,
+            end=parse_iso(end) or end,
+            limit=limit,
+        ),
+        timeout=timeout,
+        label="market history",
+    )
+    notes = (note,) if note else ()
+    return candle_dicts(result) if result is not None else [], notes
 
 
 def build_dataset(
@@ -277,8 +313,10 @@ def _errors(result: Any) -> tuple[Any, ...]:
 
 __all__ = [
     "build_dataset",
+    "candle_dicts",
     "fetch_market_history",
     "fetch_news_history",
+    "fetch_prices",
     "interval_seconds",
     "join_buckets",
     "parse_iso",
