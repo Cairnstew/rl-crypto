@@ -4,7 +4,10 @@
 This is the deterministic invocation the scheduled GitHub Actions workflow
 (``.github/workflows/pipeline.yml``) runs on a cron and commits back to the repo:
 
-* fetch the *joined* history window (tickerkit OHLCV + tns sentiment),
+* fetch the market history window (tickerkit OHLCV; news **history** is off
+  by default — its Wayback backfill is slow and training-time news is
+  reserved for RL training later. Live news still flows through the unified
+  record; re-enable history with ``--news-history``),
 * materialise Tier-0 features + forward targets, fit the Tier-1 bundle,
 * take a live unified snapshot and attach the Tier-2 outlook (the feature
   addition),
@@ -108,8 +111,14 @@ def build_dataset(  # local, bounded — patched by tests
     granularity: str,
     limit: int | None,
     fetch_timeout: float,
+    news_history: bool = False,
 ) -> Dataset:
-    """Fetch market and news history independently (each capped), then join."""
+    """Fetch market history (and news history only when enabled), then join.
+
+    News **history** is off by default: its Wayback backfill is slow and no
+    downstream consumer uses training-time news yet (that comes with RL
+    training). News is still fetched live via ``build_unified``.
+    """
     notes: list[str] = []
 
     def _fetch_market_candles() -> list[dict[str, Any]]:
@@ -131,17 +140,23 @@ def build_dataset(  # local, bounded — patched by tests
         notes.append(market_note)
     candles = candles or []
 
-    def _fetch_news_vectors() -> list[dict[str, Any]]:
-        result = fetch_news_history(ticker, granularity=granularity, start=start, end=end)
-        return [vector.to_dict() for vector in getattr(result, "vectors", ()) or ()]
+    vectors: list[dict[str, Any]] | None = None
+    if news_history:
+        def _fetch_news_vectors() -> list[dict[str, Any]]:
+            result = fetch_news_history(ticker, granularity=granularity, start=start, end=end)
+            return [vector.to_dict() for vector in getattr(result, "vectors", ()) or ()]
 
-    vectors, news_note = _call_with_timeout(
-        _fetch_news_vectors,
-        timeout=fetch_timeout,
-        label="news history",
-    )
-    if news_note:
-        notes.append(news_note)
+        vectors, news_note = _call_with_timeout(
+            _fetch_news_vectors,
+            timeout=fetch_timeout,
+            label="news history",
+        )
+        if news_note:
+            notes.append(news_note)
+    else:
+        notes.append(
+            "news history: disabled (reserved for RL training; re-enable with --news-history)"
+        )
     vectors = vectors or []
 
     return Dataset(
@@ -198,6 +213,7 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict, dict, int]:
         granularity=args.granularity,
         limit=args.limit,
         fetch_timeout=args.fetch_timeout,
+        news_history=getattr(args, "news_history", False),
     )
 
     # 2. features + targets -> Tier-1 bundle (trained on the window)
@@ -273,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="maximum market candles")
     parser.add_argument(
         "--fetch-timeout", type=float, default=300.0, help="per-fetch wall-clock cap (s)"
+    )
+    parser.add_argument(
+        "--news-history",
+        action="store_true",
+        help="also fetch news HISTORY (slow Wayback backfill; off by default — "
+        "training-time news is reserved for RL training later)",
     )
     parser.add_argument("--root", default=str(ROOT), help="repo root for models/ and data/")
     args = parser.parse_args(argv)

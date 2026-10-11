@@ -185,6 +185,14 @@ labels can never leak into inputs. `None` propagates through the whole stack —
 a missing measurement yields a missing feature/prediction, never a fabricated
 `0` (the sole exception is the documented `has_news`/`sentiment` encoding).
 
+**News is live-only for now.** The production runner is deliberately
+market-history-only: news **history** is not ingested (its Wayback backfill is
+slow and there is no downstream consumer for training-time news until RL
+training lands). News features in the feature matrix therefore encode absence
+(`has_news=0`) today and will light up when RL arrives; **live** news still
+flows through the unified record and the outlook. Re-enable history ingestion
+with `tools/run_pipeline.py --news-history` when you're ready.
+
 ```bash
 # 1) materialise features + targets for a window (no learning)
 rl-crypto features ETH/USD --from 2026-01-01 --to 2026-07-01 --timeframe 1h

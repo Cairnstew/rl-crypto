@@ -12,13 +12,18 @@ Per ticker, under `data/<slug>/` (e.g. `data/eth-usd/` for `ETH/USD`):
 
 | file | contents | growth |
 | ---- | -------- | ------ |
-| `history.jsonl` | one flat feature+target row per interval of the training window | overwritten every run |
-| `live.jsonl` | the live unified record + attached Tier-2 outlook per run | appended, capped at recent records |
+| `history.jsonl` | one flat feature+target row per market interval of the training window | overwritten every run |
+| `live.jsonl` | the live unified record (market **and** live news) + attached Tier-2 outlook per run | appended, capped at recent records |
 | `summary.json` | run metadata, dataset coverage, model metrics, outlook, notes | overwritten every run |
 
 The trained Tier-1 models land in [`models/`](../models/README.md) (also
 overwritten per run). Nothing here needs to be edited by hand — `git log data/`
 and `git log models/` are the machine-readable run history.
+
+> **News history is intentionally absent.** The runner fetches market history
+> only (`--news-history` is off by default); news features appear as
+> `has_news=0` until RL training lands. Live news still shows up in
+> `live.jsonl` via the unified record.
 
 ## Seeding locally (recommended before scheduling)
 

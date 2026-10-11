@@ -72,6 +72,8 @@ jobs:
             --train-days "$TRAIN_DAYS" \
             --timeframe 1h \
             --fetch-timeout 300
+        # --news-history is intentionally NOT passed: training-time news is
+        # reserved for RL training later, so only live news is fetched.
 
       # Commit whatever the run produced. if: always() lets a partial-failure
       # run still land its notes/summary cache; an empty diff is a no-op.
