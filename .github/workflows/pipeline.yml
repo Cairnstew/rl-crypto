@@ -33,7 +33,9 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Worst case is three sequential 300s fetch caps + startup; leave margin so
+    # the script's own hard-exit (never a runner cap) ends the job cleanly.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:

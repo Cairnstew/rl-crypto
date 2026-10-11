@@ -27,6 +27,8 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import os
+import sys
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
@@ -275,25 +277,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=str(ROOT), help="repo root for models/ and data/")
     args = parser.parse_args(argv)
 
-    artifacts, summary, exit_code = run_pipeline(args)
-    print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
-    print(
-        f"  dataset: {summary['dataset']['rows']} rows "
-        f"(price {summary['dataset']['price_rows']}, news {summary['dataset']['news_rows']})"
-    )
-    print(
-        f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
-        f"  | samples complete: {summary['samples']['feature_complete']}"
-    )
-    print(
-        f"  live: market_ok={summary['live']['market_ok']}"
-        f" news_ok={summary['live']['news_ok']}"
-        f" | signal={summary['outlook']['signal']}"
-        f" conf={summary['outlook']['confidence']}"
-    )
-    for name, path in artifacts.items():
-        print(f"  wrote {name:<8} {path}")
-    return exit_code
+    exit_code = 1
+    try:
+        artifacts, summary, exit_code = run_pipeline(args)
+        print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
+        print(
+            f"  dataset: {summary['dataset']['rows']} rows "
+            f"(price {summary['dataset']['price_rows']}, news {summary['dataset']['news_rows']})"
+        )
+        print(
+            f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
+            f"  | samples complete: {summary['samples']['feature_complete']}"
+        )
+        print(
+            f"  live: market_ok={summary['live']['market_ok']}"
+            f" news_ok={summary['live']['news_ok']}"
+            f" | signal={summary['outlook']['signal']}"
+            f" conf={summary['outlook']['confidence']}"
+        )
+        for name, path in artifacts.items():
+            print(f"  wrote {name:<8} {path}")
+    except Exception as exc:  # tolerated: report and still exit promptly
+        print(f"pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        exit_code = 1
+
+    # Hard exit: anything already reported and written is flushed, and orphaned
+    # worker threads (survivors of a per-fetch timeout) must not keep the
+    # process alive after its work is done.
+    sys.stdout.flush()
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":
