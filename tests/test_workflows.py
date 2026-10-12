@@ -55,6 +55,23 @@ def test_prepare_emits_artifact_safe_slugs():
         assert slug_for(ticker) == ticker.replace("/", "-").replace(" ", "-").lower()
 
 
+def test_artifacts_download_inside_the_checkout_dir():
+    """download-artifact resolves `path` against the WORKSPACE ROOT, while the
+    merge step runs with `working-directory: <checkout>`. If the download is not
+    prefixed with the checkout dir, the copy silently finds nothing and the run
+    reports "no cache changes" having done all the work.
+    """
+    steps = {s.get("name"): s for s in _workflow()["jobs"]["merge"]["steps"]}
+    download = steps["download cache artifacts"]
+    assert download["with"]["path"].startswith("rl-crypto/")
+
+    merge = steps["merge caches into the checkout"]
+    assert merge["working-directory"] == "rl-crypto"
+    # ...and it must fail loudly rather than no-op if nothing arrived.
+    assert "::error::" in merge["run"]
+    assert "exit 1" in merge["run"]
+
+
 def test_matrix_jobs_never_push():
     """Single-writer invariant: only the merge job may push."""
     jobs = _workflow()["jobs"]

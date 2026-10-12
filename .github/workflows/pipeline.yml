@@ -195,11 +195,24 @@ jobs:
         with:
           pattern: cache-*
           merge-multiple: true
-          path: staging
+          # NOTE: this path is relative to the WORKSPACE ROOT, not to the
+          # checkout dir, so it must be prefixed with `rl-crypto/` to sit next
+          # to the checkout. Getting this wrong makes the copy below silently
+          # find nothing and the run report "no cache changes" having done
+          # all the work — which is exactly what happened the first time.
+          path: rl-crypto/staging
 
       - name: merge caches into the checkout
         working-directory: rl-crypto
         run: |
+          # Fail loudly rather than silently no-op: if no artifact arrived the
+          # caches must NOT be reported as up to date.
+          if [ ! -d staging/data ] && [ ! -d staging/models ]; then
+            echo "::error::no cache artifacts were downloaded — refusing to report a no-op refresh"
+            ls -la staging 2>/dev/null || echo "staging/ missing entirely"
+            exit 1
+          fi
+
           if [ -d staging/data ]; then
             cp -r staging/data/. data/
           fi
