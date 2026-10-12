@@ -4,6 +4,9 @@
 workflows (`.github/workflows/pipeline.yml` + `.github/workflows/live.yml` →
 `tools/run_pipeline.py`, `tools/record_live.py`) and by hand:
 
+Quality audits of this directory live in [`AUDIT.md`](AUDIT.md); re-run one with
+`uv run python tools/audit_data_quality.py` (read-only, no network).
+
 ```bash
 uv run python tools/run_pipeline.py --history-days 60          # whole watchlist
 uv run python tools/record_live.py                             # frequent live points

@@ -15,7 +15,6 @@ uv run python tools/audit_data_quality.py --details    # + per-fault lines
 The **archive is sound**. Every fault worth reporting is in the **live** records,
 and every one of those traces to an upstream defect, not to anything this repo
 wrote. Three issues were filed:
-
 | upstream | issue | defect |
 | -------- | ----- | ------ |
 | `Cairnstew/tickerkit` | [#1](https://github.com/Cairnstew/tickerkit/issues/1) | `coinpaprika` keyless API now returns `402 Payment Required` — every snapshot records 3 `ProviderError`s |
@@ -28,7 +27,7 @@ wrote. Three issues were filed:
 
 | check | result |
 | ----- | ------ |
-| hourly continuity | 0 gaps, 0 duplicate/non-monotonic timestamps in 21,750 bars |
+| hourly continuity | 0 gaps, 0 duplicate/non-monotonic timestamps in 21,730 bars |
 | OHLC consistency | 0 violations (`high` always brackets `max(open,close)`, `low` always brackets `min(open,close)`, no `high < low`) |
 | non-positive / non-finite / null prices | 0 |
 | volume | 0 negative, 0 zero-volume bars |
@@ -42,15 +41,16 @@ Avenue-specific corruption would not correlate across assets that way.
 
 ## `live.jsonl` — the real findings
 
-541 records over 15 tickers:
+546 records over 15 tickers (the counts drift as the timer appends; re-run
+`tools/audit_data_quality.py` for current values):
 
 | metric | count | share |
-| ------ | ----- | ----- |
-| `market.errors >= 1` | 445 | 82% |
-| `market.errors >= 3` | 74 | 14% |
-| `aggregated_price` / `change_24h_pct` / `volume_24h` / `market_cap` **all null** | 40 | 7% |
-| `news.errors >= 1` | 341 | 63% |
-| — of which `news.errors == 1` | 314 | — |
+| ----- | ----- | ----- |
+| `market.errors >= 1` | 450 | 82% |
+| `market.errors >= 3` | 79 | 14% |
+| `aggregated_price` / `change_24h_pct` / `volume_24h` / `market_cap` **all null** | 45 | 8% |
+| `news.errors >= 1` | 345 | 63% |
+| — of which `news.errors == 1` | 318 | — |
 | — of which `news.errors == 2` | 27 | — |
 
 Other checks that passed: no duplicate `generated_at`, no malformed schema ids,
@@ -73,7 +73,7 @@ Every batch snapshot therefore carries 3 `ProviderError`s for capabilities
 
 ### 2. Aggregate market fields silently null (tickerkit #2)
 
-40 records have all four aggregate fields null, every one inside
+45 records have all four aggregate fields null, every one inside
 **2026-10-12 13:17–14:20Z** with `market.errors` 3–6. Reproduction:
 `aget_tickers(TRACKED_TICKERS)` gives one `coingecko` suppression per ticker
 (`rate limit still in effect; request suppressed (retry after 57s)`) and 12 of
