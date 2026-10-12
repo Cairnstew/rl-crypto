@@ -49,11 +49,19 @@ fi
 git commit -m "live: record $(date -u +%Y-%m-%dT%H:%MZ)"
 
 # A full watchlist run takes minutes, so the 2-hourly Actions pipeline can land a
-# cache commit while this run is mid-flight. Rebase our data-only commit on top
-# and retry once; the next tick would recover anyway, but retrying here keeps the
-# live series dense.
+# cache commit while this run is mid-flight. Both writers APPEND to
+# data/<slug>/live.jsonl, so rebasing conflicts on those tails — and `set -e`
+# would abort the run, stranding the rebase and losing a whole tick.
+#
+# Resolution is a union, not a side: live.jsonl is append-only, so every record
+# collected by either writer is kept. tools/resolve_cache_conflicts.py does that
+# and falls back to the rebased side for overwritten artifacts (summary.json).
 if ! git push origin HEAD:main; then
   echo "push rejected (concurrent cache commit?) — rebasing and retrying"
-  git pull --rebase -q origin main
+  if ! git pull --rebase -q origin main; then
+    echo "rebase conflicted — unioning append-only caches"
+    nix develop -c uv run python tools/resolve_cache_conflicts.py
+    GIT_EDITOR=true git rebase --continue
+  fi
   git push origin HEAD:main
 fi
