@@ -1,12 +1,12 @@
 {
   "schema": "rl-crypto/pipeline/2",
   "ticker": "ETH/USD",
-  "generated_at": "2026-10-12T13:00:37Z",
+  "generated_at": "2026-10-12T13:39:54Z",
   "timeframe": "1h",
   "horizon": 1,
   "fetch_window": {
-    "start": "2026-08-13T13:00:37Z",
-    "end": "2026-10-12T13:00:37Z"
+    "start": "2026-08-13T13:39:54Z",
+    "end": "2026-10-12T13:39:54Z"
   },
   "archive": {
     "rows": 1457,
@@ -22,45 +22,45 @@
   },
   "targets": {
     "fwd_return": {
-      "rmse": 0.005297581465305267,
-      "mae": 0.0031913431892443265,
-      "r2": 0.01343336695844688
+      "rmse": 0.005297611744270887,
+      "mae": 0.003191479737565555,
+      "r2": 0.013406275912074106
     },
     "fwd_direction": {
-      "accuracy": 0.5387299371946964,
-      "log_loss": 0.6887023569669519,
-      "base_rate": 0.5115143056524774
+      "accuracy": 0.540125610607118,
+      "log_loss": 0.6886876776747075,
+      "base_rate": 0.5122121423586881
     },
     "fwd_volatility": {
-      "rmse": 0.002574706809008558,
-      "mae": 0.0016387132816953808,
-      "r2": 0.14043779177681637
+      "rmse": 0.0025748085102018205,
+      "mae": 0.0016393525527033529,
+      "r2": 0.1404419380999481
     },
     "fwd_volume_ratio": {
-      "rmse": 0.5710189806937913,
-      "mae": 0.4343595829192238,
-      "r2": 0.434717748611926
+      "rmse": 0.5582365807537715,
+      "mae": 0.43145027843037237,
+      "r2": 0.44905199655092254
     }
   },
   "outlook": {
-    "signal": 1,
-    "confidence": 0.15432514026424893,
+    "signal": 0,
+    "confidence": 0.03669445440497465,
     "predictions": {
-      "fwd_return": 0.0008392359381181703,
-      "fwd_direction": 1.0,
-      "fwd_volatility": -0.00047395618880343316,
-      "fwd_volume_ratio": -0.06043701016887819
+      "fwd_return": 0.0003630469628369983,
+      "fwd_direction": 0.0,
+      "fwd_volatility": 0.002558816129438889,
+      "fwd_volume_ratio": 0.38901073375146145
     },
     "probabilities": {
-      "fwd_direction": 0.5771625701321245
+      "fwd_direction": 0.4816527727975127
     },
     "notes": []
   },
   "live": {
     "market_ok": true,
     "news_ok": true,
-    "price": 2526.4449999999997,
-    "latest_sentiment": 0.0109,
+    "price": 2531.02,
+    "latest_sentiment": 0.0383,
     "notes": []
   }
 }

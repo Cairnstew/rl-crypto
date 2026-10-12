@@ -1,12 +1,12 @@
 {
   "schema": "rl-crypto/pipeline/2",
   "ticker": "BTC/USD",
-  "generated_at": "2026-10-12T13:00:38Z",
+  "generated_at": "2026-10-12T13:39:59Z",
   "timeframe": "1h",
   "horizon": 1,
   "fetch_window": {
-    "start": "2026-08-13T13:00:38Z",
-    "end": "2026-10-12T13:00:38Z"
+    "start": "2026-08-13T13:39:59Z",
+    "end": "2026-10-12T13:39:59Z"
   },
   "archive": {
     "rows": 1453,
@@ -22,9 +22,9 @@
   },
   "targets": {
     "fwd_return": {
-      "rmse": 0.003971492102992767,
-      "mae": 0.002478980601226182,
-      "r2": 0.01575868629062327
+      "rmse": 0.003971451456845752,
+      "mae": 0.0024787139804349962,
+      "r2": 0.01576357837742859
     },
     "fwd_direction": {
       "accuracy": 0.5374387683694891,
@@ -32,35 +32,35 @@
       "base_rate": 0.5122463261021694
     },
     "fwd_volatility": {
-      "rmse": 0.0019562988657508993,
-      "mae": 0.0012662451856769643,
-      "r2": 0.15229949293188694
+      "rmse": 0.001956440549351585,
+      "mae": 0.0012664030834598986,
+      "r2": 0.15226790986395067
     },
     "fwd_volume_ratio": {
-      "rmse": 0.5375362093413227,
-      "mae": 0.40482543820081957,
-      "r2": 0.4646305245956227
+      "rmse": 0.5214408241339907,
+      "mae": 0.4020850616241932,
+      "r2": 0.48555008288318857
     }
   },
   "outlook": {
     "signal": 0,
-    "confidence": 0.0640827906250232,
+    "confidence": 0.07525647874525876,
     "predictions": {
-      "fwd_return": -0.0017799637753668192,
-      "fwd_direction": 0.0,
-      "fwd_volatility": -0.000443115456021991,
-      "fwd_volume_ratio": 0.14721597837770875
+      "fwd_return": 7.703921151514883e-05,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0016675735314667754,
+      "fwd_volume_ratio": 0.35703854769209187
     },
     "probabilities": {
-      "fwd_direction": 0.4679586046874884
+      "fwd_direction": 0.5376282393726294
     },
     "notes": []
   },
   "live": {
     "market_ok": true,
     "news_ok": true,
-    "price": 82596.1125,
-    "latest_sentiment": -0.0323,
+    "price": 82680.1875,
+    "latest_sentiment": -0.0317,
     "notes": []
   }
 }
