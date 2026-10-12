@@ -27,6 +27,16 @@ fi
 # Sync with the last pipeline/timer commit before recording (best-effort).
 git pull --ff-only -q origin main || true
 
+# Never record from a detached HEAD. Committing off a detached head and pushing
+# `HEAD:main` looks fine, but a concurrent-update retry below then runs
+# `git pull --rebase` in that state, which can strand a half-finished rebase in
+# .git and silently block every later branch operation. Reattach first.
+if ! git symbolic-ref -q HEAD >/dev/null; then
+  echo "detached HEAD detected — reattaching to main"
+  git switch main || git switch -C main origin/main
+  git merge --ff-only -q origin/main || true
+fi
+
 nix develop -c uv run python tools/record_live.py \
   "${TICKER_ARGS[@]}" \
   --live-cap "${LIVE_CAP:-1000}"
