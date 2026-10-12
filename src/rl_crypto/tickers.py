@@ -17,6 +17,19 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 #: Canonical watchlist, ordered roughly by liquidity and news volume.
+#:
+#: Deliberately NOT included:
+#:
+#: * **Stablecoins** (USDT/USD, USDC/USD) — they resolve and fetch fine, but
+#:   near-zero variance makes them useless as training targets.
+#: * **Correlation duplicates** — BCH tracks BTC (~0.9) and ETC tracks ETH
+#:   (~0.95); both have full data and real news volume, but a series that moves
+#:   with an asset already tracked buys almost no extra signal while costing the
+#:   same as any other ticker.
+#:
+#: Membership is evidence-based: every ticker here was screened with
+#: ``tools/probe_tickers.py`` for a full 60-day 1h candle fill (1440/1440) and a
+#: populated hourly news window (460+ articles, 24 populated hours).
 TRACKED_TICKERS: tuple[str, ...] = (
     "ETH/USD",
     "BTC/USD",
@@ -28,6 +41,12 @@ TRACKED_TICKERS: tuple[str, ...] = (
     "LINK/USD",
     "LTC/USD",
     "DOGE/USD",
+    # -- second wave: distinct ecosystems, all probe-verified --
+    "ATOM/USD",
+    "NEAR/USD",
+    "FIL/USD",
+    "SUI/USD",
+    "APT/USD",
 )
 
 

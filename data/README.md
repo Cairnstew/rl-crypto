@@ -75,17 +75,35 @@ Both runners respect the free-tier limits of the upstreams:
   per ticker instead of a deep history pull.
 - **Deep history** stays single-asset and serial, as upstream tickerkit intends.
 
-**A full watchlist tick costs ~14 minutes** — roughly 2 min for the shared market
-batch and ~40 s per ticker of live news (ticker-news-signals has no batch API and
-re-pulls its feeds per ticker). That fits inside the 30-minute cadence with room
-to spare; the timer unit runs as a `Type=oneshot` service, whose start timeout is
-`infinity`, so a long tick is never killed mid-run. If a tick ever overruns the
-interval systemd coalesces it rather than running two at once.
+**A full watchlist tick costs ~23 minutes** at 15 tickers — about 2 minutes for
+the shared market batch and ~90 s per ticker of live news (ticker-news-signals
+has no batch API and re-pulls its feeds per ticker). That fits inside the
+30-minute cadence, but the margin is now the binding constraint on how large the
+watchlist can get:
+
+| watchlist | measured tick | headroom in 30 min |
+| --------- | ------------- | ------------------- |
+| 10        | ~13 min       | ~17 min             |
+| **15** (current) | **~23 min** | ~7 min |
+| ~19       | ~30 min       | **none — ticks get coalesced** |
+
+When the timer overruns, systemd coalesces rather than running two ticks at
+once, so the series loses resolution rather than corrupting. Growing the
+watchlist further means parallelising the per-ticker news pulls (bounded, e.g.
+3–4 workers) — deliberately not done yet, since concurrent pulls of the same
+public RSS hosts risk the IP-level throttling that would cost far more data than
+the extra tickers are worth. The timer unit is a `Type=oneshot` service, whose
+start timeout is `infinity`, so a long tick is never killed mid-run.
+
+The Actions pipeline has no such ceiling: it fans out as a matrix
+(`prepare` → `produce` per ticker → `merge`), so wall clock tracks the slowest
+single ticker rather than the sum of all of them.
 
 The Actions pipeline and the local timer both write `data/`; the pipeline also
 owns `models/`. Write-backs from Actions serialize via a shared concurrency
-group, and the timer does a `--ff-only` pull before pushing plus a rebase-and-
-retry if a pipeline commit lands mid-run.
+group, the merge job is the only Actions-side writer to `main`, and the timer
+does a `--ff-only` pull before pushing plus a rebase-and-retry if a pipeline
+commit lands mid-run.
 
 ## Seeding locally (recommended before scheduling)
 
