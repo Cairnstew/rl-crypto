@@ -1,17 +1,21 @@
 # Scheduled production run: grow the candle archive for every tracked ticker,
-# retrain each Tier-1 bundle over its own archive, and append one live record —
-# all committed back to the repo in a single commit.
+# retrain each Tier-1 bundle over its own archive, and append one live record.
 #
-# On schedule it processes the whole watchlist (src/rl_crypto/tickers.py);
-# `workflow_dispatch` can narrow it to specific tickers. Tickers are processed
-# one at a time on purpose: a deep history backfill spends many upstream calls
-# per series, so they are paced rather than parallelised. One job (not a
-# matrix) is also deliberate — a matrix would mean N concurrent writers racing
-# to push the same `data/` tree.
+# Shape: prepare -> produce (matrix, one job per ticker) -> merge.
 #
-# The commit from this workflow does NOT retrigger anything (no push trigger
-# here), but it does re-run the offline CI, which is desirable: every cached
-# state lands in a lint+test-green commit.
+# The matrix jobs never push. GitHub's `concurrency` group serialises workflow
+# *runs*, not jobs inside a run, so N jobs pushing `main` at once would race and
+# fail as non-fast-forwards. Each matrix job stages only its own ticker's cache
+# and uploads it as an artifact; the merge job is the single writer and makes ONE
+# commit per run.
+#
+# The watchlist comes from src/rl_crypto/tickers.py (the one source of truth),
+# read by the prepare job — it is not duplicated here. `workflow_dispatch` can
+# narrow it.
+#
+# The commit does NOT retrigger this workflow (no push trigger), but it does
+# re-run the offline CI, which is desirable: every cached state lands in a
+# lint+test-green commit.
 name: "pipeline (scheduled production run)"
 
 on:
@@ -40,12 +44,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  produce:
+  # Emit the watchlist as JSON so the matrix is built from the ONE source of
+  # truth rather than a second copy of the list in this file.
+  prepare:
     runs-on: ubuntu-latest
-    # One paced pass per ticker (history backfill + train), so the budget scales
-    # with the watchlist; leave margin so the script's own hard-exit (never a
-    # runner cap) ends the job cleanly.
-    timeout-minutes: 45
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+
+      - name: resolve watchlist
+        id: list
+        working-directory: rl-crypto
+        env:
+          REQUESTED: ${{ inputs.tickers }}
+        run: |
+          # tickers.py is dependency-free, so load that single file directly
+          # instead of importing the package (which pulls in the whole tree).
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import importlib.util, json, os
+
+          spec = importlib.util.spec_from_file_location(
+              "rl_tickers", "src/rl_crypto/tickers.py"
+          )
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          requested = os.environ.get("REQUESTED", "").strip()
+          tickers = mod.parse_tickers(requested) if requested else mod.TRACKED_TICKERS
+          if not tickers:
+              raise SystemExit("no tickers selected")
+
+          # Emit {ticker, slug} pairs: a ticker like "BTC/USD" cannot be part of
+          # an artifact NAME (slashes are rejected), so the cache slug travels
+          # with it. The slug here must match rl_crypto.cache.slug_for.
+          entries = [
+              {"ticker": t, "slug": t.replace("/", "-").replace(" ", "-").lower()}
+              for t in tickers
+          ]
+          print(f"matrix={json.dumps(entries)}")
+          print(f"::notice::pipeline matrix: {len(entries)} ticker(s) — {', '.join(tickers)}")
+          PY
+
+  # One job per ticker: history backfill + retrain + one live record, touching
+  # only that ticker's data/<slug>/ and models/<slug>.json.
+  produce:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # One bad ticker must not cancel the rest; the surviving caches are still
+      # merged and the failure is visible per-job in the UI.
+      fail-fast: false
+      # Bounded parallelism: keeps peak upstream request volume sane even though
+      # each runner has its own IP.
+      max-parallel: 4
+      matrix:
+        entry: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,16 +131,11 @@ jobs:
       - name: run pipeline (grow archive -> train -> live outlook)
         working-directory: rl-crypto
         env:
-          # Empty input = the runner's tracked watchlist; a value narrows it.
-          TICKERS: ${{ inputs.tickers }}
+          TICKER: ${{ matrix.entry.ticker }}
           HISTORY_DAYS: ${{ inputs.history_days || '60' }}
         run: |
-          args=()
-          if [ -n "$TICKERS" ]; then
-            args=(--tickers $TICKERS)
-          fi
           uv run python tools/run_pipeline.py \
-            "${args[@]}" \
+            --tickers "$TICKER" \
             --history-days "$HISTORY_DAYS" \
             --timeframe 1h \
             --fetch-timeout 300
@@ -91,10 +143,84 @@ jobs:
         # is reserved for RL training later. Live news flows through the unified
         # record on every run (and on the frequent local-timer runs).
 
-      # Commit whatever the run produced. if: always() lets a partial-failure
-      # run still land its notes/summary cache; an empty diff is a no-op.
-      - name: commit cache back to the repo
+      # Collect THIS ticker's cache under a fixed layout for the merge job.
+      # if: always() so a partial run still contributes whatever it produced.
+      - name: stage cache
         if: always()
+        working-directory: rl-crypto
+        env:
+          SLUG: ${{ matrix.entry.slug }}
+        run: |
+          rm -rf /tmp/rl-cache
+          mkdir -p /tmp/rl-cache/data /tmp/rl-cache/models
+          if [ -d "data/$SLUG" ]; then
+            cp -r "data/$SLUG" /tmp/rl-cache/data/
+            echo "staged data/$SLUG"
+          fi
+          if [ -f "models/$SLUG.json" ]; then
+            cp "models/$SLUG.json" /tmp/rl-cache/models/
+            echo "staged models/$SLUG.json"
+          fi
+          find /tmp/rl-cache -type f | head -10
+
+      - name: upload cache artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-${{ matrix.entry.slug }}
+          retention-days: 1
+          if-no-files-found: ignore
+          path: /tmp/rl-cache
+
+  # The single writer: collect every ticker's artifact and make ONE commit.
+  # Runs even when some matrix jobs failed, so a partial pass still lands.
+  merge:
+    needs: produce
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+
+      - name: download cache artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cache-*
+          merge-multiple: true
+          path: staging
+
+      - name: merge caches into the checkout
+        working-directory: rl-crypto
+        run: |
+          if [ -d staging/data ]; then
+            cp -r staging/data/. data/
+          fi
+          if [ -d staging/models ]; then
+            mkdir -p models
+            cp -r staging/models/. models/
+          fi
+          echo "--- merged cache inventory ---"
+          python3 - <<'PY'
+          import glob, json
+          rows = 0
+          for path in sorted(glob.glob("data/*/summary.json")):
+              try:
+                  d = json.load(open(path))
+              except Exception as exc:
+                  print(f"  {path}: unreadable ({exc})")
+                  continue
+              rows += 1
+              print(
+                  f"  {d.get('ticker', path):<9} rows={d['archive']['rows']:<5}"
+                  f" targets={len(d.get('targets', {}))}"
+                  f" live={d['live']['market_ok']}"
+              )
+          print(f"  ({rows} ticker caches present)")
+          PY
+
+      - name: commit cache back to the repo
         working-directory: rl-crypto
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,5 +233,16 @@ jobs:
             echo "no cache changes to commit"
           else
             git commit -m "pipeline: refresh cache at $(date -u +%Y-%m-%dT%H:%MZ)"
-            git push origin HEAD:main
+            # The local 30-minute timer pushes data/ concurrently, so a
+            # non-fast-forward is expected occasionally: rebase and retry.
+            for attempt in 1 2 3; do
+              if git push origin HEAD:main; then
+                echo "pushed cache refresh"
+                exit 0
+              fi
+              echo "push attempt $attempt rejected — rebasing onto origin"
+              git pull --rebase -q origin main
+            done
+            echo "could not push after retries"
+            exit 1
           fi
