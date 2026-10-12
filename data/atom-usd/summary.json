@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "ATOM/USD",
+  "generated_at": "2026-10-12T13:04:33Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T13:04:33Z",
+    "end": "2026-10-12T13:04:33Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/atom-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 14:00:00+00:00",
+      "2026-10-12 13:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.009193931413263464,
+      "mae": 0.0063724781877695655,
+      "r2": 0.012652172727341093
+    },
+    "fwd_direction": {
+      "accuracy": 0.547316384180791,
+      "log_loss": 0.686372761672033,
+      "base_rate": 0.5035310734463276
+    },
+    "fwd_volatility": {
+      "rmse": 0.004451988491584544,
+      "mae": 0.0031430789939759837,
+      "r2": 0.11035185661446578
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.6614213101817968,
+      "mae": 0.5099074470452062,
+      "r2": 0.23800710139676173
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.06705250767259585,
+    "predictions": {
+      "fwd_return": 0.0006531395804541814,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0012219543972163869,
+      "fwd_volume_ratio": -0.25192946134998595
+    },
+    "probabilities": {
+      "fwd_direction": 0.5335262538362979
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 1.8538999999999999,
+    "latest_sentiment": -0.2936,
+    "notes": []
+  }
+}

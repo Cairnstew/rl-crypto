@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "SUI/USD",
+  "generated_at": "2026-10-12T13:09:30Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T13:09:30Z",
+    "end": "2026-10-12T13:09:30Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/sui-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 14:00:00+00:00",
+      "2026-10-12 13:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.010566943365334674,
+      "mae": 0.006958615677246367,
+      "r2": 0.011634594941069554
+    },
+    "fwd_direction": {
+      "accuracy": 0.5621468926553672,
+      "log_loss": 0.6847794470570457,
+      "base_rate": 0.4985875706214689
+    },
+    "fwd_volatility": {
+      "rmse": 0.005297080884738398,
+      "mae": 0.0035544706496533477,
+      "r2": 0.10807633014994411
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.5365573918448661,
+      "mae": 0.41483922230875675,
+      "r2": 0.25292875655354297
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.016697579750365676,
+    "predictions": {
+      "fwd_return": 0.0010003793640615474,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0012366345767289358,
+      "fwd_volume_ratio": -0.14508557991741186
+    },
+    "probabilities": {
+      "fwd_direction": 0.5083487898751828
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 1.0955499999999998,
+    "latest_sentiment": -0.1091,
+    "notes": []
+  }
+}

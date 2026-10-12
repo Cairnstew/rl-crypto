@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "NEAR/USD",
+  "generated_at": "2026-10-12T13:06:33Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T13:06:33Z",
+    "end": "2026-10-12T13:06:33Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/near-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 14:00:00+00:00",
+      "2026-10-12 13:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.014116307039229366,
+      "mae": 0.009982121478581038,
+      "r2": 0.01016081824439985
+    },
+    "fwd_direction": {
+      "accuracy": 0.547316384180791,
+      "log_loss": 0.6851276191347682,
+      "base_rate": 0.5233050847457628
+    },
+    "fwd_volatility": {
+      "rmse": 0.0068836447424802044,
+      "mae": 0.004882581323667493,
+      "r2": 0.10956675927701787
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.49911182078976984,
+      "mae": 0.3818389190451697,
+      "r2": 0.2819075487440251
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.029772964985478545,
+    "predictions": {
+      "fwd_return": 0.0028384753457083734,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0003768687445639988,
+      "fwd_volume_ratio": -0.2648871882748444
+    },
+    "probabilities": {
+      "fwd_direction": 0.5148864824927393
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 5.641500000000001,
+    "latest_sentiment": -0.1636,
+    "notes": []
+  }
+}
