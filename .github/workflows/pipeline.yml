@@ -1,24 +1,31 @@
-# Scheduled production run: grow the ETH/USD-style candle archive, retrain the
-# Tier-1 bundle over the whole archive, and append one live record — all
-# committed back to the repo.
+# Scheduled production run: grow the candle archive for every tracked ticker,
+# retrain each Tier-1 bundle over its own archive, and append one live record —
+# all committed back to the repo in a single commit.
 #
-# On schedule it uses defaults (ETH/USD); `workflow_dispatch` lets you pass any
-# ticker from the Actions UI. The commit from this workflow does NOT retrigger
-# anything (no push trigger here), but it does re-run the offline CI, which is
-# desirable: every cached state lands in a lint+test-green commit.
+# On schedule it processes the whole watchlist (src/rl_crypto/tickers.py);
+# `workflow_dispatch` can narrow it to specific tickers. Tickers are processed
+# one at a time on purpose: a deep history backfill spends many upstream calls
+# per series, so they are paced rather than parallelised. One job (not a
+# matrix) is also deliberate — a matrix would mean N concurrent writers racing
+# to push the same `data/` tree.
+#
+# The commit from this workflow does NOT retrigger anything (no push trigger
+# here), but it does re-run the offline CI, which is desirable: every cached
+# state lands in a lint+test-green commit.
 name: "pipeline (scheduled production run)"
 
 on:
   schedule:
-    # Every 2 hours on the hour (UTC). The history archive grows here; the
-    # frequent live records come from the separate live.yml workflow.
+    # Every 2 hours on the hour (UTC). This is where the history archive grows
+    # and models are retrained; the frequent live records come from the local
+    # 30-minute timer (tools/record_live.sh), not from a workflow.
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
-      ticker:
-        description: "Ticker to run the full pipeline on"
+      tickers:
+        description: "Tickers to run (default: the whole tracked watchlist)"
         required: false
-        default: "ETH/USD"
+        default: ""
       history_days:
         description: "Days of market history to fetch per run (archive is cumulative)"
         required: false
@@ -35,9 +42,10 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    # Market history (fast) + one live record under the fetch cap; leave margin
-    # so the script's own hard-exit (never a runner cap) ends the job cleanly.
-    timeout-minutes: 20
+    # One paced pass per ticker (history backfill + train), so the budget scales
+    # with the watchlist; leave margin so the script's own hard-exit (never a
+    # runner cap) ends the job cleanly.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,17 +74,22 @@ jobs:
       - name: run pipeline (grow archive -> train -> live outlook)
         working-directory: rl-crypto
         env:
-          TICKER: ${{ inputs.ticker || 'ETH/USD' }}
+          # Empty input = the runner's tracked watchlist; a value narrows it.
+          TICKERS: ${{ inputs.tickers }}
           HISTORY_DAYS: ${{ inputs.history_days || '60' }}
         run: |
+          args=()
+          if [ -n "$TICKERS" ]; then
+            args=(--tickers $TICKERS)
+          fi
           uv run python tools/run_pipeline.py \
-            --ticker "$TICKER" \
+            "${args[@]}" \
             --history-days "$HISTORY_DAYS" \
             --timeframe 1h \
             --fetch-timeout 300
         # News HISTORY is intentionally never fetched here: training-time news
         # is reserved for RL training later. Live news flows through the unified
-        # record on every run (and on the frequent live.yml runs).
+        # record on every run (and on the frequent local-timer runs).
 
       # Commit whatever the run produced. if: always() lets a partial-failure
       # run still land its notes/summary cache; an empty diff is a no-op.

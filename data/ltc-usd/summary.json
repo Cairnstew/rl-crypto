@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "LTC/USD",
+  "generated_at": "2026-10-12T01:04:09Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T01:04:09Z",
+    "end": "2026-10-12T01:04:09Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/ltc-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 02:00:00+00:00",
+      "2026-10-12 01:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.007172593519777851,
+      "mae": 0.0046934839162137134,
+      "r2": 0.02191806093919213
+    },
+    "fwd_direction": {
+      "accuracy": 0.5529661016949152,
+      "log_loss": 0.6814974436649718,
+      "base_rate": 0.5247175141242938
+    },
+    "fwd_volatility": {
+      "rmse": 0.003631888872021603,
+      "mae": 0.0024331974501103026,
+      "r2": 0.1509639649180028
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.4653208920940955,
+      "mae": 0.35408832695044107,
+      "r2": 0.30136945739940735
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.014898044205382543,
+    "predictions": {
+      "fwd_return": 0.0005231096744427318,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0002713761520891935,
+      "fwd_volume_ratio": -0.502009296744663
+    },
+    "probabilities": {
+      "fwd_direction": 0.5074490221026913
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 64.935,
+    "latest_sentiment": 0.0,
+    "notes": []
+  }
+}

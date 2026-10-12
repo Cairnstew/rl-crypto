@@ -5,8 +5,19 @@ workflows (`.github/workflows/pipeline.yml` + `.github/workflows/live.yml` →
 `tools/run_pipeline.py`, `tools/record_live.py`) and by hand:
 
 ```bash
-uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60
-uv run python tools/record_live.py   --ticker ETH/USD   # frequent live point
+uv run python tools/run_pipeline.py --history-days 60          # whole watchlist
+uv run python tools/record_live.py                             # frequent live points
+uv run python tools/record_live.py --tickers BTC/USD ETH/USD   # just these
+```
+
+**The tracked watchlist** lives in [`src/rl_crypto/tickers.py`](../src/rl_crypto/tickers.py)
+and is the single source of truth for every runner — pipeline, local timer, and
+manual dispatch. Every ticker in it is recorded on **every** run (no stagger, no
+rotation). Add or retire a ticker there and all three paths follow. Screening
+new candidates:
+
+```bash
+uv run python tools/probe_tickers.py --tickers BTC/USD SOL/USD --history-days 60
 ```
 
 Per ticker, under `data/<slug>/` (e.g. `data/eth-usd/` for `ETH/USD`):
@@ -29,10 +40,16 @@ derived rows are ever cached stale.
 
 ## Cadence
 
+Both scheduled paths record **every tracked ticker on every run** — nothing is
+staggered or rotated, so every asset gets an equal-resolution series.
+
 - **pipeline.yml** (GitHub Actions) — every 2h (and `workflow_dispatch`): grow
-  the archive, retrain, append one live record, commit `models/ + data/`.
+  each ticker's archive, retrain its bundle, append one live record, commit
+  `models/ + data/` **in a single commit**. Tickers are processed one at a time
+  on purpose (a deep history backfill spends many upstream calls per series),
+  and in one job rather than a matrix, so N tickers never race to push `data/`.
 - **Local systemd timer** — every 30 min on this machine, the *primary* frequent
-  live path: `tools/record_live.sh` syncs, records one live point
+  live path: `tools/record_live.sh` syncs, records one live point per ticker
   (market + live news + outlook), and pushes `data/`. Install with:
 
   ```bash
@@ -46,9 +63,29 @@ derived rows are ever cached stale.
   live recorder (its cron was dropped because Actions didn't deliver schedule
   events for a second scheduled workflow on the young repo).
 
+### Upstream request budget
+
+Both runners respect the free-tier limits of the upstreams:
+
+- **Market snapshots** are fetched for the whole watchlist in **one**
+  `aget_tickers()` batch, so adding tickers adds concurrency, not requests per
+  minute — one shared rate limiter, circuit breaker and connection pool.
+- **Feature windows** are built from the committed archive plus a short live
+  tail (`--tail-hours`, default 6h), so a 30-minute tick costs one small fetch
+  per ticker instead of a deep history pull.
+- **Deep history** stays single-asset and serial, as upstream tickerkit intends.
+
+**A full watchlist tick costs ~14 minutes** — roughly 2 min for the shared market
+batch and ~40 s per ticker of live news (ticker-news-signals has no batch API and
+re-pulls its feeds per ticker). That fits inside the 30-minute cadence with room
+to spare; the timer unit runs as a `Type=oneshot` service, whose start timeout is
+`infinity`, so a long tick is never killed mid-run. If a tick ever overruns the
+interval systemd coalesces it rather than running two at once.
+
 The Actions pipeline and the local timer both write `data/`; the pipeline also
 owns `models/`. Write-backs from Actions serialize via a shared concurrency
-group, and the timer does a `--ff-only` pull before pushing.
+group, and the timer does a `--ff-only` pull before pushing plus a rebase-and-
+retry if a pipeline commit lands mid-run.
 
 ## Seeding locally (recommended before scheduling)
 
@@ -56,7 +93,13 @@ Run it **locally first** to populate the archive, then let the scheduled
 workflows refresh on top:
 
 ```bash
-uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60 --fetch-timeout 600
+uv run python tools/run_pipeline.py --history-days 60 --fetch-timeout 600
+```
+
+Narrow it to seed just one asset:
+
+```bash
+uv run python tools/run_pipeline.py --tickers ETH/USD --history-days 60 --fetch-timeout 600
 ```
 
 Local runs reuse the sibling projects' on-disk caches

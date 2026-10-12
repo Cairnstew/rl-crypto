@@ -11,10 +11,10 @@ name: "live (on-demand recorder)"
 on:
   workflow_dispatch:
     inputs:
-      ticker:
-        description: "Ticker to record live data for"
+      tickers:
+        description: "Tickers to record (default: the whole tracked watchlist)"
         required: false
-        default: "ETH/USD"
+        default: ""
       live_cap:
         description: "Max live.jsonl records to keep"
         required: false
@@ -59,11 +59,15 @@ jobs:
       - name: record live
         working-directory: rl-crypto
         env:
-          TICKER: ${{ inputs.ticker || 'ETH/USD' }}
+          TICKERS: ${{ inputs.tickers }}
           LIVE_CAP: ${{ inputs.live_cap || '1000' }}
         run: |
+          args=()
+          if [ -n "$TICKERS" ]; then
+            args=(--tickers $TICKERS)
+          fi
           uv run python tools/record_live.py \
-            --ticker "$TICKER" \
+            "${args[@]}" \
             --live-cap "$LIVE_CAP" \
             --fetch-timeout 120
 

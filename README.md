@@ -213,22 +213,33 @@ Bundles are committed, diffable JSON; see [`models/README.md`](models/README.md)
 
 ## Scheduled production run
 
-Two scheduled workflows keep the committed cache growing:
+Two scheduled workflows keep the committed cache growing. Both record **every
+tracked ticker on every run** — nothing is staggered or rotated:
 
 * [**pipeline.yml**](.github/workflows/pipeline.yml) — **every 2 hours** (and on
-  demand): grow the raw-candle archive, retrain the Tier-1 bundle over the whole
-  archive, append one live record, commit `models/ + data/`.
+  demand): grow each ticker's raw-candle archive, retrain its Tier-1 bundle over
+  the whole archive, append one live record, commit `models/ + data/` in a
+  single commit. Tickers run one at a time in one job, deliberately: a deep
+  backfill spends many upstream calls per series, and a matrix would mean N
+  writers racing to push `data/`.
 * **Local systemd timer** — the frequent live path: **every 30 min** on this
-  machine, `tools/record_live.sh` records one live point (market + live news +
-  outlook) and pushes `data/` (no training). [**live.yml**](.github/workflows/live.yml)
-  stays available as an on-demand/backup recorder.
+  machine, `tools/record_live.sh` records one live point per ticker (market +
+  live news + outlook) and pushes `data/` (no training).
+  [**live.yml**](.github/workflows/live.yml) stays available as an
+  on-demand/backup recorder.
+
+The watchlist is defined once, in
+[`src/rl_crypto/tickers.py`](src/rl_crypto/tickers.py) — add or retire a ticker
+there and every runner follows:
 
 ```bash
-uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60   # archive + train
-uv run python tools/record_live.py   --ticker ETH/USD                    # frequent live point
+uv run python tools/run_pipeline.py --history-days 60   # whole watchlist: archive + train
+uv run python tools/record_live.py                     # whole watchlist: frequent live points
+uv run python tools/record_live.py --tickers BTC/USD   # just one, for a spot check
 ```
 
-What the cache holds (all under the repo; see [`data/README.md`](data/README.md)):
+What the cache holds per ticker (all under the repo; see
+[`data/README.md`](data/README.md)), e.g. for `ETH/USD`:
 
 | artifact | contents | growth |
 | -------- | -------- | ------ |
@@ -247,8 +258,11 @@ so a big first archive backfill completes here and the scheduled runners only
 refresh it afterwards:
 
 ```bash
-uv run python tools/run_pipeline.py --ticker ETH/USD --history-days 60 --fetch-timeout 600
+uv run python tools/run_pipeline.py --history-days 60 --fetch-timeout 600
 ```
+
+The first run of a new ticker is the slow one (it backfills that ticker's
+archive); later runs only refresh it.
 
 ## Notebooks
 

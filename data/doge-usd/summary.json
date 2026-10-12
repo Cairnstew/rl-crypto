@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "DOGE/USD",
+  "generated_at": "2026-10-12T01:05:18Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T01:05:18Z",
+    "end": "2026-10-12T01:05:18Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/doge-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 02:00:00+00:00",
+      "2026-10-12 01:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.007877947857841202,
+      "mae": 0.0049588267844070145,
+      "r2": 0.0112310413439477
+    },
+    "fwd_direction": {
+      "accuracy": 0.5536723163841808,
+      "log_loss": 0.6854147823873684,
+      "base_rate": 0.5112994350282486
+    },
+    "fwd_volatility": {
+      "rmse": 0.00394399992580158,
+      "mae": 0.0025740576629216015,
+      "r2": 0.16061257982569177
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.5622876111387185,
+      "mae": 0.4354207729517598,
+      "r2": 0.23575272966113403
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.08918195877770341,
+    "predictions": {
+      "fwd_return": -0.002306359817550286,
+      "fwd_direction": 0.0,
+      "fwd_volatility": -0.0004255706519485478,
+      "fwd_volume_ratio": -0.3021389670113216
+    },
+    "probabilities": {
+      "fwd_direction": 0.4554090206111483
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 0.086975,
+    "latest_sentiment": 0.0,
+    "notes": []
+  }
+}

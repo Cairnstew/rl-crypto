@@ -50,6 +50,7 @@ from rl_crypto.ml import attach_predictions, outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, save_bundle
 from rl_crypto.ml.tier1 import train_tier1
 from rl_crypto.models import Dataset, DatasetRow, UnifiedRecord, to_iso, utcnow
+from rl_crypto.tickers import parse_tickers
 from rl_crypto.unify import build_unified
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,7 +194,17 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ticker", default="ETH/USD", help="asset to test the pipeline on")
+    parser.add_argument(
+        "--tickers",
+        nargs="+",
+        default=None,
+        help="tickers to run the pipeline on (default: the tracked watchlist)",
+    )
+    parser.add_argument(
+        "--ticker",
+        default=None,
+        help="single-ticker alias for --tickers (kept for existing callers)",
+    )
     parser.add_argument("--timeframe", default="1h", help="market+feature interval")
     parser.add_argument("--horizon", type=int, default=1, help="forward horizon in intervals")
     parser.add_argument(
@@ -207,29 +218,56 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=str(ROOT), help="repo root for models/ and data/")
     args = parser.parse_args(argv)
 
+    if args.ticker and not args.tickers:
+        args.tickers = [args.ticker]
+    tickers = parse_tickers(args.tickers)
+
     exit_code = 1
+    summaries: list[dict[str, Any]] = []
+    failures: list[str] = []
     try:
-        artifacts, summary, exit_code = run_pipeline(args)
-        print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
-        archive = summary["archive"]
+        # One ticker at a time, deliberately: a deep history backfill spends many
+        # upstream calls per series, and upstream tickerkit paces --history as a
+        # single-asset operation. Parallel jobs would multiply that request rate.
+        for ticker in tickers:
+            args.ticker = ticker
+            try:
+                artifacts, summary, code = run_pipeline(args)
+            except Exception as exc:  # one ticker's failure must not stop the rest
+                failures.append(ticker)
+                print(
+                    f"pipeline {ticker} failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            summaries.append(summary)
+            exit_code = 0 if code == 0 else exit_code
+            print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
+            archive = summary["archive"]
+            print(
+                f"  archive: {archive['rows']} candles"
+                f" ({archive['spans'][0]} .. {archive['spans'][1]})"
+                if archive["spans"]
+                else "  archive: empty"
+            )
+            print(
+                f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
+                f"  | samples complete: {summary['samples']['feature_complete']}"
+            )
+            print(
+                f"  live: market_ok={summary['live']['market_ok']}"
+                f" news_ok={summary['live']['news_ok']}"
+                f" | signal={summary['outlook']['signal']}"
+                f" conf={summary['outlook']['confidence']}"
+            )
+            for name, path in artifacts.items():
+                print(f"  wrote {name:<8} {path}")
         print(
-            f"  archive: {archive['rows']} candles"
-            f" ({archive['spans'][0]} .. {archive['spans'][1]})"
-            if archive["spans"]
-            else "  archive: empty"
+            f"pipeline: {len(summaries)}/{len(tickers)} ticker(s) ok"
+            + (f", failed: {', '.join(failures)}" if failures else "")
         )
-        print(
-            f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
-            f"  | samples complete: {summary['samples']['feature_complete']}"
-        )
-        print(
-            f"  live: market_ok={summary['live']['market_ok']}"
-            f" news_ok={summary['live']['news_ok']}"
-            f" | signal={summary['outlook']['signal']}"
-            f" conf={summary['outlook']['confidence']}"
-        )
-        for name, path in artifacts.items():
-            print(f"  wrote {name:<8} {path}")
+        if not summaries:
+            exit_code = 1
     except Exception as exc:  # tolerated: report and still exit promptly
         print(f"pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         exit_code = 1

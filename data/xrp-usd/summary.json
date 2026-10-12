@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "XRP/USD",
+  "generated_at": "2026-10-12T00:57:44Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T00:57:44Z",
+    "end": "2026-10-12T00:57:44Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/xrp-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 01:00:00+00:00",
+      "2026-10-12 00:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.008449883193271779,
+      "mae": 0.005080562688992119,
+      "r2": 0.01749365441392914
+    },
+    "fwd_direction": {
+      "accuracy": 0.5282485875706214,
+      "log_loss": 0.6884523549909128,
+      "base_rate": 0.5169491525423728
+    },
+    "fwd_volatility": {
+      "rmse": 0.0041710125844328936,
+      "mae": 0.0025830045557243032,
+      "r2": 0.2523172545430469
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.484909138977355,
+      "mae": 0.3727767832679982,
+      "r2": 0.3861608312605689
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.021102006348568292,
+    "predictions": {
+      "fwd_return": -0.0007351163393857961,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0012212199303611956,
+      "fwd_volume_ratio": -0.3177331279219353
+    },
+    "probabilities": {
+      "fwd_direction": 0.5105510031742841
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 1.40685,
+    "latest_sentiment": 0.1071,
+    "notes": []
+  }
+}

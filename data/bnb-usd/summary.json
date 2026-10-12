@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "BNB/USD",
+  "generated_at": "2026-10-12T00:58:54Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T00:58:54Z",
+    "end": "2026-10-12T00:58:54Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/bnb-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 01:00:00+00:00",
+      "2026-10-12 00:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.004236505959699591,
+      "mae": 0.00278439580203067,
+      "r2": 0.009800629014669493
+    },
+    "fwd_direction": {
+      "accuracy": 0.5444915254237288,
+      "log_loss": 0.6878758353236397,
+      "base_rate": 0.5204802259887006
+    },
+    "fwd_volatility": {
+      "rmse": 0.0020466000911082737,
+      "mae": 0.001374076166227253,
+      "r2": 0.14026180434703084
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.6623079083121364,
+      "mae": 0.49510897797508163,
+      "r2": 0.24401557634615823
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.06874163654775678,
+    "predictions": {
+      "fwd_return": -0.0003193500243647427,
+      "fwd_direction": 0.0,
+      "fwd_volatility": 0.001416278510273386,
+      "fwd_volume_ratio": -0.402438770388962
+    },
+    "probabilities": {
+      "fwd_direction": 0.4656291817261216
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 752.5450000000001,
+    "latest_sentiment": 0.2678,
+    "notes": []
+  }
+}

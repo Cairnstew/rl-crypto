@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "BTC/USD",
+  "generated_at": "2026-10-12T00:55:11Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T00:55:11Z",
+    "end": "2026-10-12T00:55:11Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/btc-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 01:00:00+00:00",
+      "2026-10-12 00:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.0039970049562046625,
+      "mae": 0.002475015326590064,
+      "r2": 0.016553946654064844
+    },
+    "fwd_direction": {
+      "accuracy": 0.5141242937853108,
+      "log_loss": 0.6876371103698243,
+      "base_rate": 0.5098870056497176
+    },
+    "fwd_volatility": {
+      "rmse": 0.0019877499516669198,
+      "mae": 0.0012738444236052907,
+      "r2": 0.14838976329818698
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.5878173258359777,
+      "mae": 0.45166868187991355,
+      "r2": 0.4295358327857701
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.017249975126820694,
+    "predictions": {
+      "fwd_return": 0.00019381419298953098,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0014474144565120787,
+      "fwd_volume_ratio": -0.4023655458349789
+    },
+    "probabilities": {
+      "fwd_direction": 0.5086249875634103
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 83814.05,
+    "latest_sentiment": 0.2294,
+    "notes": []
+  }
+}

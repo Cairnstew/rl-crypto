@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "ADA/USD",
+  "generated_at": "2026-10-12T00:59:57Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T00:59:57Z",
+    "end": "2026-10-12T00:59:57Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/ada-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 01:00:00+00:00",
+      "2026-10-12 00:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.009264944675288949,
+      "mae": 0.006434473790304185,
+      "r2": 0.011346106651534238
+    },
+    "fwd_direction": {
+      "accuracy": 0.5515536723163842,
+      "log_loss": 0.68711124969724,
+      "base_rate": 0.5084745762711864
+    },
+    "fwd_volatility": {
+      "rmse": 0.004474577943114141,
+      "mae": 0.0030864603832182484,
+      "r2": 0.09529988687239754
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.4925070519588018,
+      "mae": 0.37754721947315684,
+      "r2": 0.2923310015869225
+    }
+  },
+  "outlook": {
+    "signal": 1,
+    "confidence": 0.10320158404113688,
+    "predictions": {
+      "fwd_return": -1.7833988780542771e-06,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.0033139882409994412,
+      "fwd_volume_ratio": -0.28661589974732143
+    },
+    "probabilities": {
+      "fwd_direction": 0.5516007920205684
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 0.2505,
+    "latest_sentiment": 0.0841,
+    "notes": []
+  }
+}

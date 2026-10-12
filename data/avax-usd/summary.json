@@ -1,0 +1,66 @@
+{
+  "schema": "rl-crypto/pipeline/2",
+  "ticker": "AVAX/USD",
+  "generated_at": "2026-10-12T01:01:05Z",
+  "timeframe": "1h",
+  "horizon": 1,
+  "fetch_window": {
+    "start": "2026-08-13T01:01:05Z",
+    "end": "2026-10-12T01:01:05Z"
+  },
+  "archive": {
+    "rows": 1440,
+    "candles_path": "/home/seanc/Projects/rl-crypto/data/avax-usd/candles.jsonl",
+    "spans": [
+      "2026-08-13 02:00:00+00:00",
+      "2026-10-12 01:00:00+00:00"
+    ]
+  },
+  "samples": {
+    "total": 1440,
+    "feature_complete": 1417
+  },
+  "targets": {
+    "fwd_return": {
+      "rmse": 0.0087278897542525,
+      "mae": 0.005760076489068386,
+      "r2": 0.015128895194477021
+    },
+    "fwd_direction": {
+      "accuracy": 0.5324858757062146,
+      "log_loss": 0.689797870287004,
+      "base_rate": 0.510593220338983
+    },
+    "fwd_volatility": {
+      "rmse": 0.004256234267692444,
+      "mae": 0.0029041285370983564,
+      "r2": 0.10550929414095478
+    },
+    "fwd_volume_ratio": {
+      "rmse": 0.5987444275226506,
+      "mae": 0.46303076811611243,
+      "r2": 0.2536555271877551
+    }
+  },
+  "outlook": {
+    "signal": 0,
+    "confidence": 0.028848183499783575,
+    "predictions": {
+      "fwd_return": -0.0003391519272182833,
+      "fwd_direction": 1.0,
+      "fwd_volatility": 0.001349992531872575,
+      "fwd_volume_ratio": -0.3378364781415323
+    },
+    "probabilities": {
+      "fwd_direction": 0.5144240917498918
+    },
+    "notes": []
+  },
+  "live": {
+    "market_ok": true,
+    "news_ok": true,
+    "price": 10.9385,
+    "latest_sentiment": 0.3982,
+    "notes": []
+  }
+}
