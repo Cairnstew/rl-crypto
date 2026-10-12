@@ -9,6 +9,7 @@ failure in CI, so it is asserted here rather than left to review.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -81,3 +82,67 @@ def test_merge_push_retries_after_rebase():
     merge_runs = _runs(_workflow()["jobs"]["merge"])
     assert "git pull --rebase" in merge_runs
     assert "for attempt in" in merge_runs
+
+
+def _run_prepare_script(requested: str, tmp_path: Path) -> tuple[str, str]:
+    """Execute the real prepare step's script; return (GITHUB_OUTPUT, stdout)."""
+    import contextlib
+    import io
+    import os
+    import re
+
+    run = _workflow()["jobs"]["prepare"]["steps"][1]["run"]
+    source = re.search(r"python3 - <<'PY'\n(.*?)\nPY", run, re.S)
+    assert source, "prepare step no longer uses the expected heredoc"
+    script = source.group(1)
+
+    out_file = tmp_path / "github_output"
+    out_file.write_text("", encoding="utf-8")
+    env = {"REQUESTED": requested, "GITHUB_OUTPUT": str(out_file)}
+    old_env = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    stdout = io.StringIO()
+    cwd = Path.cwd()
+    try:
+        with contextlib.redirect_stdout(stdout):
+            exec(compile(script, "<prepare>", "exec"), {"__name__": "__main__"})
+    finally:
+        os.chdir(cwd)
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return out_file.read_text(encoding="utf-8"), stdout.getvalue()
+
+
+def test_prepare_writes_only_key_value_pairs_to_github_output(tmp_path):
+    """GITHUB_OUTPUT accepts only key=value lines.
+
+    A `>> "$GITHUB_OUTPUT"` redirect around the whole script also captures the
+    `::notice::` line, which fails the run with "Invalid format" — so assert on
+    the real script's output rather than trusting the redirect to stay absent.
+    """
+    output, stdout = _run_prepare_script("", tmp_path)
+
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        assert "=" in line, f"non key=value line in GITHUB_OUTPUT: {line!r}"
+        assert not line.startswith("::"), f"workflow command in GITHUB_OUTPUT: {line!r}"
+
+    entries = json.loads(
+        next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("matrix="))
+    )
+    assert [e["ticker"] for e in entries] == list(TRACKED_TICKERS)
+    # the notice belongs on stdout, where the runner interprets it
+    assert "::notice::pipeline matrix:" in stdout
+
+
+def test_prepare_honours_a_narrowed_dispatch_list(tmp_path):
+    output, _ = _run_prepare_script("BTC/USD, BNB/USD", tmp_path)
+    entries = json.loads(
+        next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("matrix="))
+    )
+    assert [e["ticker"] for e in entries] == ["BTC/USD", "BNB/USD"]
+    assert all("/" not in e["slug"] for e in entries)

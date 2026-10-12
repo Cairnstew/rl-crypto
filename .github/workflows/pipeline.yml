@@ -63,7 +63,12 @@ jobs:
         run: |
           # tickers.py is dependency-free, so load that single file directly
           # instead of importing the package (which pulls in the whole tree).
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          #
+          # NOTE: this writes the GITHUB_OUTPUT file itself rather than being
+          # redirected into it. A `>> "$GITHUB_OUTPUT"` redirect would also
+          # capture the ::notice:: line below, and that file accepts only
+          # key=value pairs — the run fails with "Invalid format".
+          python3 - <<'PY'
           import importlib.util, json, os
 
           spec = importlib.util.spec_from_file_location(
@@ -84,7 +89,8 @@ jobs:
               {"ticker": t, "slug": t.replace("/", "-").replace(" ", "-").lower()}
               for t in tickers
           ]
-          print(f"matrix={json.dumps(entries)}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={json.dumps(entries)}\n")
           print(f"::notice::pipeline matrix: {len(entries)} ticker(s) — {', '.join(tickers)}")
           PY
 
