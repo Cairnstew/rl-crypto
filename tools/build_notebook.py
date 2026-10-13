@@ -20,94 +20,154 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "notebooks" / "unified.ipynb"
 
 MD_INTRO = """\
-# rl-crypto — unified dataset
+# rl-crypto — the committed cache
 
-Fuse **tickerkit** (market) with **ticker-news-signals** (news sentiment) for a
-single ticker. Both sides are partial-failure tolerant: if one upstream is
-unreachable its fields stay `None` and the failure lands in `notes`.
+Read the **git-committed cache** the scheduled runners write: the raw candle
+archive, the live unified-record stream, and the run summary under
+``data/<slug>/``, plus the trained Tier-1 bundle under ``models/``.
+
+The first cell syncs the checkout with the tracking remote (fetch plus a
+``--ff-only`` pull), so what you read is the remote's latest committed cache —
+the runners push every couple of hours. Every other cell is **offline**. The
+live fetching that produced these files lives in ``tools/run_pipeline.py``
+(archive + train) and ``tools/record_live.py`` (frequent live points); this
+notebook consumes their output the way any downstream analysis would.
 """
 
-MD_UNIFIED = "## One ticker, both pipelines\n\n`build_unified` returns a point-in-time record."
+MD_SYNC = """\
+## Sync with the remote
 
-MD_DATASET = """\
-## Hourly dataset
-
-`build_dataset` joins tickerkit's OHLCV history with ticker-news-signals'
-Wayback-reconstructed sentiment vectors on the UTC interval. Rows are the
-**union** of both sides — an interval known to only one side is kept and
-flagged (`has_price` / `has_news`).
+The cache is only as fresh as the checkout. This cell fetches the tracking
+remote and fast-forwards when it can; when local changes or local commits are
+in the way, ``--ff-only`` **refuses** rather than overwrite, and the reason is
+printed (offline does the same). Every later cell then reads the newest
+committed cache — or, when a sync was impossible, the files on disk with the
+reason stated.
 """
 
-CODE_INTRO = """\
-from rl_crypto import build_unified, build_dataset, __version__
+MD_ARCHIVE = """\
+## The raw candle archive
 
-print("rl-crypto", __version__)
+``data/<slug>/candles.jsonl`` is the **only-growing** market archive: candles
+are upserted by timestamp, so the history never shrinks and never duplicates.
+Tier-1 training reads the whole archive every run and recomputes the
+forward-shifted targets on the fly, so a bar's labels only become defined once
+its future is archived.
 """
 
-CODE_UNIFIED = """\
-record = build_unified("ETH/USD", lookback_hours=3)
-print(record.price, record.latest_sentiment)
-print(record.to_dict()["notes"])
+CODE_ROOT = """\
+import json
+from pathlib import Path
+
+from rl_crypto import __version__, build_samples
+from rl_crypto.cache import (
+    candles_path,
+    live_path,
+    load_candles,
+    read_jsonl,
+    summary_path,
+    sync_cache,
+)
+from rl_crypto.ml import load_bundle, train_tier1
+from rl_crypto.ml.serve import outlook_for_rows
+from rl_crypto.ml.store import default_bundle_path
+
+
+def find_root() -> Path:
+    \"\"\"The repo root — the nearest ancestor holding the committed cache.\"\"\"
+    for candidate in (Path.cwd(), *Path.cwd().parents):
+        if (candidate / "data").is_dir() and (candidate / "models").is_dir():
+            return candidate
+    raise SystemExit(f"no data/ cache found above {Path.cwd()}")
+
+
+ROOT = find_root()
+TICKER = "ETH/USD"
+
+print("rl-crypto", __version__, "| cache root:", ROOT)
 """
 
-CODE_DATASET = """\
-dataset = build_dataset("ETH/USD", start="2026-01-01", end="2026-01-03", timeframe="1h")
-print(dataset.to_json(indent=2)[:800])
+CODE_SYNC = """\
+sync = sync_cache(ROOT)
+
+print(sync.summary())
+for note in sync.notes:
+    print(" -", note)
+"""
+
+CODE_ARCHIVE = """\
+rows = load_candles(candles_path(ROOT, TICKER), ticker=TICKER)
+
+print(TICKER, "archive:", len(rows), "candles")
+print("span:", rows[0].timestamp, "->", rows[-1].timestamp)
+print(f"first: close={rows[0].close} volume={rows[0].volume}")
+print(f"last:  close={rows[-1].close} volume={rows[-1].volume}")
+"""
+
+MD_LIVE = """\
+## The live record stream
+
+``data/<slug>/live.jsonl`` is the **capped, append-only** stream of live
+unified records: one market + live-news snapshot per run, each carrying the
+Tier-2 outlook attached at write time. News history is intentionally absent
+from the archive, so archive rows are news-free (``has_news=False``) while
+these live records still carry sentiment.
+"""
+
+CODE_LIVE = """\
+live = read_jsonl(live_path(ROOT, TICKER))
+newest = live[-1]
+
+print("live records:", len(live), "| newest generated at:", newest["generated_at"])
+print("market:", newest["market"]["price"], "| news:", newest["news"]["latest_sentiment"])
+print("attached outlook: signal", newest["predictions"]["signal"],
+      "| confidence", round(newest["predictions"]["confidence"], 4))
+print("notes:", newest["notes"])
+"""
+
+MD_SUMMARY = """\
+## The run summary
+
+``data/<slug>/summary.json`` is overwritten every pipeline run: the archive
+span, the fitted per-target metrics, and the outlook that was attached to the
+live record at the time.
+"""
+
+CODE_SUMMARY = """\
+summary = json.loads(summary_path(ROOT, TICKER).read_text(encoding="utf-8"))
+
+print("generated:", summary["generated_at"], "| archive rows:", summary["archive"]["rows"])
+print("samples:", summary["samples"])
+for name, metrics in summary["targets"].items():
+    print(f"  {name}: {metrics}")
 """
 
 MD_ML = """\
-## Tiered ML — features, targets, outlook
+## Tiered ML over the archive
 
-The fused dataset feeds the tiered pipeline. Tier 0 builds **causal** features
-(no future information), Tier 1 fits one model per forward target
-(return/direction/volatility/volume), Tier 2 fuses them into an `Outlook`.
-This section runs **offline on synthetic rows**, so it is deterministic and
-repeatable — swap `synthetic_rows()` for a real `build_dataset` call to train
-on live history.
-"""
-
-CODE_ML_SETUP = """\
-from datetime import UTC, datetime, timedelta
-from math import exp, sin
-
-from rl_crypto import build_samples
-from rl_crypto.ml import train_tier1
-from rl_crypto.ml.serve import outlook_for_rows
-from rl_crypto.models import DatasetRow, to_iso
-
-
-def synthetic_rows(n: int = 120) -> tuple[DatasetRow, ...]:
-    rows: list[DatasetRow] = []
-    start = datetime(2026, 1, 1, tzinfo=UTC)
-    for i in range(n):
-        close = 100.0 * exp(0.01 * i + 0.04 * sin(i))
-        rows.append(
-            DatasetRow(
-                ticker="ETH/USD",
-                timestamp=to_iso(start + timedelta(hours=i)) or "",
-                open=close * 0.999, high=close * 1.01, low=close * 0.99,
-                volume=1000.0 + 50.0 * i, close=close,
-                sentiment_score=0.1 + 0.02 * sin(i),
-                article_count=(i % 3) + 1, novelty_flag=(i % 7 == 0),
-                has_price=True, has_news=True,
-            )
-        )
-    return tuple(rows)
-
-
-print("synthetic rows:", len(synthetic_rows()))
+Tier 0 builds **causal** features (no future information), Tier 1 fits one
+model per forward target (return/direction/volatility/volume), Tier 2 fuses
+them into an ``Outlook``. Train a fresh bundle over the **whole archive**, then
+serve with the **committed** bundle from ``models/<slug>.json`` — the artifact
+the pipeline commits and the live recorder loads.
 """
 
 CODE_ML_TRAIN = """\
-rows = synthetic_rows()
-bundle = train_tier1(build_samples(rows, horizon=1), horizon=1)
-print("fitted targets:", {name: model.metrics for name, model in bundle.targets.items()})
+samples = build_samples(rows, horizon=1)
+bundle = train_tier1(samples, horizon=1)
+
+print("fresh bundle over the archive:", bundle.n_samples, "complete samples")
+for name, model in bundle.targets.items():
+    print(f"  {name}: {model.metrics}")
 """
 
 CODE_ML_OUTLOOK = """\
-outlook = outlook_for_rows(rows, bundle, ticker="ETH/USD")
-print("signal:", outlook.signal, "| confidence:", outlook.confidence)
-print(outlook.as_features())
+committed = load_bundle(default_bundle_path(TICKER, directory=ROOT / "models"))
+outlook = outlook_for_rows(rows, committed, ticker=TICKER)
+
+print("committed bundle -> feature timestamp:", outlook.feature_timestamp)
+print("signal:", outlook.signal, "| confidence:", round(outlook.confidence, 4))
+print(outlook.predictions)
 """
 
 
@@ -115,13 +175,16 @@ def build() -> nbformat.NotebookNode:
     notebook = new_notebook()
     notebook.cells = [
         new_markdown_cell(MD_INTRO),
-        new_code_cell(CODE_INTRO),
-        new_markdown_cell(MD_UNIFIED),
-        new_code_cell(CODE_UNIFIED),
-        new_markdown_cell(MD_DATASET),
-        new_code_cell(CODE_DATASET),
+        new_code_cell(CODE_ROOT),
+        new_markdown_cell(MD_SYNC),
+        new_code_cell(CODE_SYNC),
+        new_markdown_cell(MD_ARCHIVE),
+        new_code_cell(CODE_ARCHIVE),
+        new_markdown_cell(MD_LIVE),
+        new_code_cell(CODE_LIVE),
+        new_markdown_cell(MD_SUMMARY),
+        new_code_cell(CODE_SUMMARY),
         new_markdown_cell(MD_ML),
-        new_code_cell(CODE_ML_SETUP),
         new_code_cell(CODE_ML_TRAIN),
         new_code_cell(CODE_ML_OUTLOOK),
     ]

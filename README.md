@@ -272,8 +272,15 @@ rather than the `.ipynb` — the same tooling both upstreams use:
 ```bash
 uv run python tools/build_notebook.py            # regenerate notebooks/unified.ipynb
 uv run python tools/install_kernel.py            # re-pin after recreating .venv
-uv run python tools/validate_notebook.py         # execute end-to-end (live)
+uv run python tools/validate_notebook.py         # execute end-to-end (offline: reads data/)
 ```
+
+`unified.ipynb` syncs the checkout with the tracking remote before reading
+(fetch plus a `--ff-only` pull via `rl_crypto.cache.sync_cache`), so it always
+sees the latest committed cache; offline — or with local changes in the way —
+the pull refuses, the reason is printed, and the notebook still runs on the
+files on disk. It reads the candle archive, the live-record stream, and the run
+summary under `data/<slug>/`, plus the trained bundle under `models/`.
 
 ### Opening it in Zed
 

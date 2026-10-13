@@ -4,14 +4,17 @@ The git-tracked cache under ``data/<slug>/`` grows on every run but never
 corrupts: candles are *upserted* by timestamp into a sorted archive (so the
 history never shrinks and never duplicates), and live records are appended with
 a cap. Shared here so ``tools/run_pipeline.py`` and ``tools/record_live.py``
-build the cache identically.
+build the cache identically, and so a reader (the notebook, an analysis) can
+first :func:`sync_cache` it against the remote that the runners push to.
 """
 
 from __future__ import annotations
 
 import concurrent.futures as cf
 import json
+import subprocess
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -20,6 +23,12 @@ from .models import DatasetRow
 
 #: Recent live records kept in ``data/<slug>/live.jsonl`` (bounded).
 LIVE_CAP_DEFAULT = 1000
+
+#: Wall-clock cap per git subprocess (a fetch is the slow one).
+GIT_TIMEOUT_DEFAULT = 60.0
+
+#: Cache paths :func:`sync_cache` keeps current with the remote.
+CACHE_PATHS = ("data", "models")
 
 T = TypeVar("T")
 
@@ -167,7 +176,217 @@ def load_candles(path: str | Path, *, ticker: str) -> tuple[DatasetRow, ...]:
     return tuple(rows)
 
 
+# --------------------------------------------------------------------------- remote sync
+
+
+@dataclass(frozen=True, slots=True)
+class CacheSync:
+    """How the on-disk cache compares to the git remote after a sync attempt.
+
+    ``up_to_date`` is the single "trust the files on disk" flag; ``notes``
+    explains in words what happened — or what could not happen (offline, dirty
+    tree, diverged branch) — so a caller can print the reason, not a guess.
+    """
+
+    root: Path
+    upstream: str | None
+    local_head: str | None
+    upstream_head: str | None
+    behind: int
+    ahead: int
+    cache_stale: bool
+    dirty: bool
+    fetched: bool
+    pulled: bool
+    notes: tuple[str, ...] = ()
+
+    @property
+    def up_to_date(self) -> bool:
+        return (
+            self.upstream is not None
+            and not self.cache_stale
+            and not self.dirty
+            and self.behind == 0
+        )
+
+    def summary(self) -> str:
+        """One line for a human; the ``notes`` carry the detail."""
+        local = self.local_head or "?"
+        if self.upstream is None:
+            return f"cache: no remote tracking ref (local @ {local}); using the files on disk"
+        remote = self.upstream_head or "?"
+        if self.up_to_date:
+            return f"cache: up to date with {self.upstream} @ {remote}"
+        reasons = []
+        if self.behind:
+            reasons.append(f"{self.behind} commit(s) behind")
+        if self.ahead:
+            reasons.append(f"{self.ahead} commit(s) ahead")
+        if self.cache_stale:
+            reasons.append("data/models differ")
+        if self.dirty:
+            reasons.append("uncommitted changes")
+        detail = ", ".join(reasons) or "out of date"
+        return f"cache: out of date ({detail}) — local @ {local}, {self.upstream} @ {remote}"
+
+
+def _git(root: Path, *args: str, timeout: float) -> tuple[int, str, str]:
+    """Run one git command under ``root``; return ``(returncode, stdout, stderr)``."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 128, "", f"{type(exc).__name__}: {exc}"
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _tracking_ref(root: Path, *, timeout: float) -> str | None:
+    """``origin/main`` for the current branch — via ``@{u}``, else the sole remote."""
+    code, out, _ = _git(
+        root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=timeout
+    )
+    if code == 0 and out.strip():
+        return out.strip()
+    code, remotes, _ = _git(root, "remote", timeout=timeout)
+    names = remotes.split()
+    code, branch, _ = _git(root, "symbolic-ref", "--short", "HEAD", timeout=timeout)
+    if code == 0 and len(names) == 1 and branch.strip():
+        return f"{names[0]}/{branch.strip()}"
+    return None
+
+
+def _cache_stale(root: Path, upstream: str, paths: tuple[str, ...], *, timeout: float) -> bool:
+    """True when the committed cache paths differ between HEAD and ``upstream``."""
+    existing = [name for name in paths if (root / name).exists()]
+    if not existing:
+        return False
+    code, _, _ = _git(root, "diff", "--quiet", "HEAD", upstream, "--", *existing, timeout=timeout)
+    return code == 1
+
+
+def _dirty(root: Path, paths: tuple[str, ...], *, timeout: float) -> bool:
+    """True when the working tree has uncommitted changes under ``paths``."""
+    existing = [name for name in paths if (root / name).exists()]
+    if not existing:
+        return False
+    code, out, _ = _git(root, "status", "--porcelain", "--", *existing, timeout=timeout)
+    return code == 0 and bool(out.strip())
+
+
+def sync_cache(
+    root: str | Path,
+    *,
+    pull: bool = True,
+    paths: tuple[str, ...] = CACHE_PATHS,
+    timeout: float = GIT_TIMEOUT_DEFAULT,
+) -> CacheSync:
+    """Fetch the remote and fast-forward the checkout so the cache is current.
+
+    Safe against a busy working tree: ``git fetch`` never touches it, and the
+    update is a ``--ff-only`` pull, which refuses (leaving the tree intact)
+    when local changes or local commits are in the way — the caller gets a note
+    naming the command instead of a guessed-at overwrite. Every git call is
+    bounded by ``timeout`` and every failure is reported in ``notes`` rather
+    than raised, so a reader keeps working offline on whatever is on disk.
+    """
+    root = Path(root)
+    notes: list[str] = []
+    code, _, _ = _git(root, "rev-parse", "--is-inside-work-tree", timeout=timeout)
+    if code != 0:
+        return CacheSync(
+            root=root,
+            upstream=None,
+            local_head=None,
+            upstream_head=None,
+            behind=0,
+            ahead=0,
+            cache_stale=False,
+            dirty=False,
+            fetched=False,
+            pulled=False,
+            notes=("not a git checkout; reading the files on disk",),
+        )
+
+    def rev(ref: str) -> str | None:
+        code_, out_, _ = _git(root, "rev-parse", ref, timeout=timeout)
+        return out_.strip() if code_ == 0 else None
+
+    def short(sha: str | None) -> str | None:
+        """A short sha for display; ``None`` passes through (unknown ref)."""
+        return sha[:10] if sha else None
+
+    def counts() -> tuple[int, int, bool]:
+        """``(behind, ahead, cache_stale)`` for HEAD against the upstream ref."""
+        head, tip = rev("HEAD"), rev(upstream) if upstream else None
+        if not (head and tip) or head == tip:
+            return 0, 0, False
+        code_, out_, _ = _git(
+            root, "rev-list", "--left-right", "--count", f"HEAD...{upstream}", timeout=timeout
+        )
+        ahead_ = behind_ = 0
+        if code_ == 0 and out_.strip():
+            left, right = out_.strip().split()
+            ahead_, behind_ = int(left), int(right)
+        stale = _cache_stale(root, upstream, paths, timeout=timeout) if upstream else False
+        return behind_, ahead_, stale
+
+    upstream = _tracking_ref(root, timeout=timeout)
+    fetched = False
+    if upstream is None:
+        notes.append("no git remote for this branch; nothing to sync")
+    else:
+        remote = upstream.split("/", 1)[0]
+        code, _, err = _git(root, "fetch", "--quiet", remote, timeout=timeout)
+        fetched = code == 0
+        if not fetched:
+            reason = (err.strip().splitlines() or [f"git fetch exited {code}"])[-1]
+            notes.append(
+                f"fetch of {remote} failed ({reason}); "
+                "comparing against the last-fetched tip"
+            )
+
+    behind, ahead, cache_stale = counts()
+    dirty = _dirty(root, paths, timeout=timeout)
+
+    pulled = False
+    if upstream and "/" in upstream and (behind or cache_stale) and pull and fetched:
+        remote, _, branch = upstream.partition("/")
+        code, _, err = _git(root, "pull", "--ff-only", "--quiet", remote, branch, timeout=timeout)
+        if code == 0:
+            pulled = True
+            notes.append(f"fast-forwarded to {upstream}")
+        else:
+            reason = (err.strip().splitlines() or [f"git pull exited {code}"])[-1]
+            notes.append(
+                f"remote is ahead but `git pull --ff-only` refused ({reason}); "
+                "update the checkout to refresh the cache"
+            )
+        behind, ahead, cache_stale = counts()
+        dirty = _dirty(root, paths, timeout=timeout)
+
+    return CacheSync(
+        root=root,
+        upstream=upstream,
+        local_head=short(rev("HEAD")),
+        upstream_head=short(rev(upstream)) if upstream else None,
+        behind=behind,
+        ahead=ahead,
+        cache_stale=cache_stale,
+        dirty=dirty,
+        fetched=fetched,
+        pulled=pulled,
+        notes=tuple(notes),
+    )
+
+
 __all__ = [
+    "CacheSync",
     "LIVE_CAP_DEFAULT",
     "append_capped",
     "call_with_timeout",
@@ -180,4 +399,5 @@ __all__ = [
     "read_jsonl",
     "slug_for",
     "summary_path",
+    "sync_cache",
 ]

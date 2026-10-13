@@ -1,8 +1,9 @@
 name: Unified notebook smoke test
 
-# Executes notebooks/unified.ipynb against the LIVE upstream pipelines. This
-# hits real free APIs, so it is manual/scheduled only — never part of the
-# default PR checks (offline testing lives in ci.yml).
+# Executes notebooks/unified.ipynb end-to-end. The notebook first syncs the
+# checkout from the git remote (fetch + ff-only pull), then reads the committed
+# cache under data/ + models/ — the live data upstreams are never called; the
+# sibling checkouts are still needed for `uv sync` (path sources).
 on:
   workflow_dispatch:
   schedule:
