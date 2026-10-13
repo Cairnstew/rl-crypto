@@ -386,8 +386,8 @@ def sync_cache(
 
 
 __all__ = [
-    "CacheSync",
     "LIVE_CAP_DEFAULT",
+    "CacheSync",
     "append_capped",
     "call_with_timeout",
     "candle_dicts_from_rows",
