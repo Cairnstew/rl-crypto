@@ -133,3 +133,42 @@ Two things this repo should own, no upstream issue for them:
 
 - `data/README.md` — what each file is, cadence, upstream budget
 - `tools/audit_data_quality.py` — the audit itself
+
+---
+
+# Follow-up — 2026-10-13, upstream checked
+
+`tickerkit` fixed both issues the next day (`3196b24`, "classify a retrying 402
+as a throttle, ease the keyless CoinGecko limit", `Refs #1, #2`), and the local
+sibling checkout is in sync with it. Measured on the stored data, splitting
+`live.jsonl` at the fix timestamp:
+
+| | before fix (996 recs) | after fix (63 recs) |
+| --- | --- | --- |
+| aggregate market fields all `null` | **70** | **0** |
+| tickers with `market_cap` populated on the latest record | 3 of 15 | **15 of 15** |
+| `market.errors >= 1` | 88% | 90% |
+| `news.errors >= 1` | 65% | 67% |
+
+So the **data loss is closed** and the **error-count noise is not**. Every
+latest record now carries `market_cap`/`volume_24h`/`change_24h_pct`, while
+`market.errors` is still `1` on ~90% of records — the residual CoinGecko `meta`
+suppression left over from the 25 rpm problem, which no longer eats `agg_market`
+but still lands in `errors` and keeps `ok` reading `False` for snapshots that
+are complete. That residual is exactly why the rl-crypto-side fix in "Not filed
+upstream" below matters more than it looks: until `market.ok` stops being a
+different boolean from tickerkit's `data_quality.ok`, a clean-looking count of 1
+is indistinguishable from a real fault.
+
+**One correction to this report.** Section 1's premise — "the provider is dead
+for keyless use" — was wrong about the mechanism. CoinPaprika's `402` was its
+hourly soft limit resetting, not a paywall; the same URL now answers `200` with
+`ratelimit-limit: 20000 / ratelimit-reset: 1593602`. The symptom, reproduction
+and impact figures all stand; only the cause was wrong, and the fix upstream
+chose (route a retry-advertising 402 down the throttle path) is the right one for
+the real cause. Do not key-gate or drop the provider on this report's say-so.
+
+`ticker-news-signals` has had no commits since 2026-10-10, so issue #1 is
+untouched: a 4-ticker sweep a day later still produced `rss:cryptoslate returned
+HTTP 429 after 4 attempt(s)` on 3 of 4 tickers, and `news.errors >= 1` is
+unchanged at 67%.
