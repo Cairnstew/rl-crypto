@@ -9,6 +9,7 @@ Quality audits of this directory live in [`AUDIT.md`](AUDIT.md); re-run one with
 
 ```bash
 uv run python tools/run_pipeline.py --history-days 60          # whole watchlist
+uv run python tools/run_pipeline.py --retrain-only             # models only, no network
 uv run python tools/record_live.py                             # frequent live points
 uv run python tools/record_live.py --tickers BTC/USD ETH/USD   # just these
 ```
@@ -27,9 +28,34 @@ Per ticker, under `data/<slug>/` (e.g. `data/eth-usd/` for `ETH/USD`):
 
 | file | contents | growth |
 | ---- | -------- | ------ |
-| `candles.jsonl` | **raw market archive** — one clean OHLCV bar per interval, ticker+timestamp+OHLCV, sorted | **only grows**: upsert by timestamp, never shrinks, never duplicates |
+| `candles.jsonl` | **raw market archive** — one clean OHLCV bar per interval, ticker+timestamp+OHLCV, sorted, timestamps canonically `…Z` | **only grows**: upsert by timestamp, never shrinks, never duplicates |
 | `live.jsonl` | the live unified record (market **and** live news) + attached Tier-2 outlook | appended, capped at recent records (default 1000; more frequent via live.yml) |
-| `summary.json` | run metadata, archive span, model metrics, outlook, notes | overwritten every pipeline run |
+| `summary.json` | run metadata, archive span, **out-of-sample** model quality, outlook, notes | overwritten every pipeline run |
+
+Timestamps are canonicalised to ISO-8601 `…Z` on both read and write, and the
+archive is keyed on that canonical form. Two spellings of the same hour would
+otherwise file as two bars and silently duplicate the archive.
+
+### What `summary.json` reports
+
+`targets.<name>` carries **two** metric blocks plus a verdict:
+
+```json
+"fwd_volume_ratio": {
+  "in_sample":  { "rmse": 0.55, "mae": 0.42, "r2": 0.44 },
+  "holdout":    { "n_samples": 299,
+                  "metrics":  { "rmse": 0.61, "mae": 0.47, "r2": 0.31 },
+                  "baseline": { "rmse": 0.73, "…": "…" },
+                  "beats_baseline": true },
+  "trusted": true
+}
+```
+
+`in_sample` is fit quality on the rows the model was fitted on. **`holdout` is the
+number to read**: it is measured on the newest ~20% of rows, which were withheld
+from training, and compared against a constant predictor. See
+[`models/README.md`](../models/README.md) for the full protocol and what is
+trusted today (short version: nothing directional is).
 
 The trained Tier-1 bundles land in [`models/`](../models/README.md). Training
 reads the **whole** `candles.jsonl` archive every run and recomputes the
@@ -37,9 +63,32 @@ forward-shifted targets on the fly, so a bar's labels only become defined once
 its future is archived — the archive is the single source of truth, and no
 derived rows are ever cached stale.
 
+## Historic live records have no outlook
+
+`live.jsonl` rows recorded before the out-of-sample gate was added carried a
+`predictions` block with a `signal` and `confidence` produced by an in-sample
+model. Those numbers were not merely noisy, they asserted skill that did not
+exist, so the `predictions` block has been removed from every historical record
+and each row carries a note saying so. The market and news halves of those
+records are untouched and remain the best record of what each interval looked
+like.
+
+## Rebuilding models without spending quota
+
+```bash
+uv run python tools/run_pipeline.py --retrain-only
+```
+
+Recomputes features, labels and bundles from the committed archive — the right
+move after a feature-contract change, where the bars have not moved and only the
+model is stale. Takes no network and appends no live records.
+
 > **News history is intentionally absent.** The runners fetch market history
-> only; news features appear as `has_news=0` until RL training lands. Live news
-> still shows up in `live.jsonl` via the unified record.
+> only; news features appear as `has_news=0` until RL training lands. Because a
+> constant column teaches a model nothing and would arrive out-of-distribution at
+> serve time, the trainer **drops** those features from every bundle and records
+> them under `dropped_features` rather than fitting them to zero. Live news still
+> shows up in `live.jsonl` via the unified record.
 
 ## Cadence
 

@@ -44,7 +44,7 @@ from rl_crypto.cache import (
     merge_candles,
     summary_path,
 )
-from rl_crypto.dataset import candle_dicts, fetch_market_history, parse_iso
+from rl_crypto.dataset import candle_dicts, fetch_market_history, interval_seconds, parse_iso
 from rl_crypto.export import write_json
 from rl_crypto.ml import attach_predictions, outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, save_bundle
@@ -108,62 +108,119 @@ def build_dataset(  # local, bounded — patched by tests
     )
 
 
+def _fmt_confidence(value: float | None) -> str:
+    """Render a confidence for the console; ``None`` means no signal was earned."""
+    return "n/a" if value is None else f"{value:.3f}"
+
+
 def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], int]:
     """Grow the cache (archive -> train -> live) and return the run summary."""
     root = Path(args.root)
     now = utcnow()
     start = now - timedelta(days=max(1, args.history_days))
     ticker = args.ticker
+    retrain_only = bool(getattr(args, "retrain_only", False))
+    cadence = interval_seconds(args.timeframe)
 
     model_path = default_bundle_path(ticker, directory=root / "models")
-    archive_path = merge_candles(
-        candles_path(root, ticker),
-        candle_dicts_from_rows(
-            build_dataset(
-                ticker,
-                start=start,
-                end=now,
-                timeframe=args.timeframe,
-                limit=args.limit,
-                fetch_timeout=args.fetch_timeout,
-            ).rows
-        ),
-    )
+    if retrain_only:
+        # Rebuild the models from the archive already on disk. Used after a
+        # feature-contract change, when the labels and features must be
+        # recomputed but the bars have not changed — spending upstream quota to
+        # re-fetch identical candles would buy nothing.
+        #
+        # The merge still runs (with nothing to add) because it canonicalises
+        # timestamps in place: that is how an archive written before the
+        # canonical ISO form existed gets normalised, for free and without a
+        # single network call.
+        archive_path = merge_candles(candles_path(root, ticker), [])
+    else:
+        archive_path = merge_candles(
+            candles_path(root, ticker),
+            candle_dicts_from_rows(
+                build_dataset(
+                    ticker,
+                    start=start,
+                    end=now,
+                    timeframe=args.timeframe,
+                    limit=args.limit,
+                    fetch_timeout=args.fetch_timeout,
+                ).rows
+            ),
+        )
 
     # Train over the WHOLE archive — features and labels are recomputed from the
-    # full, continuously-growing clean history.
+    # full, continuously-growing clean history. The archive is stored at the
+    # run's timeframe, so the feature/target windows are measured in that same
+    # interval rather than assuming the 1h default.
     train_rows = load_candles(archive_path, ticker=ticker)
-    samples = build_samples(train_rows, horizon=args.horizon)
+    samples = build_samples(train_rows, horizon=args.horizon, interval_seconds=cadence)
     bundle = train_tier1(samples, horizon=args.horizon)
 
     # Live snapshot (market + live news) fused with an outlook from the newest
     # archived bar.
-    outlook = outlook_for_rows(train_rows, bundle, ticker=ticker)
-    live_record, live_note = call_with_timeout(
-        lambda: build_unified(ticker, lookback_hours=args.lookback_hours),
-        timeout=args.fetch_timeout,
-        label="live",
+    outlook = outlook_for_rows(
+        train_rows,
+        bundle,
+        ticker=ticker,
+        interval_seconds=cadence,
     )
-    if live_record is None:
-        live_record = UnifiedRecord(ticker=ticker, notes=(live_note,) if live_note else ())
-    attach_predictions(live_record, outlook)
 
-    live_dest = append_capped(live_path(root, ticker), live_record.to_dict())
+    live_dest: Path | None = None
+    live_record: UnifiedRecord | None = None
+    if not retrain_only:
+        record, live_note = call_with_timeout(
+            lambda: build_unified(ticker, lookback_hours=args.lookback_hours),
+            timeout=args.fetch_timeout,
+            label="live",
+        )
+        if record is None:
+            record = UnifiedRecord(ticker=ticker, notes=(live_note,) if live_note else ())
+        attach_predictions(record, outlook)
+        live_record = record
+        live_dest = append_capped(live_path(root, ticker), record.to_dict())
 
     summary = {
-        "schema": "rl-crypto/pipeline/2",
+        "schema": "rl-crypto/pipeline/3",
         "ticker": ticker,
         "generated_at": to_iso(now),
         "timeframe": args.timeframe,
         "horizon": args.horizon,
+        "feature_version": bundle.feature_version,
         "fetch_window": {"start": to_iso(start), "end": to_iso(now)},
         "archive": {
             "rows": len(train_rows),
             "candles_path": str(archive_path),
             "spans": [train_rows[0].timestamp, train_rows[-1].timestamp] if train_rows else None,
         },
-        "samples": {"total": len(samples), "feature_complete": bundle.n_samples},
-        "targets": {name: model.metrics for name, model in bundle.targets.items()},
+        "samples": {
+            "total": len(samples),
+            "feature_complete": bundle.n_samples,
+            "holdout": bundle.holdout_n_samples,
+        },
+        # What the models actually do on unseen data, and whether that beats the
+        # bar a constant predictor would clear. `in_sample` is kept for the
+        # fit-quality view it always was, now explicitly labelled so it cannot
+        # be mistaken for the headline number.
+        "targets": {
+            name: {
+                "in_sample": model.metrics,
+                "holdout": None
+                if model.holdout is None
+                else {
+                    "n_samples": model.holdout.n_samples,
+                    "metrics": model.holdout.metrics,
+                    "baseline": model.holdout.baseline,
+                    "beats_baseline": model.holdout.beats_baseline,
+                },
+                "trusted": bundle.trusted(name),
+            }
+            for name, model in bundle.targets.items()
+        },
+        "features": {
+            "used": list(bundle.feature_names),
+            "dropped_constant": list(bundle.dropped_features),
+        },
         "outlook": {
             "signal": outlook.signal,
             "confidence": outlook.confidence,
@@ -171,13 +228,22 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
             "probabilities": outlook.probabilities,
             "notes": list(outlook.notes),
         },
-        "live": {
-            "market_ok": live_record.market_ok,
-            "news_ok": live_record.news_ok,
-            "price": live_record.price,
-            "latest_sentiment": live_record.latest_sentiment,
-            "notes": list(live_record.notes),
-        },
+        "live": (
+            {
+                "fetched": False,
+                "note": "retrain-only run: no live snapshot was taken",
+            }
+            if live_record is None
+            else {
+                "fetched": True,
+                "market_ok": live_record.market_ok,
+                "news_ok": live_record.news_ok,
+                "price": live_record.price,
+                "latest_sentiment": live_record.latest_sentiment,
+                "notes": list(live_record.notes),
+            }
+        ),
+        "notes": list(bundle.notes),
     }
     summary_path(root, ticker).parent.mkdir(parents=True, exist_ok=True)
     write_json(summary_path(root, ticker), summary)
@@ -185,10 +251,18 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
     artifacts = {
         "bundle": save_bundle(bundle, model_path),
         "candles": archive_path,
-        "live": live_dest,
         "summary": summary_path(root, ticker),
     }
-    exit_code = 0 if (train_rows or live_record.market_ok or live_record.news_ok) else 1
+    if live_dest is not None:
+        artifacts["live"] = live_dest
+    exit_code = (
+        0
+        if (
+            train_rows
+            or (live_record is not None and (live_record.market_ok or live_record.news_ok))
+        )
+        else 1
+    )
     return artifacts, summary, exit_code
 
 
@@ -215,6 +289,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fetch-timeout", type=float, default=300.0, help="per-fetch wall-clock cap (s)"
     )
+    parser.add_argument(
+        "--retrain-only",
+        action="store_true",
+        help="rebuild models/summaries from the committed archive without fetching",
+    )
     parser.add_argument("--root", default=str(ROOT), help="repo root for models/ and data/")
     args = parser.parse_args(argv)
 
@@ -240,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 continue
+            # Reporting lives inside the try: a formatting slip over one ticker's
+            # summary must not take the rest of the watchlist down with it.
             summaries.append(summary)
             exit_code = 0 if code == 0 else exit_code
             print(f"pipeline {summary['ticker']} @ {summary['generated_at']}")
@@ -254,11 +335,22 @@ def main(argv: list[str] | None = None) -> int:
                 f"  fitted targets: {', '.join(sorted(summary['targets'])) or 'none'}"
                 f"  | samples complete: {summary['samples']['feature_complete']}"
             )
+            trusted = [name for name in summary["targets"] if summary["targets"][name]["trusted"]]
+            untrusted = [name for name in summary["targets"] if name not in trusted]
+            print(f"  beats baseline out of sample: {', '.join(trusted) or 'none'}")
+            if untrusted:
+                print(f"  below baseline (no signal): {', '.join(untrusted)}")
+            live = summary["live"]
+            live_state = (
+                f"market_ok={live.get('market_ok')} news_ok={live.get('news_ok')}"
+                if live.get("fetched")
+                else "skipped (retrain-only)"
+            )
             print(
-                f"  live: market_ok={summary['live']['market_ok']}"
-                f" news_ok={summary['live']['news_ok']}"
+                f"  live: {live_state}"
                 f" | signal={summary['outlook']['signal']}"
-                f" conf={summary['outlook']['confidence']}"
+                # confidence is None whenever no signal is earned — never a float format
+                f" conf={_fmt_confidence(summary['outlook']['confidence'])}"
             )
             for name, path in artifacts.items():
                 print(f"  wrote {name:<8} {path}")

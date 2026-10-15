@@ -19,6 +19,13 @@ The four targets:
 ``fwd_volume_ratio``
     ``log(mean(volume in horizon) / mean(volume in trailing window))`` — forward
     activity relative to what came before.
+
+Every target is anchored to *time*, not to row position. A label is only
+defined when the future it needs sits exactly ``horizon`` intervals away: a
+forward return measured across a data gap is not an ``h``-interval return, it is
+a longer one wearing the wrong label, and it would be indistinguishable from a
+genuine one in training. Missing the exact spacing yields ``None`` — the same
+"drop the row rather than invent a value" rule the rest of the pipeline uses.
 """
 
 from __future__ import annotations
@@ -28,7 +35,8 @@ from collections.abc import Sequence
 from statistics import pstdev
 from typing import Any
 
-from .features import _log_ret, _mean
+from .dataset import parse_iso
+from .features import DEFAULT_INTERVAL_SECONDS, _log_ret, _mean
 from .models import DatasetRow
 
 #: Default forward horizon, in intervals (predict the next bar).
@@ -58,24 +66,44 @@ TARGET_DESCRIPTIONS: dict[str, str] = {
 MIN_VOL_SPAN = 2
 
 
-def _has_future(rows: Sequence[DatasetRow], index: int, horizon: int) -> bool:
-    return horizon >= 1 and index + horizon < len(rows)
+def _ahead_by(
+    rows: Sequence[DatasetRow], index: int, span: int, interval_seconds: int
+) -> bool:
+    """True when ``rows[index + span]`` sits exactly ``span`` intervals ahead.
+
+    Row-counting alone would accept "the next bar whenever it turns up"; this
+    is what makes a label's horizon mean what its name says.
+    """
+    if span < 1 or index + span >= len(rows):
+        return False
+    here, there = parse_iso(rows[index].timestamp), parse_iso(rows[index + span].timestamp)
+    if here is None or there is None:
+        return False
+    return (there - here).total_seconds() == span * interval_seconds
 
 
 def forward_return(
-    rows: Sequence[DatasetRow], index: int, horizon: int = HORIZON_DEFAULT
+    rows: Sequence[DatasetRow],
+    index: int,
+    horizon: int = HORIZON_DEFAULT,
+    *,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> float | None:
-    """Realised log return from ``index`` to ``index + horizon``."""
-    if not _has_future(rows, index, horizon):
+    """Realised log return from ``index`` to ``index + horizon`` intervals."""
+    if not _ahead_by(rows, index, horizon, interval_seconds):
         return None
     return _log_ret(rows[index].close, rows[index + horizon].close)
 
 
 def forward_direction(
-    rows: Sequence[DatasetRow], index: int, horizon: int = HORIZON_DEFAULT
+    rows: Sequence[DatasetRow],
+    index: int,
+    horizon: int = HORIZON_DEFAULT,
+    *,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> float | None:
     """``1.0`` if the forward return is positive, else ``0.0`` (``None`` if unknown)."""
-    ret = forward_return(rows, index, horizon)
+    ret = forward_return(rows, index, horizon, interval_seconds=interval_seconds)
     if ret is None:
         return None
     return 1.0 if ret > 0.0 else 0.0
@@ -87,6 +115,7 @@ def forward_volatility(
     horizon: int = HORIZON_DEFAULT,
     *,
     min_span: int = MIN_VOL_SPAN,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> float | None:
     """Realised volatility over the next ``max(horizon, min_span)`` intervals.
 
@@ -95,7 +124,7 @@ def forward_volatility(
     the two-interval realised vol, which is a coherent short-window volatility.
     """
     span = max(horizon, min_span)
-    if not _has_future(rows, index, span):
+    if not _ahead_by(rows, index, span, interval_seconds):
         return None
     returns: list[float] = []
     for j in range(index + 1, index + span + 1):
@@ -112,10 +141,23 @@ def forward_volume_ratio(
     horizon: int = HORIZON_DEFAULT,
     *,
     trailing: int = TRAILING_VOLUME_WINDOW,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> float | None:
     """Forward volume relative to the trailing window, as a log ratio."""
-    if not _has_future(rows, index, horizon) or index - trailing + 1 < 0:
+    if index - trailing + 1 < 0:
         return None
+    if not _ahead_by(rows, index, horizon, interval_seconds):
+        return None
+    # The trailing window must be contiguous too, or "relative to what came
+    # before" is measured against a differently-spaced run of bars.
+    previous: Any = None
+    for j in range(index - trailing + 1, index + 1):
+        current = parse_iso(rows[j].timestamp)
+        if current is None:
+            return None
+        if previous is not None and (current - previous).total_seconds() != interval_seconds:
+            return None
+        previous = current
     future = [_positive(rows[j].volume) for j in range(index + 1, index + horizon + 1)]
     past = [_positive(rows[j].volume) for j in range(index - trailing + 1, index + 1)]
     if any(v is None for v in future) or any(v is None for v in past):
@@ -142,13 +184,18 @@ def compute_targets(
     index: int,
     *,
     horizon: int = HORIZON_DEFAULT,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> dict[str, float | None]:
     """Every target for ``rows[index]`` at the given ``horizon``."""
     return {
-        "fwd_return": forward_return(rows, index, horizon),
-        "fwd_direction": forward_direction(rows, index, horizon),
-        "fwd_volatility": forward_volatility(rows, index, horizon),
-        "fwd_volume_ratio": forward_volume_ratio(rows, index, horizon),
+        "fwd_return": forward_return(rows, index, horizon, interval_seconds=interval_seconds),
+        "fwd_direction": forward_direction(rows, index, horizon, interval_seconds=interval_seconds),
+        "fwd_volatility": forward_volatility(
+            rows, index, horizon, interval_seconds=interval_seconds
+        ),
+        "fwd_volume_ratio": forward_volume_ratio(
+            rows, index, horizon, interval_seconds=interval_seconds
+        ),
     }
 
 
@@ -156,10 +203,16 @@ def build_target_table(
     rows: Sequence[DatasetRow],
     *,
     horizon: int = HORIZON_DEFAULT,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> tuple[dict[str, Any], ...]:
     """One ``{"timestamp", **targets}`` dict per row."""
     return tuple(
-        {"timestamp": rows[index].timestamp, **compute_targets(rows, index, horizon=horizon)}
+        {
+            "timestamp": rows[index].timestamp,
+            **compute_targets(
+                rows, index, horizon=horizon, interval_seconds=interval_seconds
+            ),
+        }
         for index in range(len(rows))
     )
 

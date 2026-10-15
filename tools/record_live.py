@@ -36,7 +36,7 @@ from rl_crypto.cache import (
     live_path,
     load_candles,
 )
-from rl_crypto.dataset import fetch_prices, parse_iso
+from rl_crypto.dataset import fetch_prices, interval_seconds, parse_iso
 from rl_crypto.ml import attach_predictions
 from rl_crypto.ml.serve import outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, load_bundle
@@ -111,7 +111,7 @@ def _window_rows(
             continue
         rows[key] = DatasetRow(
             ticker=ticker,
-            timestamp=str(raw),
+            timestamp=key,
             open=candle.get("open"),
             high=candle.get("high"),
             low=candle.get("low"),
@@ -163,7 +163,12 @@ def record_live(
                 fetch_timeout=args.fetch_timeout,
             )
             bundle = load_bundle(default_bundle_path(ticker, directory=root / "models"))
-            outlook = outlook_for_rows(rows, bundle, ticker=ticker)
+            outlook = outlook_for_rows(
+                rows,
+                bundle,
+                ticker=ticker,
+                interval_seconds=interval_seconds(args.timeframe),
+            )
             attach_predictions(record, outlook)
             if notes:
                 record.notes = (*record.notes, *notes)
@@ -175,9 +180,13 @@ def record_live(
             payloads.append(payload)
 
             preds = payload["predictions"]
+            # `confidence` is None whenever the outlook has no earned signal —
+            # format it as a string, never as a float.
+            confidence = preds["confidence"]
+            shown = "n/a" if confidence is None else f"{confidence:.3f}"
             print(
                 f"live {ticker} @ {payload['_generated_at']}"
-                f" | signal={preds['signal']} conf={preds['confidence']:.3f}"
+                f" | signal={preds['signal']} conf={shown}"
                 f" | mkt={payload['market']['ok']} news={payload['news']['ok']}"
                 f" price={payload['market']['price']}"
                 f" | candles={len(rows)}"

@@ -176,7 +176,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     from .dataset import build_dataset
     from .ml.store import default_bundle_path
     from .ml.tier1 import train_tier1
-    from .samples import build_samples
+    from .samples import build_dataset_samples
 
     config = Config.from_env()
     dataset = build_dataset(
@@ -189,7 +189,9 @@ def cmd_train(args: argparse.Namespace) -> int:
         market_config=config.market_config(),
         news_config=config.news_config(),
     )
-    samples = build_samples(dataset.rows, horizon=args.horizon)
+    # The dataset knows its own interval; features and labels are both built
+    # against it, so a non-1h timeframe gets consistent windows.
+    samples = build_dataset_samples(dataset, horizon=args.horizon)
     targets = args.target or list(TARGET_NAMES)
     bundle = train_tier1(samples, horizon=args.horizon, targets=targets)
 
@@ -199,9 +201,14 @@ def cmd_train(args: argparse.Namespace) -> int:
     save_bundle(bundle, path)
     print(
         f"trained {len(bundle.targets)} target(s) from {len(samples)} rows "
-        f"({bundle.n_samples} feature-complete) -> {path}",
+        f"({bundle.n_samples} feature-complete, {bundle.holdout_n_samples} held out) -> {path}",
         file=sys.stderr,
     )
+    trusted = [name for name in bundle.targets if bundle.trusted(name)]
+    untrusted = [name for name in bundle.targets if not bundle.trusted(name)]
+    print(f"  beats baseline out of sample: {', '.join(trusted) or 'none'}", file=sys.stderr)
+    if untrusted:
+        print(f"  below baseline (no signal emitted): {', '.join(untrusted)}", file=sys.stderr)
     for note in bundle.notes:
         print(f"  - {note}", file=sys.stderr)
 

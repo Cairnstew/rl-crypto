@@ -120,8 +120,14 @@ newest = live[-1]
 
 print("live records:", len(live), "| newest generated at:", newest["generated_at"])
 print("market:", newest["market"]["price"], "| news:", newest["news"]["latest_sentiment"])
-print("attached outlook: signal", newest["predictions"]["signal"],
-      "| confidence", round(newest["predictions"]["confidence"], 4))
+
+# A record may carry no outlook at all (older ones were stripped, and a
+# retrain-only run writes none), and confidence is None when no model has
+# earned a signal. Both are honest states, so report them rather than crash.
+pred = newest.get("predictions") or {}
+conf = pred.get("confidence")
+print("attached outlook: signal", pred.get("signal"),
+      "| confidence", "n/a" if conf is None else round(conf, 4))
 print("notes:", newest["notes"])
 """
 
@@ -165,9 +171,14 @@ CODE_ML_OUTLOOK = """\
 committed = load_bundle(default_bundle_path(TICKER, directory=ROOT / "models"))
 outlook = outlook_for_rows(rows, committed, ticker=TICKER)
 
+# The gate withholds signal/confidence unless the backing model beat its
+# baseline out of sample, so both are legitimately None here.
 print("committed bundle -> feature timestamp:", outlook.feature_timestamp)
-print("signal:", outlook.signal, "| confidence:", round(outlook.confidence, 4))
+print("signal:", outlook.signal, "| confidence:",
+      "n/a" if outlook.confidence is None else round(outlook.confidence, 4))
 print(outlook.predictions)
+for note in outlook.notes:
+    print(" -", note)
 """
 
 

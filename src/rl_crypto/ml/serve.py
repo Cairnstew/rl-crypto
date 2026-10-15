@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ..dataset import build_dataset, interval_seconds
-from ..features import latest_complete
+from ..features import DEFAULT_INTERVAL_SECONDS, dataset_interval, latest_complete
 from ..models import Dataset, DatasetRow, UnifiedRecord, to_iso, utcnow
 from .store import load_bundle
 from .tier1 import Tier1Bundle
@@ -47,12 +47,20 @@ def outlook_for_rows(
     *,
     ticker: str,
     generated_at: str | None = None,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> Outlook:
-    """Predict from the newest row in ``rows`` that has a complete feature set."""
+    """Predict from the newest row in ``rows`` that has a complete feature set.
+
+    ``interval_seconds`` must match the cadence ``rows`` are actually stored at
+    — the time-aware windows measure gaps in real time, so passing the wrong
+    cadence silently withholds every windowed feature.
+    """
     stamp = generated_at or to_iso(utcnow())
     if not rows:
         return _empty(ticker, bundle, stamp, "window has no rows")
-    feature_row = latest_complete(rows, names=bundle.feature_names)
+    feature_row = latest_complete(
+        rows, names=bundle.feature_names, interval_seconds=interval_seconds
+    )
     if feature_row is None:
         return _empty(
             ticker,
@@ -71,9 +79,17 @@ def outlook_for_dataset(
     *,
     generated_at: str | None = None,
 ) -> Outlook:
-    """Predict from a built :class:`~rl_crypto.models.Dataset`."""
+    """Predict from a built :class:`~rl_crypto.models.Dataset`.
+
+    The dataset's own ``interval`` sets the cadence, matching how its samples
+    were built.
+    """
     return outlook_for_rows(
-        dataset.rows, bundle, ticker=dataset.ticker, generated_at=generated_at
+        dataset.rows,
+        bundle,
+        ticker=dataset.ticker,
+        generated_at=generated_at,
+        interval_seconds=dataset_interval(dataset),
     )
 
 

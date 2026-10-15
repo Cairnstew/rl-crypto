@@ -35,7 +35,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "data"
 OHLC = ("open", "high", "low", "close", "volume")
-TS_FMT = "%Y-%m-%d %H:%M:%S%z"
+# One canonical parser for every timestamp in this repo. The archives are
+# written in ISO-8601 `...Z`; hardcoding a second `strptime` format here is how
+# a format change goes unnoticed until the audit crashes on it.
+from rl_crypto.dataset import parse_iso  # noqa: E402
+
+
+def _parse_ts(raw: str) -> datetime:
+    """Parse a timestamp from the cache, or raise with the offending value."""
+    parsed = parse_iso(raw)
+    if parsed is None:
+        raise ValueError(f"unparseable timestamp {raw!r}")
+    return parsed
 HOUR = 3600.0
 
 
@@ -70,7 +81,7 @@ def audit_candles(rows: list[tuple[int, dict]]) -> dict:
         if not isinstance(raw, str):
             bad["missing_timestamp"] += 1
             continue
-        ts = datetime.strptime(raw, TS_FMT)
+        ts = _parse_ts(raw)
         if prev is not None:
             delta = (ts - prev).total_seconds()
             if delta <= 0:
@@ -135,7 +146,7 @@ def audit_candles(rows: list[tuple[int, dict]]) -> dict:
         if med > 0:
             out["volume_max_over_median"] = round(max(volumes) / med, 1)
     if rows:
-        last = datetime.strptime(rows[-1][1]["timestamp"], TS_FMT)
+        last = _parse_ts(rows[-1][1]["timestamp"])
         out["hours_since_last_bar"] = round((datetime.now(UTC) - last).total_seconds() / HOUR, 1)
         out["first_bar"] = rows[0][1]["timestamp"]
         out["last_bar"] = rows[-1][1]["timestamp"]
@@ -213,7 +224,7 @@ def cross_check(slug: str) -> list[str]:
         raw = r.get("timestamp")
         close = r.get("close")
         if isinstance(raw, str) and isinstance(close, float):
-            bars[datetime.strptime(raw, TS_FMT)] = close
+            bars[_parse_ts(raw)] = close
     if not bars:
         return []
     out = []
@@ -223,7 +234,7 @@ def cross_check(slug: str) -> list[str]:
         gen, price = r.get("generated_at"), (r.get("market") or {}).get("price")
         if not gen or not price:
             continue
-        t = datetime.strptime(gen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        t = _parse_ts(gen)
         secs, bar = min((abs((t - b).total_seconds()), b) for b in bars)
         if secs > 6 * HOUR:
             continue

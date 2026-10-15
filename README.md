@@ -102,6 +102,20 @@ uv sync --group dev        # creates .venv from uv.lock
 uv run rl-crypto --help
 ```
 
+**On NixOS, outside `nix develop`, set `LD_LIBRARY_PATH`.** The PyPI wheels for
+numpy/pandas link `libz.so.1` and `libstdc++.so.6` by soname, and NixOS has no
+`/lib`, so importing numpy fails with `libz.so.1: cannot open shared object
+file`. Point it at both libraries from the store:
+
+```bash
+export LD_LIBRARY_PATH="$(dirname $(ls -d /nix/store/*zlib*/lib/libz.so.1 | head -1)):\
+$(dirname $(ls -d /nix/store/*gcc*-lib/lib/libstdc++.so.6 | head -1))"
+```
+
+Check the ELF class before picking one — the store holds both 32- and 64-bit
+builds, and a mismatched one fails with `libz.so.1: wrong ELF class: ELFCLASS32`
+rather than anything obviously related.
+
 ## The unified CLI
 
 ```
@@ -173,25 +187,55 @@ Tier 3 (RL) is deliberately out of scope today; the seam for it is
 
 | Tier | Module | Job |
 | ---- | ------ | --- |
-| **T0** | `rl_crypto.features` | Deterministic, **causal** features (lags, rolling vol/gaps, volume z, sentiment level/Δ/EWMA, novelty, calendar). Identical for train and serve — no skew by construction. |
-| **T1** | `rl_crypto.ml.tier1` | One structured model per target metric, fit on historical samples. Reference estimators are pure numpy (`ridge`, `logistic`, plus `mean`/`base_rate` baselines). |
-| **T2** | `rl_crypto.ml.tier2` | Fuse the Tier-1 outputs into one `Outlook` (predictions, probabilities, a composite `signal`/`confidence`). |
+| **T0** | `rl_crypto.features` | Deterministic, **causal** features (lags, rolling vol/gaps, volume z, sentiment level/Δ/EWMA, novelty, calendar). Identical for train and serve — no skew by construction. Windows are measured in *time*, so a data gap withholds a feature rather than silently re-timing it. |
+| **T1** | `rl_crypto.ml.tier1` | One structured model per target metric, fit on historical samples. Reference estimators are pure numpy (`ridge`, `logistic`, plus `mean`/`base_rate` baselines). Every model is scored **out of sample** against a constant baseline. |
+| **T2** | `rl_crypto.ml.tier2` | Fuse the Tier-1 outputs into one `Outlook` (predictions, probabilities) and publish a composite `signal`/`confidence` **only** for models that earned it. |
 | **T3** *(future)* | — | RL consumes T0 features ⊕ T2 outlook as its observation vector. |
 
 Targets (each gets its own model): **`fwd_return`** (regression), **`fwd_direction`**
 (classification), **`fwd_volatility`**, **`fwd_volume_ratio`**. All are built by
 looking **forward** from a row, while features only look back, so training
-labels can never leak into inputs. `None` propagates through the whole stack —
-a missing measurement yields a missing feature/prediction, never a fabricated
-`0` (the sole exception is the documented `has_news`/`sentiment` encoding).
+labels can never leak into inputs. A horizon label is only defined when its
+future sits *exactly* that many intervals away — across a data gap there is no
+label, rather than a longer-horizon one wearing the wrong name. `None`
+propagates through the whole stack — a missing measurement yields a missing
+feature/prediction, never a fabricated `0` (the sole exception is the documented
+`has_news`/`sentiment` encoding).
+
+### Every model must beat a constant, out of sample
+
+A fit scored on its own training rows measures memorised noise. Tier 1 therefore
+reserves the newest ~20% of rows as a chronological holdout, **ships the weights
+fitted on the training split only** (so the published score describes exactly the
+artifact in `models/`), and compares each target against a constant predictor on
+that reserved tail. The comparison needs a **1% relative** margin: on ~300 rows a
+0.1% log-loss difference is noise.
+
+Tier 2 then withholds `signal`/`confidence` for any target that did not clear
+that bar, with a note saying why. Point predictions are still emitted — they are
+inputs for a future RL observation vector, not claims about the market.
+
+What that verdict currently says across all 15 tracked tickers:
+
+| target | beats baseline | verdict |
+| ------ | -------------- | ------- |
+| `fwd_return` | 0/15 | **no directional skill** — worse than a constant everywhere |
+| `fwd_direction` | 0/15 | **no directional skill** — at or below always-up |
+| `fwd_volatility` | 9/15 | modest but real |
+| `fwd_volume_ratio` | 15/15 | solidly real |
+
+So the pipeline currently publishes **no directional signal**, which is the
+honest reading of hourly price-only data. The volume-activity target is the one
+with real out-of-sample skill. Details in [`models/README.md`](models/README.md).
 
 **News is live-only for now.** The production runner is deliberately
-market-history-only: news **history** is not ingested (its Wayback backfill is
-slow and there is no downstream consumer for training-time news until RL
-training lands). News features in the feature matrix therefore encode absence
-(`has_news=0`) today and will light up when RL arrives; **live** news still
-flows through the unified record and the outlook. Re-enable history ingestion
-with `tools/run_pipeline.py --news-history` when you're ready.
+market-history-only, so every news feature is constant in training. A constant
+column teaches a model nothing and would arrive out-of-distribution at serve
+time (the live path *does* have news), so the trainer drops such features
+entirely and lists them under `dropped_features`. They light up on their own once
+news history is ingested. Re-enable history ingestion with
+`tools/run_pipeline.py --news-history` when you're ready, and retrain with
+`--retrain-only` afterwards.
 
 ```bash
 # 1) materialise features + targets for a window (no learning)
@@ -234,9 +278,14 @@ there and every runner follows:
 
 ```bash
 uv run python tools/run_pipeline.py --history-days 60   # whole watchlist: archive + train
+uv run python tools/run_pipeline.py --retrain-only      # models only, from the committed archive
 uv run python tools/record_live.py                     # whole watchlist: frequent live points
 uv run python tools/record_live.py --tickers BTC/USD   # just one, for a spot check
 ```
+
+`--retrain-only` rebuilds every bundle from the archive already on disk, spending
+no upstream quota and appending no live records — the right move after a
+feature-contract change, when the bars have not moved but the models are stale.
 
 What the cache holds per ticker (all under the repo; see
 [`data/README.md`](data/README.md)), e.g. for `ETH/USD`:
@@ -246,7 +295,7 @@ What the cache holds per ticker (all under the repo; see
 | `models/eth-usd.json` | fresh Tier-1 bundle | overwritten per pipeline run |
 | `data/eth-usd/candles.jsonl` | **raw market archive**, one OHLCV bar per interval | **only grows** (upsert by timestamp) |
 | `data/eth-usd/live.jsonl` | live unified record (market **and** live news) + outlook | appended, capped (default 1000) |
-| `data/eth-usd/summary.json` | archive span, model metrics, outlook, notes | overwritten per pipeline run |
+| `data/eth-usd/summary.json` | archive span, **out-of-sample** model quality, outlook, notes | overwritten per pipeline run |
 
 The workflows reuse the sibling-checkout + `uv sync` layout of `ci.yml`, share
 a concurrency group so their write-backs can't race, and every write-back

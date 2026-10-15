@@ -23,6 +23,20 @@ different: a sparse archive would otherwise drop most rows. So they are
 **encoded**, not imputed: ``sentiment`` is ``0.0`` when there is no news and
 ``has_news`` is ``0`` — the indicator tells the model that ``0`` means "no
 news", not "neutral sentiment". Nothing else is fabricated.
+
+Lags are measured in *time*, not in rows
+----------------------------------------
+Every windowed feature checks that the rows it spans are exactly one interval
+apart (:func:`_span_ok`) and returns ``None`` when they are not. Without that
+check a single missing bar silently re-times the model: ``ret_1`` becomes a
+2-hour return, ``ma_gap_24`` becomes a 25-hour average, and ``fwd_return``'s
+"next bar" becomes "next bar whenever it arrives" — a mislabelled horizon that
+no test of the *values* would ever catch. A gap now costs a row instead of
+corrupting the training set, which is the same bargain the rest of T0 makes.
+
+``interval_seconds`` threads the expected cadence through every helper (default
+3600, matching the pipeline's ``1h`` timeframe) and is set from the dataset's
+own interval wherever one is available.
 """
 
 from __future__ import annotations
@@ -33,10 +47,10 @@ from dataclasses import dataclass
 from statistics import pstdev
 from typing import Any
 
-from .dataset import parse_iso
+from .dataset import interval_seconds, parse_iso
 from .models import Dataset, DatasetRow
 
-FEATURE_VERSION = "rl-crypto/features/1"
+FEATURE_VERSION = "rl-crypto/features/2"
 
 #: Fixed look-back windows, in rows (intervals).
 MA_SHORT, MA_LONG = 6, 24
@@ -44,6 +58,9 @@ VOL_SHORT, VOL_LONG = 3, 6
 RETURN_LAGS = (1, 3, 6)
 VOLUME_Z_WINDOW = 12
 EWMA_SPAN = 6
+
+#: The interval T0 assumes when a caller does not supply one (the pipeline's 1h).
+DEFAULT_INTERVAL_SECONDS = 3600
 
 #: Feature groups in emit order. The concatenation is :data:`FEATURE_NAMES`.
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
@@ -81,7 +98,7 @@ FEATURE_DESCRIPTIONS: dict[str, str] = {
     "volume_z_12": "(volume - mean(volume, 12)) / stdev(volume, 12)",
     "sentiment": "bucket mean sentiment, or 0.0 when has_news is 0",
     "sentiment_delta": "sentiment_i - sentiment_{i-1}",
-    "sentiment_ewma_6": "mean sentiment over the last 6 rows that had news",
+    "sentiment_ewma_6": "decay-weighted mean sentiment over the last 6 rows that had news",
     "articles_log": "log1p(article_count)",
     "novelty": "1.0 when any novelty flag in the bucket, else 0.0",
     "has_news": "1.0 when the bucket has news, else 0.0",
@@ -90,10 +107,6 @@ FEATURE_DESCRIPTIONS: dict[str, str] = {
     "dow_sin": "sin(2*pi*weekday/7)",
     "dow_cos": "cos(2*pi*weekday/7)",
 }
-
-#: Rows of price history required before a price feature set is complete.
-MIN_HISTORY = MA_LONG
-
 
 @dataclass(slots=True)
 class FeatureRow:
@@ -160,28 +173,69 @@ def _closes(rows: Sequence[DatasetRow], start: int, stop: int) -> list[float] | 
     return out
 
 
-def _log_returns_back(rows: Sequence[DatasetRow], index: int, window: int) -> list[float]:
-    """Log returns for the ``window`` steps ending at ``index`` (causal)."""
+def _span_ok(
+    rows: Sequence[DatasetRow], start: int, stop: int, interval_seconds: int
+) -> bool:
+    """True when ``rows[start..stop]`` are exactly one interval apart throughout.
+
+    This is the gap guard. ``False`` means the window spans a hole (or an
+    unparseable timestamp), so any feature averaging across it would be
+    silently re-timed and is withheld instead.
+    """
+    if start < 0 or stop >= len(rows) or stop < start:
+        return False
+    previous: Any = None
+    for j in range(start, stop + 1):
+        current = parse_iso(rows[j].timestamp)
+        if current is None:
+            return False
+        if previous is not None:
+            delta = (current - previous).total_seconds()
+            if delta != interval_seconds:
+                return False
+        previous = current
+    return True
+
+
+def _log_returns_back(
+    rows: Sequence[DatasetRow], index: int, window: int, interval_seconds: int
+) -> list[float]:
+    """Log returns for the ``window`` steps ending at ``index`` (causal).
+
+    Withheld entirely (``[]``) when the window crosses a gap, so a realised
+    volatility is never computed over a window whose spacing is wrong.
+    """
+    start = max(1, index - window + 1)
+    if not _span_ok(rows, start - 1, index, interval_seconds):
+        return []
     out: list[float] = []
-    for j in range(max(1, index - window + 1), index + 1):
+    for j in range(start, index + 1):
         ret = _log_ret(rows[j - 1].close, rows[j].close)
         if ret is not None:
             out.append(ret)
     return out
 
 
-def _return(rows: Sequence[DatasetRow], index: int, lag: int) -> float | None:
-    if index - lag < 0:
+def _return(
+    rows: Sequence[DatasetRow], index: int, lag: int, interval_seconds: int
+) -> float | None:
+    if not _span_ok(rows, index - lag, index, interval_seconds):
         return None
     return _log_ret(rows[index - lag].close, rows[index].close)
 
 
-def _volatility(rows: Sequence[DatasetRow], index: int, window: int) -> float | None:
-    returns = _log_returns_back(rows, index, window)
+def _volatility(
+    rows: Sequence[DatasetRow], index: int, window: int, interval_seconds: int
+) -> float | None:
+    returns = _log_returns_back(rows, index, window, interval_seconds)
     return pstdev(returns) if len(returns) >= 2 else None
 
 
-def _ma_gap(rows: Sequence[DatasetRow], index: int, window: int) -> float | None:
+def _ma_gap(
+    rows: Sequence[DatasetRow], index: int, window: int, interval_seconds: int
+) -> float | None:
+    if not _span_ok(rows, index - window + 1, index, interval_seconds):
+        return None
     closes = _closes(rows, index - window + 1, index)
     if closes is None:
         return None
@@ -213,8 +267,10 @@ def _volume_log(row: DatasetRow) -> float | None:
     return math.log1p(volume)
 
 
-def _volume_z(rows: Sequence[DatasetRow], index: int, window: int) -> float | None:
-    if index - window + 1 < 0:
+def _volume_z(
+    rows: Sequence[DatasetRow], index: int, window: int, interval_seconds: int
+) -> float | None:
+    if not _span_ok(rows, index - window + 1, index, interval_seconds):
         return None
     volumes: list[float] = []
     for j in range(index - window + 1, index + 1):
@@ -243,13 +299,24 @@ def _sentiment_delta(rows: Sequence[DatasetRow], index: int) -> float | None:
 
 
 def _sentiment_ewma(rows: Sequence[DatasetRow], index: int) -> float:
-    scores = [
-        _finite_or_none(rows[j].sentiment_score)
-        for j in range(max(0, index - EWMA_SPAN + 1), index + 1)
-        if rows[j].has_news
-    ]
-    usable = [s for s in scores if s is not None]
-    return sum(usable) / len(usable) if usable else 0.0
+    """Decay-weighted mean sentiment over the trailing window of news buckets.
+
+    A genuinely exponential weighting (``alpha = 2 / (span + 1)``, the standard
+    span→alpha map) rather than the flat mean this used to compute: recent
+    sentiment should dominate an hour-old one. Rows without news contribute
+    neither a value nor a state update, so a sparse archive does not drag the
+    average toward zero — and with no news at all the answer is ``0.0``.
+    """
+    alpha = 2.0 / (EWMA_SPAN + 1.0)
+    weighted: float | None = None
+    for j in range(max(0, index - EWMA_SPAN + 1), index + 1):
+        if not rows[j].has_news:
+            continue
+        score = _finite_or_none(rows[j].sentiment_score)
+        if score is None:
+            continue
+        weighted = score if weighted is None else (1.0 - alpha) * weighted + alpha * score
+    return 0.0 if weighted is None else weighted
 
 
 def _calendar(timestamp: str) -> dict[str, float | None]:
@@ -269,23 +336,28 @@ def _calendar(timestamp: str) -> dict[str, float | None]:
 # --------------------------------------------------------------------------- public
 
 
-def feature_row(rows: Sequence[DatasetRow], index: int) -> FeatureRow:
+def feature_row(
+    rows: Sequence[DatasetRow],
+    index: int,
+    *,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+) -> FeatureRow:
     """The Tier-0 feature row for ``rows[index]``, using only rows ``<= index``."""
     if not 0 <= index < len(rows):
         raise IndexError(f"index {index} out of range for {len(rows)} rows")
     row = rows[index]
     values: dict[str, float | None] = {
-        "ret_1": _return(rows, index, 1),
-        "ret_3": _return(rows, index, 3),
-        "ret_6": _return(rows, index, 6),
-        "vol_3": _volatility(rows, index, VOL_SHORT),
-        "vol_6": _volatility(rows, index, VOL_LONG),
+        "ret_1": _return(rows, index, 1, interval_seconds),
+        "ret_3": _return(rows, index, 3, interval_seconds),
+        "ret_6": _return(rows, index, 6, interval_seconds),
+        "vol_3": _volatility(rows, index, VOL_SHORT, interval_seconds),
+        "vol_6": _volatility(rows, index, VOL_LONG, interval_seconds),
         "range_1": _range(row),
         "body_1": _body(row),
-        "ma_gap_6": _ma_gap(rows, index, MA_SHORT),
-        "ma_gap_24": _ma_gap(rows, index, MA_LONG),
+        "ma_gap_6": _ma_gap(rows, index, MA_SHORT, interval_seconds),
+        "ma_gap_24": _ma_gap(rows, index, MA_LONG, interval_seconds),
         "volume_log": _volume_log(row),
-        "volume_z_12": _volume_z(rows, index, VOLUME_Z_WINDOW),
+        "volume_z_12": _volume_z(rows, index, VOLUME_Z_WINDOW, interval_seconds),
         "sentiment": _sentiment(rows, index),
         "sentiment_delta": _sentiment_delta(rows, index),
         "sentiment_ewma_6": _sentiment_ewma(rows, index),
@@ -297,20 +369,41 @@ def feature_row(rows: Sequence[DatasetRow], index: int) -> FeatureRow:
     return FeatureRow(timestamp=row.timestamp, values=values)
 
 
-def build_feature_table(rows: Sequence[DatasetRow]) -> tuple[FeatureRow, ...]:
+def build_feature_table(
+    rows: Sequence[DatasetRow],
+    *,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+) -> tuple[FeatureRow, ...]:
     """One :class:`FeatureRow` per row, in order."""
-    return tuple(feature_row(rows, index) for index in range(len(rows)))
+    return tuple(
+        feature_row(rows, index, interval_seconds=interval_seconds)
+        for index in range(len(rows))
+    )
 
 
 def build_dataset_features(dataset: Dataset) -> tuple[FeatureRow, ...]:
-    """Features for a whole :class:`~rl_crypto.models.Dataset`."""
-    return build_feature_table(dataset.rows)
+    """Features for a whole :class:`~rl_crypto.models.Dataset`.
+
+    The interval comes from the dataset's own ``interval`` string, so a caller
+    that built a ``5m`` dataset gets ``5m``-consistent windows without passing
+    anything.
+    """
+    return build_feature_table(dataset.rows, interval_seconds=dataset_interval(dataset))
+
+
+def dataset_interval(dataset: Dataset) -> int:
+    """The dataset's interval in seconds, falling back to the 1h default."""
+    try:
+        return interval_seconds(dataset.interval)
+    except (TypeError, ValueError, KeyError):
+        return DEFAULT_INTERVAL_SECONDS
 
 
 def latest_complete(
     rows: Sequence[DatasetRow],
     *,
     names: Sequence[str] = FEATURE_NAMES,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> FeatureRow | None:
     """The newest row whose ``names`` are all present — the live inference row.
 
@@ -318,7 +411,7 @@ def latest_complete(
     history), so a caller reports "no outlook" rather than a fabricated one.
     """
     for index in range(len(rows) - 1, -1, -1):
-        candidate = feature_row(rows, index)
+        candidate = feature_row(rows, index, interval_seconds=interval_seconds)
         if all(candidate.values.get(name) is not None for name in names):
             return candidate
     return None
@@ -330,6 +423,7 @@ def as_vector(row: FeatureRow, names: Sequence[str] = FEATURE_NAMES) -> list[flo
 
 
 __all__ = [
+    "DEFAULT_INTERVAL_SECONDS",
     "FEATURE_DESCRIPTIONS",
     "FEATURE_GROUPS",
     "FEATURE_NAMES",

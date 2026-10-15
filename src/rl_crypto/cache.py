@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .export import write_jsonl
-from .models import DatasetRow
+from .models import DatasetRow, to_iso
 
 #: Recent live records kept in ``data/<slug>/live.jsonl`` (bounded).
 LIVE_CAP_DEFAULT = 1000
@@ -116,12 +116,33 @@ def append_capped(
 # --------------------------------------------------------------------------- candles
 
 
+def _canonical_timestamp(value: Any) -> str | None:
+    """One canonical ISO-8601 ``...Z`` form for a timestamp, whatever it arrived as.
+
+    Upstream emits ``datetime`` objects whose ``str()`` is space-separated
+    (``2026-08-12 21:00:00+00:00``) while this project's own records use ``Z``.
+    Keying the archive on the raw string therefore made the format load-bearing:
+    a single upstream change would file the same hourly bar under a second key
+    and silently duplicate the archive, while leaving the file itself mixed.
+    Parsing first makes the key format-independent.
+    """
+    # Imported here, not at module scope: `dataset` imports this module for
+    # `call_with_timeout`, so a top-level import of `parse_iso` would close a
+    # cycle. The cost is a dict lookup per candle; the benefit is no import dance.
+    from .dataset import parse_iso
+
+    if value is None:
+        return None
+    parsed = parse_iso(value)
+    return to_iso(parsed) if parsed else str(value)
+
+
 def candle_dicts_from_rows(rows: Iterable[DatasetRow]) -> list[dict[str, Any]]:
     """The raw market bar shape, as the archive stores it (ticker + OHLCV)."""
     return [
         {
             "ticker": row.ticker,
-            "timestamp": row.timestamp,
+            "timestamp": _canonical_timestamp(row.timestamp),
             "open": row.open,
             "high": row.high,
             "low": row.low,
@@ -137,32 +158,40 @@ def merge_candles(path: str | Path, candles: Iterable[Mapping[str, Any]]) -> Pat
 
     Rows already archived are preserved (the archive grows beyond any single
     fetch window); a repeated timestamp is replaced by the newer candle, which
-    is how a still-open bar gets corrected on the next run.
+    is how a still-open bar gets corrected on the next run. Timestamps are
+    canonicalised first, so the same bar always lands on the same key whatever
+    format the upstream used.
     """
-    merged: dict[str, dict[str, Any]] = {
-        str(candle["timestamp"]): dict(candle)
-        for candle in read_jsonl(path)
-        if candle.get("timestamp")
-    }
+    merged: dict[str, dict[str, Any]] = {}
+    for candle in read_jsonl(path):
+        key = _canonical_timestamp(candle.get("timestamp"))
+        if key:
+            merged[key] = {**candle, "timestamp": key}
     for candle in candles:
-        timestamp = candle.get("timestamp")
-        if timestamp:
-            merged[str(timestamp)] = dict(candle)
+        key = _canonical_timestamp(candle.get("timestamp"))
+        if key:
+            merged[key] = {**dict(candle), "timestamp": key}
     dest = Path(path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     return write_jsonl(dest, (merged[key] for key in sorted(merged)))
 
 
 def load_candles(path: str | Path, *, ticker: str) -> tuple[DatasetRow, ...]:
-    """Reconstruct market-only dataset rows from an archive (news-free by design)."""
+    """Reconstruct market-only dataset rows from an archive (news-free by design).
+
+    Timestamps are canonicalised on read too, so an archive written before the
+    canonical form existed still yields rows the time-aware feature and target
+    windows can measure against each other.
+    """
     rows = []
     for candle in read_jsonl(path):
-        if candle.get("timestamp") is None:
+        stamp = _canonical_timestamp(candle.get("timestamp"))
+        if stamp is None:
             continue
         rows.append(
             DatasetRow(
                 ticker=candle.get("ticker") or ticker,
-                timestamp=str(candle["timestamp"]),
+                timestamp=stamp,
                 open=candle.get("open"),
                 high=candle.get("high"),
                 low=candle.get("low"),
