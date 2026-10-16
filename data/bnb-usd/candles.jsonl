@@ -812,11 +812,11 @@
 {"close": 714.78, "high": 719.99, "low": 711.8, "open": 719.28, "ticker": "BNB/USD", "timestamp": "2026-09-15 20:00:00+00:00", "volume": 167.69166}
 {"close": 710.86, "high": 714.96, "low": 710.27, "open": 714.77, "ticker": "BNB/USD", "timestamp": "2026-09-15 21:00:00+00:00", "volume": 69.37427}
 {"close": 712.84, "high": 714.0, "low": 708.41, "open": 710.73, "ticker": "BNB/USD", "timestamp": "2026-09-15 22:00:00+00:00", "volume": 109.06469}
-{"close": 711.895, "high": 714.905, "low": 711.47, "open": 712.98, "ticker": "BNB/USD", "timestamp": "2026-09-15 23:00:00+00:00", "volume": 68.75917}
-{"close": 713.585, "high": 715.495, "low": 711.7850000000001, "open": 711.9000000000001, "ticker": "BNB/USD", "timestamp": "2026-09-16 00:00:00+00:00", "volume": 67.757065}
-{"close": 708.405, "high": 714.44, "low": 708.385, "open": 713.47, "ticker": "BNB/USD", "timestamp": "2026-09-16 01:00:00+00:00", "volume": 81.85976}
-{"close": 712.425, "high": 714.36, "low": 707.9300000000001, "open": 708.61, "ticker": "BNB/USD", "timestamp": "2026-09-16 02:00:00+00:00", "volume": 126.379835}
-{"close": 713.7850000000001, "high": 715.24, "low": 712.67, "open": 712.9749999999999, "ticker": "BNB/USD", "timestamp": "2026-09-16 03:00:00+00:00", "volume": 71.779125}
+{"close": 711.67, "high": 714.95, "low": 711.5, "open": 712.99, "ticker": "BNB/USD", "timestamp": "2026-09-15 23:00:00+00:00", "volume": 98.13907}
+{"close": 713.66, "high": 715.49, "low": 711.37, "open": 711.6, "ticker": "BNB/USD", "timestamp": "2026-09-16 00:00:00+00:00", "volume": 115.76815}
+{"close": 708.38, "high": 714.46, "low": 708.34, "open": 713.37, "ticker": "BNB/USD", "timestamp": "2026-09-16 01:00:00+00:00", "volume": 114.93032}
+{"close": 712.55, "high": 714.33, "low": 707.95, "open": 708.61, "ticker": "BNB/USD", "timestamp": "2026-09-16 02:00:00+00:00", "volume": 226.35358}
+{"close": 713.86, "high": 715.31, "low": 712.56, "open": 712.56, "ticker": "BNB/USD", "timestamp": "2026-09-16 03:00:00+00:00", "volume": 69.99105}
 {"close": 714.675, "high": 715.69, "low": 713.44, "open": 713.88, "ticker": "BNB/USD", "timestamp": "2026-09-16 04:00:00+00:00", "volume": 33.33717}
 {"close": 714.675, "high": 715.2049999999999, "low": 712.9549999999999, "open": 714.755, "ticker": "BNB/USD", "timestamp": "2026-09-16 05:00:00+00:00", "volume": 47.596235}
 {"close": 713.29, "high": 715.065, "low": 711.415, "open": 715.0450000000001, "ticker": "BNB/USD", "timestamp": "2026-09-16 06:00:00+00:00", "volume": 75.474755}
@@ -1532,4 +1532,9 @@
 {"close": 729.74, "high": 732.475, "low": 728.85, "open": 732.3, "ticker": "BNB/USD", "timestamp": "2026-10-15 20:00:00+00:00", "volume": 51.776505}
 {"close": 730.76, "high": 731.17, "low": 729.125, "open": 729.3, "ticker": "BNB/USD", "timestamp": "2026-10-15 21:00:00+00:00", "volume": 66.70057}
 {"close": 729.06, "high": 731.3299999999999, "low": 729.06, "open": 731.3299999999999, "ticker": "BNB/USD", "timestamp": "2026-10-15 22:00:00+00:00", "volume": 16.73882}
-{"close": 728.895, "high": 728.895, "low": 728.855, "open": 728.86, "ticker": "BNB/USD", "timestamp": "2026-10-15 23:00:00+00:00", "volume": 0.69674}
+{"close": 728.92, "high": 729.0, "low": 726.1700000000001, "open": 728.86, "ticker": "BNB/USD", "timestamp": "2026-10-15 23:00:00+00:00", "volume": 29.77295}
+{"close": 728.6, "high": 729.735, "low": 728.09, "open": 728.72, "ticker": "BNB/USD", "timestamp": "2026-10-16 00:00:00+00:00", "volume": 66.30843}
+{"close": 727.0999999999999, "high": 729.255, "low": 726.875, "open": 728.78, "ticker": "BNB/USD", "timestamp": "2026-10-16 01:00:00+00:00", "volume": 23.241324999999996}
+{"close": 727.7149999999999, "high": 729.175, "low": 726.5, "open": 727.025, "ticker": "BNB/USD", "timestamp": "2026-10-16 02:00:00+00:00", "volume": 21.998235}
+{"close": 728.21, "high": 729.54, "low": 724.69, "open": 727.9649999999999, "ticker": "BNB/USD", "timestamp": "2026-10-16 03:00:00+00:00", "volume": 42.182325}
+{"close": 727.725, "high": 728.2049999999999, "low": 726.915, "open": 727.81, "ticker": "BNB/USD", "timestamp": "2026-10-16 04:00:00+00:00", "volume": 4.594165}
