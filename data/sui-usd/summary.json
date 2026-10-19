@@ -1,66 +1,66 @@
 {
   "schema": "rl-crypto/pipeline/2",
   "ticker": "SUI/USD",
-  "generated_at": "2026-10-18T22:26:51Z",
+  "generated_at": "2026-10-19T04:28:20Z",
   "timeframe": "1h",
   "horizon": 1,
   "fetch_window": {
-    "start": "2026-08-19T22:26:51Z",
-    "end": "2026-10-18T22:26:51Z"
+    "start": "2026-08-20T04:28:20Z",
+    "end": "2026-10-19T04:28:20Z"
   },
   "archive": {
-    "rows": 1593,
+    "rows": 1599,
     "candles_path": "/home/runner/work/rl-crypto/rl-crypto/rl-crypto/data/sui-usd/candles.jsonl",
     "spans": [
       "2026-08-13 14:00:00+00:00",
-      "2026-10-18 22:00:00+00:00"
+      "2026-10-19 04:00:00+00:00"
     ]
   },
   "samples": {
-    "total": 1593,
-    "feature_complete": 1570
+    "total": 1599,
+    "feature_complete": 1576
   },
   "targets": {
     "fwd_return": {
-      "rmse": 0.01049254307668906,
-      "mae": 0.006945619642402997,
-      "r2": 0.010714288948829531
+      "rmse": 0.010490150334765927,
+      "mae": 0.0069473264057369815,
+      "r2": 0.010088415284535968
     },
     "fwd_direction": {
-      "accuracy": 0.555768005098789,
-      "log_loss": 0.68493511495369,
-      "base_rate": 0.49521988527724664
+      "accuracy": 0.5644444444444444,
+      "log_loss": 0.6853709440842775,
+      "base_rate": 0.49587301587301585
     },
     "fwd_volatility": {
-      "rmse": 0.0052274009677477015,
-      "mae": 0.0035360445406714333,
-      "r2": 0.10315241249821361
+      "rmse": 0.00522422015505356,
+      "mae": 0.0035365619514313106,
+      "r2": 0.10175733363632533
     },
     "fwd_volume_ratio": {
-      "rmse": 0.5628174016641199,
-      "mae": 0.433111743098686,
-      "r2": 0.2635639131538102
+      "rmse": 0.5639370235116975,
+      "mae": 0.43423163788148844,
+      "r2": 0.26184061460058405
     }
   },
   "outlook": {
-    "signal": -1,
-    "confidence": 0.25207708763040615,
+    "signal": 0,
+    "confidence": 0.06676466779167423,
     "predictions": {
-      "fwd_return": -0.0018367434570536148,
+      "fwd_return": -0.0005962725482149818,
       "fwd_direction": 0.0,
-      "fwd_volatility": 0.007120157932843895,
-      "fwd_volume_ratio": -0.2193897169287121
+      "fwd_volatility": 0.0024438957899937715,
+      "fwd_volume_ratio": -0.27177261644582984
     },
     "probabilities": {
-      "fwd_direction": 0.3739614561847969
+      "fwd_direction": 0.4666176661041629
     },
     "notes": []
   },
   "live": {
     "market_ok": true,
     "news_ok": true,
-    "price": 0.979325,
-    "latest_sentiment": -0.121,
+    "price": 0.997425,
+    "latest_sentiment": 0.0404,
     "notes": []
   }
 }
