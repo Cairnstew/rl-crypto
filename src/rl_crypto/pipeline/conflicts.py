@@ -11,11 +11,12 @@ genuinely collected. So conflicts are resolved semantically, per artifact:
   records at the same timestamp with different payloads are different
   observations and both survive.
 * ``candles.jsonl`` — an upsert archive, one bar per ``timestamp``. Merge by
-  timestamp (never duplicating a bar), preferring the replayed commit: during a
-  rebase that is the newer local run, and upstream's newer bars are still kept.
+  timestamp (never duplicating a bar). On a collision the *newer archive* wins,
+  decided by each side's newest bar: a fresh local run beats an older remote
+  tip, but a rebase replayed days later does not resurrect stale OHLCV.
 * anything else under ``data/`` (``summary.json``, overwritten wholesale by each
-  pipeline run) — prefer the replayed commit's whole file, since that is the
-  newest local run; fall back to upstream when the replayed side is absent.
+  pipeline run) — keep the side with the newest ``generated_at`` whole, so a
+  replayed commit never replaces a fresher remote run with an older one.
 
 Used by ``tools/record_live.sh`` after a rejected push, and safe to run when
 there are no conflicts (it is a no-op then)::
@@ -30,6 +31,7 @@ import argparse
 import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -97,14 +99,59 @@ def union_jsonl(ours: list[dict[str, Any]], theirs: list[dict[str, Any]]) -> lis
     return sorted(seen.values(), key=_sort_key)
 
 
+def _instant(value: str) -> float:
+    """A timestamp as epoch seconds; 0.0 when unparseable (sorts first)."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def _doc_instant(doc: Any) -> float:
+    """A whole-file artifact's run instant (summary and model bundles)."""
+    if not isinstance(doc, dict):
+        return 0.0
+    for key in (*_TIME_KEYS, "trained_at"):
+        value = doc.get(key)
+        if isinstance(value, str) and value:
+            return _instant(value)
+    return 0.0
+
+
+def _servable(doc: Any) -> bool:
+    """Whether a Tier-1 bundle matches the running code's feature contract.
+
+    A bundle trained against another feature definition is flagged on load and
+    predicts nothing, so during a conflict it is never the better candidate —
+    even when its ``trained_at`` is newer.
+    """
+    from ..features import FEATURE_VERSION
+
+    return isinstance(doc, dict) and doc.get("feature_version") == FEATURE_VERSION
+
+
+def newest_stamp(records: list[dict[str, Any]]) -> float:
+    """The newest record instant in a series (0.0 for an empty side)."""
+    return max((_instant(_sort_key(record)[0]) for record in records), default=0.0)
+
+
 def merge_candles(
     ours: list[dict[str, Any]], theirs: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Merge two candle archives into one bar per timestamp, ``theirs`` winning."""
+    """One bar per timestamp; on a collision the newer archive's bar wins."""
+    # The archive is an upsert series, so both sides describe the same bars. The
+    # fresher series is the authority: during a rebase "theirs" may be days
+    # staler than "ours", and preferring it unconditionally would regress OHLCV.
+    fresh, stale = (
+        (theirs, ours) if newest_stamp(theirs) >= newest_stamp(ours) else (ours, theirs)
+    )
     merged: dict[str, dict[str, Any]] = {}
-    for record in ours:
+    for record in stale:
         merged[_sort_key(record)[0]] = record
-    for record in theirs:
+    for record in fresh:
         merged[_sort_key(record)[0]] = record
     return sorted(merged.values(), key=_sort_key)
 
@@ -137,13 +184,25 @@ def _merge(path: str, ours: str, theirs: str) -> tuple[str, str]:
         body = "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in merged)
         return label, body + "\n" if body else ""
 
-    # Overwritten artifact (summary.json): the rebased commit holds the newer
-    # local run. Validated as whole-file JSON — a line-wise parse of a
-    # pretty-printed document yields nothing and would truncate the file.
-    if _jsonblob(theirs) is not None:
-        return "summary: replayed side", theirs
-    if _jsonblob(ours) is not None:
-        return "summary: upstream side", ours
+    # Overwritten artifact (summary.json, models/<slug>.json): keep the newest
+    # run whole. Validated as whole-file JSON — a line-wise parse of a
+    # pretty-printed document finds no records and used to leave a 0-byte file.
+    ours_doc, theirs_doc = _jsonblob(ours), _jsonblob(theirs)
+    name = Path(path).name
+    if ours_doc is not None and theirs_doc is not None:
+        # A model bundle the running code cannot serve loses to one it can,
+        # whatever their training dates say; otherwise recency decides.
+        if path.startswith("models/") and _servable(ours_doc) != _servable(theirs_doc):
+            if _servable(theirs_doc):
+                return f"{name}: replayed side (servable)", theirs
+            return f"{name}: upstream side (servable)", ours
+        if _doc_instant(theirs_doc) >= _doc_instant(ours_doc):
+            return f"{name}: replayed side", theirs
+        return f"{name}: upstream side", ours
+    if theirs_doc is not None:
+        return f"{name}: replayed side", theirs
+    if ours_doc is not None:
+        return f"{name}: upstream side", ours
     raise ValueError(f"{path}: neither side is valid JSON")
 
 

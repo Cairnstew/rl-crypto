@@ -218,3 +218,74 @@ def test_resolve_merges_a_real_rebase_conflict(tmp_path):
         "2026-10-12T11:00:00Z",
     ]
     assert json.loads(summary.read_text())["generated_at"] == "local"
+
+
+def test_merge_candles_lets_the_newer_archive_win_collisions():
+    """A rebase replayed days later must not resurrect stale OHLCV over newer
+    remote bars: recency, not side, decides the collision."""
+    ours = [_bar("2026-10-12T10:00:00Z", 5.0), _bar("2026-10-12T12:00:00Z", 9.0)]
+    theirs = [_bar("2026-10-12T10:00:00Z", 1.0), _bar("2026-10-12T11:00:00Z", 2.0)]
+
+    merged = tool.merge_candles(ours, theirs)
+
+    assert [bar["timestamp"] for bar in merged] == [
+        "2026-10-12T10:00:00Z",
+        "2026-10-12T11:00:00Z",
+        "2026-10-12T12:00:00Z",
+    ]
+    assert merged[0]["close"] == 5.0  # the newer archive's bar, not the replayed one
+
+
+def test_newest_stamp_handles_both_timestamp_formats():
+    """Archive bars use "… 10:00:00+00:00"; live/API bars use "…T10:00:00Z"."""
+    archive = [{"timestamp": "2026-10-12 10:00:00+00:00"}]
+    fresher = [{"timestamp": "2026-10-12T11:00:00Z"}]
+
+    assert tool.newest_stamp(fresher) > tool.newest_stamp(archive)
+    assert tool.newest_stamp([]) == 0.0
+
+
+def test_summary_prefers_the_newer_run_even_when_it_is_upstream():
+    """A commit replayed days after it was written must not overwrite a fresher
+    remote summary with its older one."""
+    ours = json.dumps({"generated_at": "2026-10-23T13:25:00Z"}, indent=2) + "\n"
+    theirs = json.dumps({"generated_at": "2026-10-15T13:25:00Z"}, indent=2) + "\n"
+
+    label, body = tool._merge("data/eth-usd/summary.json", ours, theirs)
+
+    assert body == ours
+    assert "upstream" in label
+
+
+def test_model_bundles_keep_the_newest_training_run():
+    """models/<slug>.json is an overwritten artifact like summary.json; the
+    fresher retrain wins, and a tie keeps the replayed commit's bundle."""
+    ours = json.dumps({"trained_at": "2026-10-23T13:18:00Z", "targets": {}}, indent=2) + "\n"
+    theirs = json.dumps({"trained_at": "2026-10-15T13:18:00Z", "targets": {}}, indent=2) + "\n"
+
+    label, body = tool._merge("models/btc-usd.json", ours, theirs)
+    assert body == ours
+    assert "upstream" in label
+
+    label, body = tool._merge("models/btc-usd.json", ours, ours)
+    assert body == ours
+    assert "replayed" in label
+
+
+def test_model_bundles_prefer_the_one_the_code_can_serve():
+    """An old-schema bundle (no feature_version) is flagged on load and predicts
+    nothing, so it must not win just because it was trained later."""
+    from rl_crypto.features import FEATURE_VERSION
+
+    servable = json.dumps(
+        {"trained_at": "2026-10-15T13:18:00Z", "feature_version": FEATURE_VERSION}, indent=2
+    ) + "\n"
+    stale = json.dumps({"trained_at": "2026-10-23T13:18:00Z"}, indent=2) + "\n"
+
+    label, body = tool._merge("models/btc-usd.json", stale, servable)
+    assert body == servable
+    assert "replayed" in label and "servable" in label
+
+    label, body = tool._merge("models/btc-usd.json", servable, stale)
+    assert body == servable
+    assert "upstream" in label and "servable" in label
