@@ -128,9 +128,16 @@ def _servable(doc: Any) -> bool:
     predicts nothing, so during a conflict it is never the better candidate —
     even when its ``trained_at`` is newer.
     """
-    from ..features import FEATURE_VERSION
-
-    return isinstance(doc, dict) and doc.get("feature_version") == FEATURE_VERSION
+    if not isinstance(doc, dict):
+        return False
+    try:
+        from ..features import FEATURE_VERSION
+    except ImportError:
+        # Standalone copy: ``record_live.sh`` extracts this file to a temp path
+        # and runs it mid-rebase, where the checkout may predate this package.
+        # Field presence is the schema boundary that matters there.
+        return doc.get("feature_version") is not None
+    return doc.get("feature_version") == FEATURE_VERSION
 
 
 def newest_stamp(records: list[dict[str, Any]]) -> float:

@@ -37,6 +37,16 @@ if ! git symbolic-ref -q HEAD >/dev/null; then
   git merge --ff-only -q origin/main || true
 fi
 
+# A rebase retry below stops on commits from before the rl-pipeline move, so the
+# working tree at that moment may not contain the resolver at all (and any older
+# copy it does contain predates the summary/candle fixes). Capture the current
+# tip's resolver now, before a rebase can move the checkout, and run that copy.
+RESOLVER="$(mktemp --suffix=.py)"
+trap 'rm -f "$RESOLVER"' EXIT
+if ! git show HEAD:src/rl_crypto/pipeline/conflicts.py > "$RESOLVER" 2>/dev/null; then
+  RESOLVER="$PWD/tools/resolve_cache_conflicts.py"
+fi
+
 nix develop -c uv run rl-pipeline live \
   "${TICKER_ARGS[@]}" \
   --live-cap "${LIVE_CAP:-1000}"
@@ -59,8 +69,13 @@ git commit -m "live: record $(date -u +%Y-%m-%dT%H:%MZ)"
 if ! git push origin HEAD:main; then
   echo "push rejected (concurrent cache commit?) — rebasing and retrying"
   if ! git pull --rebase -q origin main; then
-    echo "rebase conflicted — unioning append-only caches"
-    nix develop -c uv run rl-pipeline conflicts
+    echo "rebase conflicted — resolving data/ conflicts"
+    # Run the captured copy (see RESOLVER above), never a path in the tree: the
+    # conflicted checkout can be an old commit with no rl-pipeline entry point.
+    if ! nix develop -c uv run python "$RESOLVER" --root "$PWD"; then
+      echo "conflict resolution failed — leaving the rebase in place to inspect" >&2
+      exit 1
+    fi
     GIT_EDITOR=true git rebase --continue
   fi
   git push origin HEAD:main

@@ -9,7 +9,12 @@ failure these tests exist to prevent.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 from rl_crypto.pipeline import conflicts as tool
 
@@ -289,3 +294,31 @@ def test_model_bundles_prefer_the_one_the_code_can_serve():
     label, body = tool._merge("models/btc-usd.json", servable, stale)
     assert body == servable
     assert "upstream" in label and "servable" in label
+
+
+def test_resolver_runs_as_a_standalone_copy(tmp_path):
+    """``record_live.sh`` extracts this file to a temp path and runs it while the
+    checkout is mid-rebase — where the tree may predate ``rl_crypto.pipeline``
+    entirely, so the module must import with no package around it."""
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "rl_crypto"
+        / "pipeline"
+        / "conflicts.py"
+    )
+    copy = tmp_path / "resolver.py"
+    shutil.copy(source, copy)
+
+    out = subprocess.run(
+        [sys.executable, str(copy), "--help"], capture_output=True, text=True, check=False
+    )
+    assert out.returncode == 0, out.stderr
+
+    spec = importlib.util.spec_from_file_location("standalone_conflicts", copy)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Without the package the servability check degrades to field presence.
+    assert module._servable({"feature_version": "whatever"}) is True
+    assert module._servable({}) is False
