@@ -250,9 +250,9 @@ market-history-only, so every news feature is constant in training. A constant
 column teaches a model nothing and would arrive out-of-distribution at serve
 time (the live path *does* have news), so the trainer drops such features
 entirely and lists them under `dropped_features`. They light up on their own once
-news history is ingested. Re-enable history ingestion with
-`rl-pipeline run --news-history` when you're ready, and retrain with
-`--retrain-only` afterwards.
+news history is ingested. The production runner is market-history-only today
+(it has no news-history switch yet); once the archive carries news, retrain with
+`rl-pipeline run --retrain-only`.
 
 ```bash
 # 1) materialise features + targets for a window (no learning)
