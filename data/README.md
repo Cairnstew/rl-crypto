@@ -8,10 +8,10 @@ Quality audits of this directory live in [`AUDIT.md`](AUDIT.md); re-run one with
 `uv run python tools/audit_data_quality.py` (read-only, no network).
 
 ```bash
-uv run rl-pipeline run --history-days 60          # whole watchlist
-uv run rl-pipeline run --retrain-only             # models only, no network
-uv run rl-pipeline live                             # frequent live points
-uv run rl-pipeline live --tickers BTC/USD ETH/USD   # just these
+uv run rl-pipeline run --history-days 60           # whole watchlist
+uv run rl-pipeline run --retrain-only              # models only, no network
+uv run rl-pipeline live                            # frequent live points
+uv run rl-pipeline live --tickers BTC/USD ETH/USD  # just these
 ```
 
 **The tracked watchlist** lives in [`src/rl_crypto/tickers.py`](../src/rl_crypto/tickers.py)

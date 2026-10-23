@@ -296,8 +296,8 @@ there and every runner follows:
 ```bash
 uv run rl-pipeline run --history-days 60   # whole watchlist: archive + train
 uv run rl-pipeline run --retrain-only      # models only, from the committed archive
-uv run rl-pipeline live                     # whole watchlist: frequent live points
-uv run rl-pipeline live --tickers BTC/USD   # just one, for a spot check
+uv run rl-pipeline live                    # whole watchlist: frequent live points
+uv run rl-pipeline live --tickers BTC/USD  # just one, for a spot check
 ```
 
 `--retrain-only` rebuilds every bundle from the archive already on disk, spending
