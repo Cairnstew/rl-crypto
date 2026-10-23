@@ -95,6 +95,10 @@ def _number(value: Any) -> str:
     return f"{value:g}" if isinstance(value, int | float) else MISSING
 
 
+def _probability(value: Any) -> str:
+    return f"{value:.3f}" if isinstance(value, int | float) else MISSING
+
+
 def _newest(rows: list[dict[str, Any]], key: str) -> tuple[Any, datetime | None]:
     """The newest stamp in a column, as ``(raw, instant)``."""
     best: tuple[Any, datetime | None] = (None, None)
@@ -167,6 +171,8 @@ def collect_rows(root: Path) -> list[dict[str, Any]]:
         live = _last_record(live_path)
         predictions = live.get("predictions")
         predictions = predictions if isinstance(predictions, dict) else {}
+        probabilities = predictions.get("probabilities")
+        probabilities = probabilities if isinstance(probabilities, dict) else {}
         market = live.get("market")
         market = market if isinstance(market, dict) else {}
         archive = summary.get("archive")
@@ -182,6 +188,7 @@ def collect_rows(root: Path) -> list[dict[str, Any]]:
                 "price": market.get("price", summary_live.get("price")),
                 "signal": predictions.get("signal") if predictions else None,
                 "confidence": predictions.get("confidence") if predictions else None,
+                "p_up": probabilities.get("fwd_direction"),
                 "has_predictions": bool(predictions),
                 "bars": archive.get("rows"),
                 "span": (
@@ -218,8 +225,8 @@ def render(rows: list[dict[str, Any]], *, now: datetime, cache_bytes: int) -> st
         f" · trained {newest_train or MISSING} ({_age(newest_train, now)})"
         f" · feature contract {contract}",
         "",
-        "| ticker | price | signal | conf | archive | beats baseline | last live |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ticker | price | signal | conf | p(up) | archive | beats baseline | last live |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         bars = f"{row['bars']:,} · {row['span']}" if isinstance(row["bars"], int) else MISSING
@@ -231,11 +238,12 @@ def render(rows: list[dict[str, Any]], *, now: datetime, cache_bytes: int) -> st
             confidence = "n/a" if row["confidence"] is None else _number(row["confidence"])
         lines.append(
             f"| {row['ticker']} | {_price(row['price'])} | {signal} | {confidence}"
-            f" | {bars} | {beats} | {_clock(row['last_live'])} |"
+            f" | {_probability(row['p_up'])} | {bars} | {beats} | {_clock(row['last_live'])} |"
         )
     lines += [
         "",
         "*`signal` `—` = withheld (no target earned it) · `conf` `n/a` = no confidence"
+        " · `p(up)` = model probability of an up move (emitted even when withheld)"
         " · `beats baseline` = targets that beat a constant predictor out of sample.*",
     ]
     return "\n".join(lines)

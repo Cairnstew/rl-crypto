@@ -63,6 +63,7 @@ def _write_cache(root: Path, *, withheld: bool = False, verdicts: bool = False) 
         "predictions": {
             "signal": None if withheld else 1,
             "confidence": None if withheld else 0.4234,
+            "probabilities": {"fwd_direction": 0.5123},
         },
     }
     (data / "live.jsonl").write_text(
@@ -99,7 +100,7 @@ def test_dashboard_has_a_row_with_the_cache_state(tmp_path):
 
     assert "**1 tickers**" in block
     assert "as of 2026-10-23T20:30Z" in block
-    assert "| ETH/USD | $2,392.11 | 1 | 0.4234 | 1,725 · 2026-08-12 → 2026-10-23 | 2/4 | 20:15Z |" in block
+    assert "| ETH/USD | $2,392.11 | 1 | 0.4234 | 0.512 | 1,725 · 2026-08-12 → 2026-10-23 | 2/4 | 20:15Z |" in block
     # freshness comes from the bundle's trained_at, not the summary run
     assert "trained 2026-10-23T18:00:00Z (2h ago)" in block
 
