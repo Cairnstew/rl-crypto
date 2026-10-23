@@ -1,0 +1,46 @@
+# Production watchdog: dispatch the production workflow when the cache goes stale.
+#
+# GitHub's scheduled events are best-effort — under load they are delayed, and
+# occasionally dropped outright. That used to be invisible because a local
+# systemd timer wrote `data/` every 30 minutes; with the cache fully remote, a
+# dropped schedule would silently stop collection. This hourly check reads the
+# newest commit touching `data/` and re-dispatches `production.yml` (live mode)
+# when it is older than the limit.
+#
+# Tune with the repository variable RL_CRYPTO_MAX_AGE_MINUTES (default 75, i.e.
+# two missed 30-minute ticks).
+name: production watchdog
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write # dispatch another workflow
+  contents: read
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: dispatch production when the cache is stale
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_AGE_MINUTES: ${{ vars.RL_CRYPTO_MAX_AGE_MINUTES || '75' }}
+        run: |
+          last=$(gh api "repos/${GITHUB_REPOSITORY}/commits?path=data&per_page=1" \
+            --jq '.[0].commit.committer.date')
+          if [ -z "$last" ] || [ "$last" = "null" ]; then
+            echo "::warning::no data commit found — dispatching a live run"
+          else
+            age=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 60 ))
+            echo "newest data commit: $last (${age}m old, limit ${MAX_AGE_MINUTES}m)"
+            if [ "$age" -lt "$MAX_AGE_MINUTES" ]; then
+              echo "cache is fresh — nothing to do"
+              exit 0
+            fi
+          fi
+          gh workflow run production.yml --ref "${GITHUB_REF_NAME:-main}" -f mode=live
+          echo "dispatched production (mode=live)"

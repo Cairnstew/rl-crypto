@@ -1,8 +1,8 @@
 # Committed pipeline cache
 
 `data/` is the **git-committed, growing cache** written by the scheduled
-workflows (`.github/workflows/pipeline.yml` + `.github/workflows/live.yml` →
-`rl-pipeline run`, `rl-pipeline live`) and by hand:
+workflow (`.github/workflows/production.yml` → `rl-pipeline live` / `rl-pipeline run`)
+and by hand:
 
 Quality audits of this directory live in [`AUDIT.md`](AUDIT.md); re-run one with
 `uv run python tools/audit_data_quality.py` (read-only, no network).
@@ -15,9 +15,10 @@ uv run rl-pipeline live --tickers BTC/USD ETH/USD  # just these
 ```
 
 **The tracked watchlist** lives in [`src/rl_crypto/tickers.py`](../src/rl_crypto/tickers.py)
-and is the single source of truth for every runner — pipeline, local timer, and
-manual dispatch. Every ticker in it is recorded on **every** run (no stagger, no
-rotation). Add or retire a ticker there and all three paths follow. Screening
+and is the single source of truth for every runner — the scheduled workflow and
+manual dispatch (a fork can narrow it with the `RL_CRYPTO_TICKERS` repository
+variable). Every ticker in it is recorded on **every** run (no stagger, no
+rotation). Add or retire a ticker there and all paths follow. Screening
 new candidates:
 
 ```bash
@@ -29,7 +30,7 @@ Per ticker, under `data/<slug>/` (e.g. `data/eth-usd/` for `ETH/USD`):
 | file | contents | growth |
 | ---- | -------- | ------ |
 | `candles.jsonl` | **raw market archive** — one clean OHLCV bar per interval, ticker+timestamp+OHLCV, sorted, timestamps canonically `…Z` | **only grows**: upsert by timestamp, never shrinks, never duplicates |
-| `live.jsonl` | the live unified record (market **and** live news) + attached Tier-2 outlook | appended, capped at recent records (default 1000; more frequent via live.yml) |
+| `live.jsonl` | the live unified record (market **and** live news) + attached Tier-2 outlook | appended, capped at recent records (default 1000 — a rolling ~21 days at 30-minute ticks) |
 | `summary.json` | run metadata, archive span, **out-of-sample** model quality, outlook, notes | overwritten every pipeline run |
 
 Timestamps are canonicalised to ISO-8601 `…Z` on both read and write, and the
@@ -92,28 +93,22 @@ model is stale. Takes no network and appends no live records.
 
 ## Cadence
 
-Both scheduled paths record **every tracked ticker on every run** — nothing is
+The scheduled path records **every tracked ticker on every run** — nothing is
 staggered or rotated, so every asset gets an equal-resolution series.
 
-- **pipeline.yml** (GitHub Actions) — every 2h (and `workflow_dispatch`): grow
-  each ticker's archive, retrain its bundle, append one live record, commit
-  `models/ + data/` **in a single commit**. Tickers are processed one at a time
-  on purpose (a deep history backfill spends many upstream calls per series),
-  and in one job rather than a matrix, so N tickers never race to push `data/`.
-- **Local systemd timer** — every 30 min on this machine, the *primary* frequent
-  live path: `tools/record_live.sh` syncs, records one live point per ticker
-  (market + live news + outlook), and pushes `data/`. Install with:
-
-  ```bash
-  mkdir -p ~/.config/systemd/user
-  # units rl-crypto-live.service / rl-crypto-live.timer (OnCalendar=*:10/30)
-  systemctl --user daemon-reload
-  systemctl --user enable --now rl-crypto-live.timer
-  ```
-
-- **live.yml** (GitHub Actions) — `workflow_dispatch` only: the on-demand/backup
-  live recorder (its cron was dropped because Actions didn't deliver schedule
-  events for a second scheduled workflow on the young repo).
+- **production.yml** (GitHub Actions) — one scheduler, two modes. Every
+  **30 minutes** a `live` run appends one record per ticker (market snapshot +
+  live news + outlook); on **even UTC hours** a `train` run also grows the
+  archive, rebuilds features/labels and retrains the Tier-1 bundle. Both fan out
+  as a matrix (`max-parallel: 4`) and stage each ticker's cache as an artifact;
+  a single `merge` job is the only writer and makes **one commit per run**, so N
+  tickers never race to push `data/`.
+- **watchdog.yml** (GitHub Actions) — hourly: if the newest `data/` commit is
+  older than `RL_CRYPTO_MAX_AGE_MINUTES` (default 75), it dispatches a `live`
+  run. This is the safety net for GitHub's best-effort schedule delivery, and
+  replaces the old local systemd timer — collection is fully remote.
+- `workflow_dispatch` on **production.yml** runs either mode on demand, on the
+  whole watchlist or a narrowed ticker list.
 
 ### Upstream request budget
 
@@ -127,35 +122,20 @@ Both runners respect the free-tier limits of the upstreams:
   per ticker instead of a deep history pull.
 - **Deep history** stays single-asset and serial, as upstream tickerkit intends.
 
-**A full watchlist tick costs ~23 minutes** at 15 tickers — about 2 minutes for
-the shared market batch and ~90 s per ticker of live news (ticker-news-signals
-has no batch API and re-pulls its feeds per ticker). That fits inside the
-30-minute cadence, but the margin is now the binding constraint on how large the
-watchlist can get:
+A full sequential watchlist tick measured ~23 minutes at 15 tickers — about 2
+minutes for the shared market batch and ~90 s per ticker of live news
+(ticker-news-signals has no batch API and re-pulls its feeds per ticker). The
+workflow does not pay that sum: it fans out as a matrix, so wall clock is the
+slowest single ticker (~2 min) and the 30-minute schedule has ample slack.
+`max-parallel: 4` is the deliberate ceiling — the limit is the public RSS hosts'
+per-IP tolerance, not our CPU, and concurrent pulls of the same hosts would cost
+far more data than the extra tickers are worth.
 
-| watchlist | measured tick | headroom in 30 min |
-| --------- | ------------- | ------------------- |
-| 10        | ~13 min       | ~17 min             |
-| **15** (current) | **~23 min** | ~7 min |
-| ~19       | ~30 min       | **none — ticks get coalesced** |
-
-When the timer overruns, systemd coalesces rather than running two ticks at
-once, so the series loses resolution rather than corrupting. Growing the
-watchlist further means parallelising the per-ticker news pulls (bounded, e.g.
-3–4 workers) — deliberately not done yet, since concurrent pulls of the same
-public RSS hosts risk the IP-level throttling that would cost far more data than
-the extra tickers are worth. The timer unit is a `Type=oneshot` service, whose
-start timeout is `infinity`, so a long tick is never killed mid-run.
-
-The Actions pipeline has no such ceiling: it fans out as a matrix
-(`prepare` → `produce` per ticker → `merge`), so wall clock tracks the slowest
-single ticker rather than the sum of all of them.
-
-The Actions pipeline and the local timer both write `data/`; the pipeline also
-owns `models/`. Write-backs from Actions serialize via a shared concurrency
-group, the merge job is the only Actions-side writer to `main`, and the timer
-does a `--ff-only` pull before pushing plus a rebase-and-retry if a pipeline
-commit lands mid-run.
+The workflow owns both `data/` and `models/`. Only the `merge` job pushes, it
+holds the `rl-crypto-cache` concurrency group, and a rejected push is rebased and
+resolved (`rl-pipeline conflicts`) before retrying — so a hand push or a
+manual local run can never strand it. A local `rl-pipeline live`/`run` is
+optional (seeding, spot checks); it is not part of the schedule.
 
 ## Seeding locally (recommended before scheduling)
 

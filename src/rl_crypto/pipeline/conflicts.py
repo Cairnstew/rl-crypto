@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Resolve ``data/`` rebase conflicts by merging, not by picking a side.
 
-The cache writers are the 30-minute local timer and the 2-hourly Actions
-pipeline, and both write under ``data/``. When their runs overlap, rebasing one
-onto the other conflicts — and picking either side silently drops data that was
-genuinely collected. So conflicts are resolved semantically, per artifact:
+The scheduled workflow and any hand/local run both write under ``data/``. When
+their runs overlap, a rebase conflicts — and picking either side silently drops
+data that was genuinely collected. So conflicts are resolved semantically, per
+artifact:
 
 * ``live.jsonl`` — append-only observations keyed by ``generated_at``. Union
   both sides, drop exact duplicates, order by the record's timestamp. Two

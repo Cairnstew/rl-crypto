@@ -65,7 +65,7 @@ models/               trained Tier-1 bundles (JSON, committed)
 data/                 committed pipeline cache (candle archive + live records + summary)
 .zed/settings.json    pins the notebook kernel for the Zed editor
 flake.nix             hermetic uv2nix build + dev shell
-.github/workflows/    ci.yml (offline) + notebook.yml (live) + pipeline.yml (archive) + live.yml (on-demand live)
+.github/workflows/    ci.yml (offline) + notebook.yml (live) + production.yml (scheduler) + watchdog.yml
 ```
 
 ## Prerequisites
@@ -274,20 +274,26 @@ Bundles are committed, diffable JSON; see [`models/README.md`](models/README.md)
 
 ## Scheduled production run
 
-Two scheduled workflows keep the committed cache growing. Both record **every
-tracked ticker on every run** — nothing is staggered or rotated:
+One scheduled workflow, [**production.yml**](.github/workflows/production.yml),
+owns every cache write. It records **every tracked ticker on every run** —
+nothing is staggered or rotated — and picks its mode from the clock:
 
-* [**pipeline.yml**](.github/workflows/pipeline.yml) — **every 2 hours** (and on
-  demand): grow each ticker's raw-candle archive, retrain its Tier-1 bundle over
-  the whole archive, append one live record, commit `models/ + data/` in a
-  single commit. Tickers run one at a time in one job, deliberately: a deep
-  backfill spends many upstream calls per series, and a matrix would mean N
-  writers racing to push `data/`.
-* **Local systemd timer** — the frequent live path: **every 30 min** on this
-  machine, `tools/record_live.sh` records one live point per ticker (market +
-  live news + outlook) and pushes `data/` (no training).
-  [**live.yml**](.github/workflows/live.yml) stays available as an
-  on-demand/backup recorder.
+| cadence | mode | what happens |
+| ------- | ---- | ------------ |
+| every **30 min** | `live` | append one live record per ticker (market + live news + outlook); no training, no history fetch |
+| every **2 h** (even UTC hours) | `train` | grow each ticker's raw-candle archive, rebuild features/labels, retrain its Tier-1 bundle over the whole archive, append the live record |
+
+Both modes fan out as a matrix (`max-parallel: 4`) and stage each ticker's cache
+as an artifact; a single `merge` job is the only writer and makes **one commit
+per run**. Tickers never race to push `data/`.
+
+Because GitHub's scheduled events are best-effort (delayed under load, and
+occasionally dropped), [**watchdog.yml**](.github/workflows/watchdog.yml) runs
+hourly, checks the newest commit touching `data/`, and dispatches a `live` run
+when the cache is older than `RL_CRYPTO_MAX_AGE_MINUTES` (default 75). That is
+what replaces the old local systemd timer — collection is now fully remote.
+
+Forked? See [Forking this repo](#forking-this-repo) below.
 
 The watchlist is defined once, in
 [`src/rl_crypto/tickers.py`](src/rl_crypto/tickers.py) — add or retire a ticker
@@ -314,9 +320,10 @@ What the cache holds per ticker (all under the repo; see
 | `data/eth-usd/live.jsonl` | live unified record (market **and** live news) + outlook | appended, capped (default 1000) |
 | `data/eth-usd/summary.json` | archive span, **out-of-sample** model quality, outlook, notes | overwritten per pipeline run |
 
-The workflows reuse the sibling-checkout + `uv sync` layout of `ci.yml`, share
-a concurrency group so their write-backs can't race, and every write-back
-re-triggers CI — cached state always lands green.
+The workflow reuses the sibling-checkout + `uv sync` layout of `ci.yml`, and
+the merge job holds the `rl-crypto-cache` concurrency group so two write-backs
+can never race. Every write-back re-triggers CI — cached state always lands
+green.
 
 **Seed locally first.** Run the pipeline on your machine once before (or while)
 relying on the crons — local runs reuse the sibling projects' on-disk caches,
@@ -328,7 +335,37 @@ uv run rl-pipeline run --history-days 60 --fetch-timeout 600
 ```
 
 The first run of a new ticker is the slow one (it backfills that ticker's
-archive); later runs only refresh it.
+archive); later runs only refresh it. A ticker that has never been trained has
+no bundle, so dispatch a `train` run for it before the 30-minute `live` cadence
+can record it.
+
+## Forking this repo
+
+The repo is designed to be forked per watchlist — including a **one-ticker
+fork**, which is the cheapest way to run the whole loop remotely:
+
+1. Fork, then **enable Actions** in the fork (GitHub disables workflows on forks
+   until you do). Scheduled runs only fire on the default branch.
+2. Set the repository variable **`RL_CRYPTO_TICKERS`** (Settings → Secrets and
+   variables → Actions → Variables), e.g. `BTC/USD`. The scheduled runner reads
+   it instead of the full list in `src/rl_crypto/tickers.py`; `workflow_dispatch`
+   can still override it per run.
+3. Optionally set **`RL_CRYPTO_MAX_AGE_MINUTES`** to tune the watchdog, and edit
+   the cron in `production.yml` if 30 minutes is more resolution than you need.
+4. Trigger a first **train** run (`Actions → production → Run workflow`,
+   mode `train`). After that the schedule maintains it.
+
+What it costs: on a **public** fork, standard GitHub-hosted runners are free, so
+the default 30-minute cadence costs nothing but wall clock. On a **private**
+fork the 2,000 free minutes/month do not cover it — one ticker still means ~3
+runner-minutes per run (live + merge), ~4,300 minutes/month at 30-minute ticks.
+There, switch the cron to hourly (`0 * * * *`, ~2,100) or every two hours
+(~1,100), or use a self-hosted runner.
+
+The upstreams (`Cairnstew/tickerkit`, `Cairnstew/ticker-news-signals`) are read
+as public sibling checkouts, so a fork needs no secrets. Only your own fork's
+`data/` and `models/` diverge, which is the point: an independent archive, model
+set and cadence per fork.
 
 ## Notebooks
 

@@ -2,7 +2,7 @@
 """Production pipeline run for one ticker: grow the archive, train, push live.
 
 This is the deterministic invocation the scheduled GitHub Actions workflow
-(``.github/workflows/pipeline.yml``) runs on a cron and commits back to the repo:
+(``.github/workflows/production.yml``) runs on a cron and commits back to the repo:
 
 * fetch the **market history** window (tickerkit OHLCV; news history stays off
   until RL training — live news still flows through the unified record),
