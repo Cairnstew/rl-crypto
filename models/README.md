@@ -120,7 +120,7 @@ rl-crypto predict ETH/USD --model models/eth-usd.json --json
 rl-crypto train ETH/USD --from 2026-01-01 --to 2026-07-01 --timeframe 1h
 
 # rebuild every bundle from the committed archive, spending no upstream quota:
-uv run python tools/run_pipeline.py --retrain-only
+uv run rl-pipeline run --retrain-only
 ```
 
 `--retrain-only` is the right tool after a feature-contract change: the bars have

@@ -44,6 +44,9 @@ dev = [
 
 [project.scripts]
 rl-crypto = "rl_crypto.cli:main"
+# Production runners (archive/train/live, conflict resolution, cache sync).
+# `rl-crypto` stays the analysis/query CLI; see src/rl_crypto/pipeline/.
+rl-pipeline = "rl_crypto.pipeline.cli:main"
 
 # The upstreams live as sibling checkouts during development; path sources keep
 # local edits live (editable) and mirror the `../tickerkit` layout the flake

@@ -203,6 +203,11 @@
             type = "app";
             program = "${self.packages.${system}.default}/bin/rl-crypto";
           };
+          # The production runners: `nix run .#rl-pipeline -- live --tickers BTC/USD`.
+          rl-pipeline = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/rl-pipeline";
+          };
 
           # `nix run .#test` executes on the host, so uv may reach the network here
           # even though a Nix *build* may not.

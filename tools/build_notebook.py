@@ -29,8 +29,8 @@ archive, the live unified-record stream, and the run summary under
 The first cell syncs the checkout with the tracking remote (fetch plus a
 ``--ff-only`` pull), so what you read is the remote's latest committed cache —
 the runners push every couple of hours. Every other cell is **offline**. The
-live fetching that produced these files lives in ``tools/run_pipeline.py``
-(archive + train) and ``tools/record_live.py`` (frequent live points); this
+live fetching that produced these files lives in ``rl-pipeline run``
+(archive + train) and ``rl-pipeline live`` (frequent live points); this
 notebook consumes their output the way any downstream analysis would.
 """
 

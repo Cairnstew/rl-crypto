@@ -2,7 +2,7 @@
 # Frequent live recorder used by the local systemd timer (and manually).
 #
 # Syncs the repo, records one live point (market + live news + outlook) for
-# EVERY tracked ticker via tools/record_live.py, and commits/pushes the data
+# EVERY tracked ticker via `rl-pipeline live`, and commits/pushes the data
 # cache if anything changed. The watchlist lives in src/rl_crypto/tickers.py,
 # so this script deliberately does not hardcode a ticker: no stagger, every
 # ticker on every 30-minute tick.
@@ -37,7 +37,7 @@ if ! git symbolic-ref -q HEAD >/dev/null; then
   git merge --ff-only -q origin/main || true
 fi
 
-nix develop -c uv run python tools/record_live.py \
+nix develop -c uv run rl-pipeline live \
   "${TICKER_ARGS[@]}" \
   --live-cap "${LIVE_CAP:-1000}"
 
@@ -53,14 +53,14 @@ git commit -m "live: record $(date -u +%Y-%m-%dT%H:%MZ)"
 # data/<slug>/live.jsonl, so rebasing conflicts on those tails — and `set -e`
 # would abort the run, stranding the rebase and losing a whole tick.
 #
-# Resolution is a union, not a side: live.jsonl is append-only, so every record
-# collected by either writer is kept. tools/resolve_cache_conflicts.py does that
-# and falls back to the rebased side for overwritten artifacts (summary.json).
+# Resolution is a merge, not a side: live.jsonl is append-only, so every record
+# collected by either writer is kept, and summary.json keeps the newer local run.
+# `rl-pipeline conflicts` does that (candles merge by timestamp, never duplicating).
 if ! git push origin HEAD:main; then
   echo "push rejected (concurrent cache commit?) — rebasing and retrying"
   if ! git pull --rebase -q origin main; then
     echo "rebase conflicted — unioning append-only caches"
-    nix develop -c uv run python tools/resolve_cache_conflicts.py
+    nix develop -c uv run rl-pipeline conflicts
     GIT_EDITOR=true git rebase --continue
   fi
   git push origin HEAD:main

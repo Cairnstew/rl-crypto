@@ -140,7 +140,7 @@ jobs:
           TICKER: ${{ matrix.entry.ticker }}
           HISTORY_DAYS: ${{ inputs.history_days || '60' }}
         run: |
-          uv run python tools/run_pipeline.py \
+          uv run rl-pipeline run \
             --tickers "$TICKER" \
             --history-days "$HISTORY_DAYS" \
             --timeframe 1h \

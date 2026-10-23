@@ -3,7 +3,7 @@
 The git-tracked cache under ``data/<slug>/`` grows on every run but never
 corrupts: candles are *upserted* by timestamp into a sorted archive (so the
 history never shrinks and never duplicates), and live records are appended with
-a cap. Shared here so ``tools/run_pipeline.py`` and ``tools/record_live.py``
+a cap. Shared here so ``rl_crypto.pipeline.run`` and ``rl_crypto.pipeline.live``
 build the cache identically, and so a reader (the notebook, an analysis) can
 first :func:`sync_cache` it against the remote that the runners push to.
 """

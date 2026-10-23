@@ -2,16 +2,16 @@
 
 `data/` is the **git-committed, growing cache** written by the scheduled
 workflows (`.github/workflows/pipeline.yml` + `.github/workflows/live.yml` →
-`tools/run_pipeline.py`, `tools/record_live.py`) and by hand:
+`rl-pipeline run`, `rl-pipeline live`) and by hand:
 
 Quality audits of this directory live in [`AUDIT.md`](AUDIT.md); re-run one with
 `uv run python tools/audit_data_quality.py` (read-only, no network).
 
 ```bash
-uv run python tools/run_pipeline.py --history-days 60          # whole watchlist
-uv run python tools/run_pipeline.py --retrain-only             # models only, no network
-uv run python tools/record_live.py                             # frequent live points
-uv run python tools/record_live.py --tickers BTC/USD ETH/USD   # just these
+uv run rl-pipeline run --history-days 60          # whole watchlist
+uv run rl-pipeline run --retrain-only             # models only, no network
+uv run rl-pipeline live                             # frequent live points
+uv run rl-pipeline live --tickers BTC/USD ETH/USD   # just these
 ```
 
 **The tracked watchlist** lives in [`src/rl_crypto/tickers.py`](../src/rl_crypto/tickers.py)
@@ -76,7 +76,7 @@ like.
 ## Rebuilding models without spending quota
 
 ```bash
-uv run python tools/run_pipeline.py --retrain-only
+uv run rl-pipeline run --retrain-only
 ```
 
 Recomputes features, labels and bundles from the committed archive — the right
@@ -163,13 +163,13 @@ Run it **locally first** to populate the archive, then let the scheduled
 workflows refresh on top:
 
 ```bash
-uv run python tools/run_pipeline.py --history-days 60 --fetch-timeout 600
+uv run rl-pipeline run --history-days 60 --fetch-timeout 600
 ```
 
 Narrow it to seed just one asset:
 
 ```bash
-uv run python tools/run_pipeline.py --tickers ETH/USD --history-days 60 --fetch-timeout 600
+uv run rl-pipeline run --tickers ETH/USD --history-days 60 --fetch-timeout 600
 ```
 
 Local runs reuse the sibling projects' on-disk caches

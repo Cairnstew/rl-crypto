@@ -66,7 +66,7 @@ jobs:
           if [ -n "$TICKERS" ]; then
             args=(--tickers $TICKERS)
           fi
-          uv run python tools/record_live.py \
+          uv run rl-pipeline live \
             "${args[@]}" \
             --live-cap "$LIVE_CAP" \
             --fetch-timeout 120

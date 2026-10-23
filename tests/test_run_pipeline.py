@@ -3,22 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 from pathlib import Path
 
 from rl_crypto.models import Dataset, UnifiedRecord
+from rl_crypto.pipeline import run as runner
 
 from .conftest import make_dataset_rows
-
-_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "run_pipeline.py"
-
-
-def _load_runner():
-    spec = importlib.util.spec_from_file_location("run_pipeline", _TOOLS)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _args(tmp_path: Path):
@@ -35,7 +25,6 @@ def _args(tmp_path: Path):
 
 
 def test_run_pipeline_grows_archive_and_writes_cache(tmp_path, monkeypatch):
-    runner = _load_runner()
     monkeypatch.setattr(
         runner,
         "build_dataset",
@@ -84,7 +73,6 @@ def test_run_pipeline_grows_archive_and_writes_cache(tmp_path, monkeypatch):
 
 
 def test_run_pipeline_accumulates_across_runs(tmp_path, monkeypatch):
-    runner = _load_runner()
     rows = make_dataset_rows(50)
     monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: Dataset(ticker="ETH/USD", rows=rows))
     monkeypatch.setattr(
@@ -101,7 +89,6 @@ def test_run_pipeline_accumulates_across_runs(tmp_path, monkeypatch):
 
 def test_retrain_only_touches_no_network_and_no_live_stream(tmp_path, monkeypatch):
     """Rebuilding models after a feature bump must not spend upstream quota."""
-    runner = _load_runner()
 
     def _boom(*a, **k):  # pragma: no cover - any call here fails the test
         raise AssertionError("retrain-only must not fetch")
@@ -134,7 +121,6 @@ def test_retrain_only_touches_no_network_and_no_live_stream(tmp_path, monkeypatc
 
 
 def test_run_pipeline_exit_nonzero_when_everything_fails(tmp_path, monkeypatch):
-    runner = _load_runner()
     monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: Dataset(ticker="ETH/USD", rows=()))
     monkeypatch.setattr(
         runner,

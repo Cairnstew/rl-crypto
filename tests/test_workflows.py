@@ -18,6 +18,7 @@ from rl_crypto.cache import slug_for
 from rl_crypto.tickers import TRACKED_TICKERS
 
 _PIPELINE = Path(__file__).resolve().parents[1] / ".github/workflows/pipeline.yml"
+_LIVE = Path(__file__).resolve().parents[1] / ".github/workflows/live.yml"
 
 
 def _workflow() -> dict:
@@ -163,3 +164,13 @@ def test_prepare_honours_a_narrowed_dispatch_list(tmp_path):
     )
     assert [e["ticker"] for e in entries] == ["BTC/USD", "BNB/USD"]
     assert all("/" not in e["slug"] for e in entries)
+
+
+def test_production_workflows_use_the_pipeline_entry_point():
+    """The runners live behind ``rl-pipeline`` now; the workflows must not drift
+    back to the old script paths (which are only compatibility shims)."""
+    for path in (_PIPELINE, _LIVE):
+        text = path.read_text(encoding="utf-8")
+        assert "rl-pipeline " in text, f"{path.name} does not use the entry point"
+        assert "tools/run_pipeline.py" not in text, path.name
+        assert "tools/record_live.py" not in text, path.name

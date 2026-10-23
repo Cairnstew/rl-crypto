@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 
@@ -11,18 +10,9 @@ from rl_crypto import build_samples
 from rl_crypto.ml.store import save_bundle
 from rl_crypto.ml.tier1 import train_tier1
 from rl_crypto.models import UnifiedRecord
+from rl_crypto.pipeline import live as tool
 
 from .conftest import make_dataset_rows
-
-_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "record_live.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("record_live", _TOOLS)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _write_bundle(tmp_path: Path, ticker: str = "ETH/USD") -> None:
@@ -65,7 +55,6 @@ def _args(tmp_path: Path, **overrides) -> argparse.Namespace:
 
 
 def test_record_live_appends_one_record(tmp_path, monkeypatch):
-    tool = _load_tool()
     _write_bundle(tmp_path)
 
     candles = _candles()
@@ -95,7 +84,6 @@ def test_record_live_appends_one_record(tmp_path, monkeypatch):
 
 
 def test_record_live_reuses_the_latest_bundle(tmp_path, monkeypatch):
-    tool = _load_tool()
     _write_bundle(tmp_path)
 
     # A fresh run must keep appending to the same capped file.
@@ -117,7 +105,6 @@ def test_record_live_reuses_the_latest_bundle(tmp_path, monkeypatch):
 
 def test_record_live_records_every_ticker(tmp_path, monkeypatch):
     """Every ticker is recorded on every run — no stagger, no rotation."""
-    tool = _load_tool()
     tickers = ["ETH/USD", "BTC/USD", "SOL/USD"]
     for ticker in tickers:
         _write_bundle(tmp_path, ticker)
@@ -140,7 +127,6 @@ def test_record_live_records_every_ticker(tmp_path, monkeypatch):
 
 def test_record_live_isolates_a_failing_ticker(tmp_path, monkeypatch):
     """One broken ticker is reported and skipped; the rest still land."""
-    tool = _load_tool()
     tickers = ["ETH/USD", "BTC/USD"]
     for ticker in tickers:
         _write_bundle(tmp_path, ticker)
@@ -173,7 +159,6 @@ def test_record_live_window_uses_archive_and_short_tail(tmp_path, monkeypatch):
     The archive holds old-but-in-window candles; only a short tail is fetched,
     and the two are merged and de-duplicated by timestamp.
     """
-    tool = _load_tool()
     _write_bundle(tmp_path)
 
     from datetime import UTC, datetime, timedelta
@@ -225,7 +210,6 @@ def test_record_live_window_uses_archive_and_short_tail(tmp_path, monkeypatch):
 
 def test_record_live_single_ticker_alias(tmp_path, monkeypatch):
     """--ticker still works as an alias for --tickers (existing callers)."""
-    tool = _load_tool()
     _write_bundle(tmp_path)
     monkeypatch.setattr(tool, "fetch_prices", lambda *a, **k: (_candles(), ()))
     monkeypatch.setattr(
