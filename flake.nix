@@ -151,6 +151,7 @@
               echo "rl-crypto dev shell — python $(python -V 2>&1 | cut -d' ' -f2), uv $(uv --version | cut -d' ' -f2)"
               echo "  uv run python -m pytest -m 'not live'   # offline test suite"
               echo "  uv run python tools/build_notebook.py"
+              echo "  uv run rl-pipeline --help   # production runners (run/live/conflicts/sync)"
               echo "  ruff check src/ tests/ examples/ tools/  (aliased to nixpkgs ruff)"
             '';
           };
