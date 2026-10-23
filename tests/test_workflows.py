@@ -263,3 +263,14 @@ def test_dispatch_mode_wins_over_the_clock(tmp_path):
 def test_dispatch_list_beats_the_fork_variable(tmp_path):
     output, _ = _run_prepare_script("ADA/USD", watchlist="BTC/USD", tmp_path=tmp_path)
     assert [entry["ticker"] for entry in _entries(output)] == ["ADA/USD"]
+
+
+def test_merge_refreshes_the_README_dashboard():
+    """The dashboard is part of the cache commit, but a run that collected
+    nothing must not produce a README-only commit."""
+    merge_runs = _runs(_workflow()["jobs"]["merge"])
+    assert "tools/render_dashboard.py" in merge_runs
+    assert "git add README.md" in merge_runs
+    assert merge_runs.index("no cache changes to commit") < merge_runs.index(
+        "tools/render_dashboard.py"
+    )

@@ -361,6 +361,11 @@ jobs:
             echo "no cache changes to commit"
             exit 0
           fi
+          # Only touched when there is a cache write: a run that collected
+          # nothing must not produce a README-only commit. A render failure is
+          # a warning, never a reason to drop the cache.
+          python3 tools/render_dashboard.py || echo "::warning::dashboard render failed"
+          git add README.md
           if [ "$MODE" = "train" ]; then
             git commit -m "pipeline: refresh cache at $(date -u +%Y-%m-%dT%H:%MZ)"
           else
@@ -375,8 +380,18 @@ jobs:
             fi
             echo "push attempt $attempt rejected — rebasing onto origin"
             if ! git pull --rebase -q origin main; then
+              # README is generated inside the dashboard markers: keep upstream's
+              # text (human edits) and re-render it from the merged cache below.
+              if git diff --name-only --diff-filter=U | grep -qx 'README.md'; then
+                git checkout --ours -- README.md
+                git add README.md
+              fi
               # The resolver is stdlib-only, so no `uv sync` is needed here.
               python3 src/rl_crypto/pipeline/conflicts.py --root .
+              if [ -f tools/render_dashboard.py ]; then
+                python3 tools/render_dashboard.py || echo "::warning::dashboard render failed"
+                git add README.md
+              fi
               GIT_EDITOR=true git rebase --continue
             fi
           done
