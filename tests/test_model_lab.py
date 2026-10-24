@@ -152,3 +152,113 @@ def test_walk_forward_uses_the_widest_target_reach():
     assert splits
     for train, test in splits:
         assert samples.index(train[-1]) + 2 <= samples.index(test[0])
+
+
+# --------------------------------------------------------------------------- ledger
+
+
+def test_preregister_action_writes_the_committed_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    data = tmp_path / "data" / "btc-usd"
+    data.mkdir(parents=True)
+    (data / "candles.jsonl").write_text('{"close": 1}\n')
+
+    code = lab.main(
+        [
+            "preregister",
+            "--hypothesis",
+            "H1",
+            "--family",
+            "pooled",
+            "--lineage",
+            "H1:BTC/USD",
+            "--mechanism",
+            "pooling borrows strength",
+            "--configs",
+            '[{"name": "all+reference+h1"}]',
+            "--tickers",
+            "BTC/USD",
+            "--targets",
+            "fwd_direction",
+            "--metric",
+            "mean fold improvement",
+            "--criteria",
+            "3/4 folds and CI > 0",
+            "--negative",
+            "no consistent improvement",
+        ]
+    )
+
+    assert code == 0
+    entries = lab.read_entries(tmp_path)
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "preregister"
+    assert entries[0]["trial_index"] == 1
+    assert entries[0]["data_hash"]["BTC/USD"] is not None
+
+
+def test_promote_refuses_a_lineage_that_already_spent_the_holdout(tmp_path, monkeypatch):
+    from rl_crypto.ml.store import save_bundle
+    from rl_crypto.ml.tier1 import Tier1Bundle
+
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    monkeypatch.setattr(lab, "LAB_DIR", tmp_path / "lab")
+    (tmp_path / "data").mkdir()
+
+    candidate = tmp_path / "candidate.json"
+    save_bundle(Tier1Bundle(feature_names=("ret_1",), horizon=1), candidate)
+
+    lab.record_holdout(
+        tmp_path,
+        hypothesis_id="H1",
+        lineage_id="H1:BTC/USD",
+        candidate="older.json",
+        candidate_hash="a-different-candidate",
+        passed=False,
+        apply=False,
+    )
+
+    with pytest.raises(SystemExit, match="refused"):
+        lab.main(
+            [
+                "promote",
+                "--candidate",
+                str(candidate),
+                "--ticker",
+                "BTC/USD",
+                "--hypothesis",
+                "H1",
+            ]
+        )
+
+
+def test_scoreboard_action_renders_the_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    lab.main(
+        [
+            "preregister",
+            "--hypothesis",
+            "H1",
+            "--family",
+            "pooled",
+            "--lineage",
+            "H1:BTC/USD",
+            "--mechanism",
+            "m",
+            "--configs",
+            "{}",
+            "--tickers",
+            "BTC/USD",
+            "--metric",
+            "x",
+            "--criteria",
+            "y",
+            "--negative",
+            "z",
+        ]
+    )
+
+    assert lab.main(["scoreboard"]) == 0
+    text = (tmp_path / "experiments" / "SCOREBOARD.md").read_text()
+    assert "Experiment scoreboard" in text
+    assert "H1:BTC/USD" in text

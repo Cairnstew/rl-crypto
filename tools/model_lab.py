@@ -35,6 +35,20 @@ from typing import Any
 import numpy as np
 
 from rl_crypto.cache import candles_path, load_candles, slug_for, summary_path
+from rl_crypto.experiments import (
+    check_promote_allowed,
+    config_hash,
+    ledger_path,
+    read_entries,
+    record_holdout,
+    write_scoreboard,
+)
+from rl_crypto.experiments import (
+    counts as experiment_counts,
+)
+from rl_crypto.experiments import (
+    preregister as ledger_preregister,
+)
 from rl_crypto.features import (
     DEFAULT_INTERVAL_SECONDS,
     FEATURE_GROUPS,
@@ -835,6 +849,28 @@ def promote_action(args: argparse.Namespace) -> int:
         raise SystemExit("could not infer ticker from candidate name; pass --ticker BTC/USD")
     targets = resolve_targets(args.targets)
     candidate = load_bundle(candidate_path)
+    hypothesis = args.hypothesis or "adhoc"
+    lineage = args.lineage or f"{hypothesis}:{ticker}"
+    candidate_hash = config_hash(
+        {
+            "feature_names": list(candidate.feature_names),
+            "horizon": candidate.horizon,
+            "models": {
+                name: model.model.to_dict().get("kind")
+                for name, model in candidate.targets.items()
+            },
+        }
+    )
+    refusal = check_promote_allowed(
+        read_entries(ROOT),
+        lineage_id=lineage,
+        candidate_hash=candidate_hash,
+        apply=bool(args.apply),
+    )
+    if refusal:
+        # Refuse before evaluating anything: the final holdout is the only
+        # untouched data left, so it must not be read speculatively.
+        raise SystemExit(f"promote refused: {refusal}")
     rows = load_ticker_rows(ticker)
     if len(rows) < 120:
         raise SystemExit(f"{ticker}: only {len(rows)} candles")
@@ -882,6 +918,9 @@ def promote_action(args: argparse.Namespace) -> int:
     payload = {
         "action": "promote",
         "ticker": ticker,
+        "hypothesis": hypothesis,
+        "lineage": lineage,
+        "candidate_hash": candidate_hash,
         "candidate": str(candidate_path),
         "current_bundle": str(default_bundle_path(ticker, directory=ROOT / "models")),
         "apply": bool(args.apply),
@@ -897,6 +936,19 @@ def promote_action(args: argparse.Namespace) -> int:
         "passed": not reasons,
         "summary": {"passed": not reasons, "ticker": ticker, "reasons": reasons},
     }
+    # The holdout is spent here, whether the gate passes or fails: this is the
+    # touch the ledger exists to bound. Recorded before `--apply` so an apply
+    # can never happen without its dry-run record.
+    record_holdout(
+        ROOT,
+        hypothesis_id=hypothesis,
+        lineage_id=lineage,
+        candidate=str(candidate_path),
+        candidate_hash=candidate_hash,
+        passed=not reasons,
+        apply=bool(args.apply),
+        reasons=reasons,
+    )
     if args.apply and not reasons:
         current_path = default_bundle_path(ticker, directory=ROOT / "models")
         if current_path.exists():
@@ -937,30 +989,99 @@ def promote_action(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_configs(value: str) -> list[dict[str, Any]]:
+    """Parse ``--configs`` as one JSON object or a list of them."""
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--configs must be JSON: {exc}") from exc
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise SystemExit("--configs must be a JSON object or a list of objects")
+    return payload
+
+
+def preregister_action(args: argparse.Namespace) -> int:
+    entry = ledger_preregister(
+        ROOT,
+        hypothesis_id=args.hypothesis,
+        family=args.family,
+        lineage_id=args.lineage
+        or f"{args.hypothesis}:{','.join(resolve_tickers(args.tickers))}",
+        mechanism=args.mechanism,
+        configs=_parse_configs(args.configs),
+        tickers=list(resolve_tickers(args.tickers)),
+        targets=list(resolve_targets(args.targets)),
+        metric=args.metric,
+        criteria=args.criteria,
+        negative=args.negative,
+        seed=args.seed,
+        folds=args.folds,
+    )
+    if args.json:
+        print(json.dumps(entry, indent=2, default=str))
+        return 0
+    print(f"preregistered {entry['hypothesis_id']} ({entry['lineage_id']})")
+    print(f"  family:      {entry['family']}  trial {entry['trial_index']}")
+    print(f"  git:         {entry['git_sha'] or 'unknown'}")
+    print(f"  config hash: {entry['config_hash'][:16]}")
+    print(f"  data:        {json.dumps(entry['data_hash'], default=str)}")
+    print(f"  ledger:      {ledger_path(ROOT)}")
+    return 0
+
+
+def scoreboard_action(args: argparse.Namespace) -> int:
+    path = write_scoreboard(ROOT)
+    totals = experiment_counts(read_entries(ROOT))
+    if args.json:
+        print(json.dumps({"scoreboard": str(path), "counts": totals}, indent=2, default=str))
+        return 0
+    print(f"scoreboard: {path}")
+    print(
+        f"  entries={totals['entries']} lineages={totals['lineages']} "
+        f"final-holdout touches={totals['holdout_touches']}"
+    )
+    return 0
+
+
 def report_action(args: argparse.Namespace) -> int:
-    ledger = LAB_DIR / "ledger.jsonl"
-    rows: list[dict[str, Any]] = []
-    if ledger.exists():
-        for line in ledger.read_text(encoding="utf-8").splitlines()[-args.limit :]:
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    payload = {"action": "report", "ledger": str(ledger), "entries": rows}
+    path = ledger_path(ROOT)
+    entries = read_entries(ROOT)
+    totals = experiment_counts(entries)
+    rows = entries[-args.limit :]
+    payload = {
+        "action": "report",
+        "ledger": str(path),
+        "counts": totals,
+        "entries": rows,
+    }
     if args.json:
         print(json.dumps(payload, indent=2, default=str))
         return 0
-    if not rows:
-        print(f"no ledger entries yet ({ledger})")
+    if not entries:
+        print(f"no experiment ledger entries yet ({path})")
         return 0
+    print(
+        f"experiments: {totals['entries']} entries, {totals['lineages']} lineages, "
+        f"{totals['holdout_touches']} final-holdout touch(es)"
+    )
+    for family, bucket in sorted(totals["families"].items()):
+        print(
+            f"  {family}: trials={bucket['trials']} results={bucket['results']} "
+            f"holdouts={bucket['holdouts']}"
+        )
+    print()
     _print_table(
-        ["at", "action", "artifact", "summary"],
+        ["at", "kind", "lineage", "trial", "verdict", "holdout"],
         [
             [
                 r.get("at", ""),
-                r.get("action", ""),
-                Path(r.get("artifact", "")).name,
-                json.dumps(r.get("summary", {}), default=str)[:80],
+                r.get("kind", ""),
+                r.get("lineage_id", ""),
+                r.get("trial_index", ""),
+                r.get("verdict", "—"),
+                "used" if r.get("holdout_touched") else "—",
             ]
             for r in rows
         ],
@@ -985,7 +1106,11 @@ def _holdout_beats(row: dict[str, Any]) -> str:
 
 
 def status_action(args: argparse.Namespace) -> int:
-    payload = {"action": "status", "tickers": status_payload(resolve_tickers(args.tickers))}
+    payload = {
+        "action": "status",
+        "tickers": status_payload(resolve_tickers(args.tickers)),
+        "experiments": experiment_counts(read_entries(ROOT)),
+    }
     if args.json:
         print(json.dumps(payload, indent=2, default=str))
         return 0
@@ -1008,6 +1133,12 @@ def status_action(args: argparse.Namespace) -> int:
         "vol=fwd_volatility vratio=fwd_volume_ratio"
     )
     print("trusted = targets whose own holdout beat the baseline.")
+    totals = payload["experiments"]
+    print(
+        f"\nexperiments: {totals['entries']} ledger entries, "
+        f"{totals['lineages']} lineages, "
+        f"{totals['holdout_touches']} final-holdout touch(es)"
+    )
     return 0
 
 
@@ -1015,12 +1146,14 @@ HELP_TEXT = """\
 rl-model-lab — offline, out-of-sample model loop
 
 Actions:
-  status    deployed bundles, trust, freshness
-  evaluate  walk-forward target metrics + after-cost policy
-  sweep     controlled feature/model/horizon experiments
-  promote   validate a candidate on the reserved final holdout
-  report    experiment ledger
-  help      this reference
+  status       deployed bundles, trust, freshness
+  evaluate     walk-forward target metrics + after-cost policy
+  sweep        controlled feature/model/horizon experiments
+  preregister  record a hypothesis + pass/fail criteria before it runs
+  promote      validate a candidate on the reserved final holdout
+  report       experiment ledger with trial/holdout counts
+  scoreboard   regenerate experiments/SCOREBOARD.md from the ledger
+  help         this reference
 
 Common arguments (evaluate / sweep / promote):
   --tickers BTC/USD ETH/USD     comma- or space-separated; default all
@@ -1043,13 +1176,21 @@ Action-specific:
             --horizons 1
             --max-configs N (default 16)
             --limit N (default 20)
+  preregister --hypothesis H1 --family pooled --lineage H1:BTC/USD
+              --mechanism "why this should help" --configs JSON
+              --metric "metric of record" --criteria "numeric pass/fail"
+              --negative "what would count as a negative finding"
   promote   --candidate PATH (required)
             --ticker BTC/USD (inferred from the filename when possible)
+            --hypothesis ID --lineage ID (default: <hypothesis>:<ticker>)
             --apply (write models/<slug>.json only after a passing gate)
   report    --limit N (default 10)
+  scoreboard
 
-Every action accepts --json. Artifacts and the ledger live under
-~/.local/share/rl-crypto/model-lab (override RL_MODEL_LAB_DIR).
+Every action accepts --json. Artifacts live under
+~/.local/share/rl-crypto/model-lab (override RL_MODEL_LAB_DIR); the committed
+experiment ledger is experiments/ledger.jsonl. The final holdout is spent at
+most once per lineage, and only by promote.
 Nothing here guarantees profit: the final 20% is reserved for promotion,
 costs are charged per side, and the gate compares against a constant baseline.
 """
@@ -1101,6 +1242,14 @@ def build_parser() -> argparse.ArgumentParser:
     promote = sub.add_parser("promote", help="validate a candidate on the final holdout")
     promote.add_argument("--candidate", required=True)
     promote.add_argument("--ticker", default=None)
+    promote.add_argument(
+        "--hypothesis", default=None, help="hypothesis id the candidate belongs to"
+    )
+    promote.add_argument(
+        "--lineage",
+        default=None,
+        help="candidate lineage whose holdout budget this spends (default: <hypothesis>:<ticker>)",
+    )
     promote.add_argument("--tickers", nargs="+", default=None)
     promote.add_argument("--targets", nargs="+", default=None)
 
@@ -1112,10 +1261,34 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--json", action="store_true")
     promote.set_defaults(func=promote_action)
 
+    preregister = sub.add_parser(
+        "preregister", help="record a hypothesis and its pass/fail criteria before running"
+    )
+    preregister.add_argument("--hypothesis", required=True)
+    preregister.add_argument("--family", required=True)
+    preregister.add_argument("--lineage", default=None)
+    preregister.add_argument("--mechanism", required=True)
+    preregister.add_argument("--configs", required=True, help="JSON object or list of objects")
+    preregister.add_argument("--tickers", nargs="+", default=None)
+    preregister.add_argument("--targets", nargs="+", default=None)
+    preregister.add_argument("--metric", required=True)
+    preregister.add_argument("--criteria", required=True)
+    preregister.add_argument("--negative", required=True)
+    preregister.add_argument("--seed", type=int, default=0)
+    preregister.add_argument("--folds", type=int, default=4)
+    preregister.add_argument("--json", action="store_true")
+    preregister.set_defaults(func=preregister_action)
+
     report = sub.add_parser("report", help="summarize the experiment ledger")
     report.add_argument("--limit", type=int, default=10)
     report.add_argument("--json", action="store_true")
     report.set_defaults(func=report_action)
+
+    scoreboard = sub.add_parser(
+        "scoreboard", help="regenerate experiments/SCOREBOARD.md from the ledger"
+    )
+    scoreboard.add_argument("--json", action="store_true")
+    scoreboard.set_defaults(func=scoreboard_action)
 
     return parser
 
