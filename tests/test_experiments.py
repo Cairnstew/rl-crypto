@@ -345,6 +345,10 @@ def _v2_payload(
     return {
         "results": results,
         "pooled": pooled,
+        "pooled_economics": {
+            "model": {"total_return": 0.10, "sharpe": 1.5, "trades": 200},
+            "momentum": {"total_return": 0.02, "sharpe": 0.4, "trades": 200},
+        },
         "controls": {
             "shuffle": {"pooled": shuffle or _paired(-0.01, -0.02, -0.001)},
             "shift": {"pooled": shift or _paired(-0.01, -0.02, -0.001)},
@@ -650,3 +654,92 @@ def test_power_at_trial_1_5_10_declines_with_the_spending_schedule():
     # At the cap the required per-trial alpha is tiny, so the effect must be
     # larger to retain the same power; that is the cost of the guarantee.
     assert powers[1] > 0.6
+
+
+# --------------------------------------------------------------------------- canaries and economics
+
+
+def test_v2_leaky_feature_is_invalid_not_provisional():
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    payload["leak_detected"] = True
+    payload["leak_features"] = [
+        {"feature": "leak_next_bar_return", "target": "fwd_return", "correlation": 1.0}
+    ]
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert verdict["outcome"] == "invalid"
+    assert any("leak" in reason for reason in verdict["reasons"])
+
+
+def test_v2_direction_target_requires_pooled_economics():
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    payload.pop("pooled_economics")
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert verdict["outcome"] == "blocked"
+    assert any("requires pooled economics" in reason for reason in verdict["reasons"])
+
+
+def test_v2_economics_is_the_pooled_portfolio_not_the_first_row():
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    # The first ticker row alone loses money; the pooled portfolio does not.
+    payload["results"][0]["economic"] = {
+        "model": {"total_return": -0.5, "sharpe": -3.0, "trades": 5},
+        "momentum": {"sharpe": 0.0},
+    }
+    ok = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert ok["outcome"] == "provisional"
+    assert ok["metrics"]["economic"]["basis"] == "pooled-portfolio"
+    assert ok["metrics"]["economic"]["ticker"] is None
+
+    payload["pooled_economics"]["model"] = {
+        "total_return": -0.01,
+        "sharpe": 1.5,
+        "trades": 200,
+    }
+    bad = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert bad["outcome"] == "negative"
+    assert any("total return" in reason for reason in bad["reasons"])
+
+
+def test_canary_kind_is_explicit_and_gated():
+    null = Hypothesis.from_dict(
+        {
+            "id": "C1",
+            "title": "null",
+            "family": "canary",
+            "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_direction"]},
+            "criteria": _v2_criteria(),
+            "canary": True,
+        }
+    )
+    assert null.canary_kind == "null"
+    positive = Hypothesis.from_dict(
+        {
+            "id": "C2",
+            "title": "positive",
+            "family": "canary",
+            "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_direction"]},
+            "criteria": _v2_criteria(),
+            "canary": True,
+            "canary_kind": "positive",
+        }
+    )
+    assert positive.canary_kind == "positive"
+    with pytest.raises(ValueError, match="canary_kind"):
+        Hypothesis.from_dict(
+            {
+                "id": "C3",
+                "title": "bad",
+                "family": "canary",
+                "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_direction"]},
+                "criteria": _v2_criteria(),
+                "canary_kind": "sideways",
+            }
+        )
+
+
+def test_no_new_information_default_is_168_bars_and_configurable():
+    payload = json.loads(
+        (Path(__file__).parents[1] / "config" / "model-improvement.json").read_text()
+    )
+    assert payload["noNewInformation"]["minNewBars"] == 168
+    assert payload["budgets"]["maxTrialsPerFamily"] == 10

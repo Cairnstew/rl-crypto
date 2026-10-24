@@ -111,6 +111,17 @@ DEFAULT_CRITERIA: dict[str, Any] = {
 #: and a time-block bootstrap CI. ``fold_rule`` is explicit because the old
 #: combination of ``folds_beating_min=3`` and ``min_improvement_min=0`` was
 #: contradictory (the latter already required every fold to be positive).
+#: A v2 claim about direction or return must survive after-cost economics on the
+#: pooled portfolio. These are the defaults; a criteria block may tighten them.
+POOLED_ECONOMIC_DEFAULT: dict[str, Any] = {
+    "total_return_min": 0.0,
+    "sharpe_above_momentum": True,
+    "trades_min": 100,
+}
+
+#: Targets whose v2 verdict always includes the pooled economic gate.
+ECONOMIC_TARGETS = frozenset({"fwd_direction", "fwd_return"})
+
 DEFAULT_CRITERIA_V2: dict[str, Any] = {
     "kind": "improvement",
     "criteria_version": CRITERIA_VERSION,
@@ -320,6 +331,8 @@ class Hypothesis:
     run_type: str = "experiment"
     lineage: str = ""
     canary: bool = False
+    #: "null" is the shuffled-label canary; "positive" injects a leaky feature.
+    canary_kind: str = "null"
 
     @property
     def needs_code(self) -> bool:
@@ -355,6 +368,7 @@ class Hypothesis:
             "run_type": self.run_type,
             "lineage": self.stable_lineage,
             "canary": self.canary,
+            "canary_kind": self.canary_kind,
         }
 
     @classmethod
@@ -368,6 +382,9 @@ class Hypothesis:
         run_type = str(payload.get("run_type", "experiment"))
         if run_type not in RUN_TYPES:
             raise ValueError(f"{payload.get('id')}: unknown run_type {run_type!r}")
+        canary_kind = str(payload.get("canary_kind") or "null")
+        if canary_kind not in {"null", "positive"}:
+            raise ValueError(f"{payload.get('id')}: unknown canary_kind {canary_kind!r}")
         raw_criteria = dict(payload.get("criteria") or {})
         version = criteria_version(raw_criteria)
         base = DEFAULT_CRITERIA_V2 if version >= 2 else DEFAULT_CRITERIA
@@ -387,6 +404,7 @@ class Hypothesis:
             run_type=run_type,
             lineage=str(payload.get("lineage") or ""),
             canary=bool(payload.get("canary", False)),
+            canary_kind=canary_kind,
         )
 
 
@@ -1006,6 +1024,23 @@ def _evaluate_criteria_v2(
             "metrics": metrics,
         }
 
+    if lab_payload.get("leak_detected"):
+        leaks = lab_payload.get("leak_features") or []
+        detail = ", ".join(
+            f"{item.get('feature')}~{item.get('target')} r={item.get('correlation'):.3f}"
+            for item in leaks
+            if isinstance(item, Mapping)
+        )
+        return {
+            "passed": False,
+            "outcome": "invalid",
+            "reasons": [
+                "a feature is a deterministic function of a target (leak)"
+                + (f": {detail}" if detail else "")
+            ],
+            "metrics": {**metrics, "leak_features": leaks},
+        }
+
     if kind == "diagnostic":
         rows = list(lab_payload.get("results") or [])
         metrics["per_ticker"] = {
@@ -1134,25 +1169,54 @@ def _evaluate_criteria_v2(
             "the result is carried by a single ticker (correlated assets are not votes)"
         )
 
-    economic = criteria.get("economic")
+    target_name = str(criteria.get("target", "fwd_direction"))
+    mandatory_economics = target_name in ECONOMIC_TARGETS
+    economic = dict(criteria.get("economic") or {})
+    if mandatory_economics:
+        economic = {**POOLED_ECONOMIC_DEFAULT, **economic}
+    pooled_economics = lab_payload.get("pooled_economics")
+    if mandatory_economics and not isinstance(pooled_economics, Mapping):
+        return {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": [
+                f"v2 target {target_name!r} requires pooled economics, but the lab "
+                "did not report a pooled portfolio"
+            ],
+            "metrics": metrics,
+        }
     if economic:
-        row = next(iter(lab_payload.get("results") or []), None) or {}
-        model = ((row.get("economic") or {}).get("model") or {}) if isinstance(row, Mapping) else {}
-        momentum = (
-            ((row.get("economic") or {}).get("momentum") or {})
-            if isinstance(row, Mapping)
-            else {}
-        )
+        if isinstance(pooled_economics, Mapping):
+            model = pooled_economics.get("model") or {}
+            momentum = pooled_economics.get("momentum") or {}
+            basis = "pooled-portfolio"
+            ticker = None
+        else:
+            row = next(iter(lab_payload.get("results") or []), None) or {}
+            model = (
+                ((row.get("economic") or {}).get("model") or {})
+                if isinstance(row, Mapping)
+                else {}
+            )
+            momentum = (
+                ((row.get("economic") or {}).get("momentum") or {})
+                if isinstance(row, Mapping)
+                else {}
+            )
+            basis = "first-row"
+            ticker = (row or {}).get("ticker")
         total_return = _number(model.get("total_return"))
         sharpe = _number(model.get("sharpe"))
         momentum_sharpe = _number(momentum.get("sharpe"))
         trades = _number(model.get("trades"))
         metrics["economic"] = {
+            "basis": basis,
             "total_return": total_return,
             "sharpe": sharpe,
             "momentum_sharpe": momentum_sharpe,
             "trades": trades,
-            "ticker": (row or {}).get("ticker"),
+            "ticker": ticker,
+            "mandatory": mandatory_economics,
         }
         if total_return is None or total_return <= float(economic.get("total_return_min", 0.0)):
             reasons.append("after-cost total return is not positive")

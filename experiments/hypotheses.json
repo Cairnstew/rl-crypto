@@ -10,7 +10,7 @@
       "id": "H0-canary",
       "title": "Shuffled-label canary",
       "family": "canary",
-      "order": -1,
+      "order": -2,
       "status": "open",
       "needs": [],
       "run_type": "experiment",
@@ -55,6 +55,61 @@
       "depends_on": [],
       "evidence": "",
       "notes": "Canary: a provisional outcome voids the harness and blocks further runs until harness-clear."
+    },
+    {
+      "id": "H0-canary-leak",
+      "title": "Positive (leaky-feature) canary",
+      "family": "canary",
+      "order": -1,
+      "status": "open",
+      "needs": [],
+      "run_type": "experiment",
+      "canary": true,
+      "canary_kind": "positive",
+      "mechanism": "A feature computed from the realised next-bar return must be detected as leakage; if a leaky feature can pass as skill, the harness is void.",
+      "experiment": {
+        "action": "evaluate",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1,
+        "extraLabArgs": [
+          "--canary-leak",
+          "leak_next_bar_return"
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
+      },
+      "criteria": {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        },
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": false,
+        "requires_promote": false
+      },
+      "depends_on": [],
+      "evidence": "",
+      "notes": "Positive canary: the lab injects a feature equal to the realised fwd_return. It must come out invalid (leak detector / controls), and a provisional outcome voids the harness exactly as the null canary does."
     },
     {
       "id": "H0",

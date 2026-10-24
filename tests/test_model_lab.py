@@ -512,3 +512,21 @@ def test_promote_apply_records_the_durable_training_config(tmp_path, monkeypatch
         "model_names": {"fwd_direction": "logistic"},
         "horizon": 1,
     }
+
+
+def test_positive_canary_leak_is_detected_mechanically():
+    samples = [
+        Sample(
+            timestamp=f"2026-01-01T{index:04d}:00:00Z",
+            features={"ret_1": 0.001 * (index % 5)},
+            targets={"fwd_return": 0.001 * (index % 7), "fwd_direction": float(index % 2)},
+        )
+        for index in range(80)
+    ]
+    assert lab.detect_leaks(samples, lab.TARGET_NAMES) == []
+    leaky = lab.inject_leaky_feature(samples, "leak_next_bar_return")
+    leaks = lab.detect_leaks(leaky, lab.TARGET_NAMES)
+    assert leaks
+    assert leaks[0]["feature"] == "leak_next_bar_return"
+    assert leaks[0]["target"] == "fwd_return"
+    assert leaks[0]["correlation"] == pytest.approx(1.0)

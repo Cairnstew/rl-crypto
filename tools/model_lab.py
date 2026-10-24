@@ -632,6 +632,68 @@ def transform_targets(
     )
 
 
+def inject_leaky_feature(
+    samples: Sequence[Sample], feature: str, target: str = "fwd_return"
+) -> tuple[Sample, ...]:
+    """Add a feature that is a deterministic function of the realised label.
+
+    This exists only for the positive canary: it makes the label readable at
+    prediction time. A harness that cannot see that as leakage is void.
+    """
+    return tuple(
+        Sample(
+            timestamp=sample.timestamp,
+            features={**sample.features, feature: sample.targets.get(target)},
+            targets=dict(sample.targets),
+        )
+        for sample in samples
+    )
+
+
+def detect_leaks(
+    samples: Sequence[Sample], targets: Sequence[str]
+) -> list[dict[str, Any]]:
+    """Flag a feature that is (nearly) a deterministic function of a target.
+
+    Pearson |r| >= 0.999 over at least 50 complete rows is not a subtle
+    overfit: a feature that moves one-for-one with the label it predicts was
+    computed from the future. The check is deliberately mechanical so the
+    positive canary cannot depend on an LLM noticing it.
+    """
+    leaks: list[dict[str, Any]] = []
+    if not samples:
+        return leaks
+    feature_names = sorted({name for sample in samples for name in sample.features})
+    for target in targets:
+        truth = [sample.targets.get(target) for sample in samples]
+        pairs = [(index, value) for index, value in enumerate(truth) if value is not None]
+        if len(pairs) < 50:
+            continue
+        for name in feature_names:
+            xs: list[float] = []
+            ys: list[float] = []
+            for index, value in pairs:
+                feature_value = samples[index].features.get(name)
+                if isinstance(feature_value, int | float):
+                    xs.append(float(feature_value))
+                    ys.append(float(value))
+            if len(xs) < 50 or len(set(xs)) < 2 or len(set(ys)) < 2:
+                continue
+            x = np.asarray(xs, dtype=float)
+            y = np.asarray(ys, dtype=float)
+            correlation = float(np.corrcoef(x, y)[0, 1])
+            if abs(correlation) >= 0.999:
+                leaks.append(
+                    {
+                        "feature": name,
+                        "target": target,
+                        "correlation": correlation,
+                        "n": len(xs),
+                    }
+                )
+    return leaks
+
+
 def evaluate_control_ticker(
     ticker: str,
     config: Config,
@@ -642,9 +704,12 @@ def evaluate_control_ticker(
     holdout_start: str | None,
     seed: int,
     shift_bars: int,
+    leak_feature: str | None = None,
 ) -> dict[str, Any]:
     rows, _ = filter_rows_before(load_ticker_rows(ticker), holdout_start)
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    if leak_feature:
+        samples = inject_leaky_feature(samples, leak_feature)
     samples = transform_targets(
         samples, target, mode, seed=seed, shift_bars=shift_bars
     )
@@ -687,6 +752,7 @@ def evaluate_ticker(
     holdout_start: str | None = None,
     full_archive: bool = False,
     primary_target: str | None = None,
+    leak_feature: str | None = None,
 ) -> dict[str, Any]:
     """Walk-forward metrics plus a threshold x cost policy grid.
 
@@ -702,6 +768,11 @@ def evaluate_ticker(
     threshold_list = _unique(list(thresholds or [threshold]))
     cost_list = _unique(list(cost_levels or [(fee_bps, slippage_bps)]))
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    if leak_feature:
+        samples = inject_leaky_feature(samples, leak_feature)
+    # Check against every target, not only the requested ones: a feature
+    # computed from any realised outcome is a leak regardless of what is scored.
+    leaks = detect_leaks(samples, TARGET_NAMES)
     if reserve_final > 0.0 and not holdout_start:
         keep = int(len(samples) * (1.0 - reserve_final))
         samples = samples[:keep]
@@ -809,6 +880,8 @@ def evaluate_ticker(
         },
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
+        "leak_detected": bool(leaks),
+        "leak_features": leaks,
     }
 
 
@@ -950,6 +1023,7 @@ def _controls_for(
     block_bars: int,
     bootstrap_samples: int,
     modes: Sequence[str],
+    leak_feature: str | None = None,
 ) -> dict[str, Any]:
     controls: dict[str, Any] = {}
     for mode in modes:
@@ -963,6 +1037,7 @@ def _controls_for(
                 holdout_start=holdout_start,
                 seed=seed,
                 shift_bars=shift_bars,
+                leak_feature=leak_feature,
             )
             for ticker in tickers
         }
@@ -1010,6 +1085,19 @@ def _parse_cost_levels(value: str | None) -> list[tuple[float, float]] | None:
     return out or None
 
 
+def _unique_leaks(leaks: Any) -> list[dict[str, Any]]:
+    """One entry per (feature, target), even when every ticker reports it."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    for leak in leaks:
+        key = (leak.get("feature"), leak.get("target"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(leak)
+    return out
+
+
 def _pooled_economics(
     results: Sequence[dict[str, Any]], *, fee_bps: float, slippage_bps: float
 ) -> dict[str, Any]:
@@ -1046,9 +1134,13 @@ def _pooled_economics(
 
 
 def evaluate_action(args: argparse.Namespace) -> int:
+    leak_feature = getattr(args, "canary_leak", None)
+    feature_names = resolve_feature_names(args.feature_set)
+    if leak_feature:
+        feature_names = tuple(dict.fromkeys((*feature_names, leak_feature)))
     config = Config(
         name=f"{args.feature_set}+{args.model_set}+h{args.horizon}",
-        feature_names=resolve_feature_names(args.feature_set),
+        feature_names=feature_names,
         model_names=resolve_model_set(args.model_set),
         horizon=args.horizon,
     )
@@ -1076,6 +1168,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             holdout_start=args.holdout_start,
             full_archive=args.full_archive,
             primary_target=primary_target,
+            leak_feature=leak_feature,
         )
         for ticker in tickers
     ]
@@ -1111,6 +1204,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             block_bars=args.bootstrap_block,
             bootstrap_samples=args.bootstrap_samples,
             modes=modes,
+            leak_feature=leak_feature,
         )
     payload = {
         "action": "evaluate",
@@ -1124,6 +1218,12 @@ def evaluate_action(args: argparse.Namespace) -> int:
         "alpha": float(args.alpha),
         "pooled": pooled,
         "pooled_economics": pooled_economics,
+        "leak_detected": any(result.get("leak_detected") for result in results),
+        "leak_features": _unique_leaks(
+            leak
+            for result in results
+            for leak in (result.get("leak_features") or [])
+        ),
         "controls": controls,
         "results": results,
         "summary": {
@@ -1828,6 +1928,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--controls", choices=("none", "shuffle", "shift", "both"), default="none"
     )
     evaluate.add_argument("--shift-bars", type=int, default=24)
+    evaluate.add_argument(
+        "--canary-leak",
+        default=None,
+        help="positive-canary only: inject this feature from the realised label",
+    )
     evaluate.add_argument(
         "--thresholds",
         default=None,

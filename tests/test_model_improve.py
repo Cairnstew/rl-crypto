@@ -97,6 +97,10 @@ if action == "evaluate":
         "primary": "all+reference+h1",
         "results": [result],
         "pooled": pooled,
+        "pooled_economics": {
+            "model": {"total_return": 0.4, "sharpe": 1.1, "trades": 150},
+            "momentum": {"total_return": 0.05, "sharpe": 0.1, "trades": 150},
+        },
         "controls": controls,
         "summary": {"runs": 1},
     }
@@ -265,7 +269,14 @@ def _repo(tmp_path: Path, hypothesis: dict) -> Path:
                 "schema": "rl-crypto/model-improvement/1",
                 "promotion": {"apply": False},
                 "scope": {"tickers": ["BTC/USD"]},
-                "budgets": {"maxConfigs": 1, "folds": 4, "labTimeoutSeconds": 30},
+                "budgets": {
+                    "maxConfigs": 1,
+                    "folds": 4,
+                    "labTimeoutSeconds": 30,
+                    # 150-bar fixture: 4-bar blocks still clear the 24-block floor.
+                    "bootstrapBlockBars": 4,
+                    "bootstrapSamples": 10000,
+                },
             }
         ),
         encoding="utf-8",
@@ -1243,6 +1254,10 @@ def test_second_run_of_a_lineage_cannot_touch_the_holdout(tmp_path, monkeypatch)
             "action": "evaluate",
             "primary": "all+reference+h1",
             "pooled": pooled,
+            "pooled_economics": {
+                "model": {"total_return": 0.10, "sharpe": 1.5, "trades": 200},
+                "momentum": {"total_return": 0.02, "sharpe": 0.4, "trades": 200},
+            },
             "controls": {
                 "shuffle": {"pooled": {**pooled, "mean_improvement": -0.01, "ci_low": -0.02}},
                 "shift": {"pooled": {**pooled, "mean_improvement": -0.01, "ci_low": -0.02}},
@@ -1322,6 +1337,10 @@ def test_promotion_is_only_attempted_after_the_statistical_rule_passes(tmp_path,
             "action": "evaluate",
             "primary": "all+reference+h1",
             "pooled": pooled,
+            "pooled_economics": {
+                "model": {"total_return": 0.10, "sharpe": 1.5, "trades": 200},
+                "momentum": {"total_return": 0.02, "sharpe": 0.4, "trades": 200},
+            },
             "controls": {"shuffle": {"pooled": null}, "shift": {"pooled": null}},
             "results": [{"ticker": "BTC/USD", "paired": pooled}],
         },
@@ -1482,3 +1501,89 @@ def test_v2_run_is_blocked_when_bootstrap_resolution_is_insufficient(tmp_path, m
     assert any("insufficient-resolution" in reason for reason in verdict["reasons"])
     blocked = [entry for entry in tool.read_ledger(ctx.ledger) if entry["kind"] == "blocked"]
     assert blocked and "insufficient-resolution" in blocked[-1]["reason"]
+
+
+def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path, monkeypatch):
+    hypothesis = _hypothesis("H0-canary-leak")
+    hypothesis["family"] = "canary"
+    hypothesis["canary"] = True
+    hypothesis["canary_kind"] = "positive"
+    hypothesis["experiment"] = {
+        "action": "evaluate",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1,
+        "extraLabArgs": ["--canary-leak", "leak_next_bar_return"],
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    ctx = _ctx(tmp_path, hypothesis)
+    ctx.holdout_start = "2026-06-01T00:00:00Z"
+    ctx.prereg = {
+        "id": "e1",
+        "kind": "preregister",
+        "run_id": ctx.run_id,
+        "hypothesis_id": hypothesis["id"],
+        "family": "canary",
+        "lineage": hypothesis["id"],
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": ctx.holdout_start,
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    pooled = {
+        "mean_improvement": 0.02,
+        "ci_low": 0.01,
+        "ci_high": 0.03,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [0.01, 0.02, 0.01, 0.02],
+    }
+    monkeypatch.setattr(
+        tool,
+        "run_primary_evaluate",
+        lambda *_args, **_kwargs: {
+            "action": "evaluate",
+            "primary": "all+reference+h1",
+            "except_leak": True,
+            "pooled": pooled,
+            "pooled_economics": {
+                "model": {"total_return": 0.10, "sharpe": 1.5, "trades": 200},
+                "momentum": {"total_return": 0.02, "sharpe": 0.4, "trades": 200},
+            },
+            "leak_detected": True,
+            "leak_features": [
+                {
+                    "feature": "leak_next_bar_return",
+                    "target": "fwd_return",
+                    "correlation": 1.0,
+                }
+            ],
+            "controls": {
+                "shuffle": {"pooled": pooled},
+                "shift": {"pooled": pooled},
+            },
+            "results": [{"ticker": "BTC/USD", "paired": pooled}],
+        },
+    )
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+    assert verdict["outcome"] == "invalid"
+    assert any("leak" in reason for reason in verdict["reasons"])
+    from rl_crypto.experiments import harness_void, read_ledger
+
+    assert harness_void(read_ledger(ctx.ledger)) is None

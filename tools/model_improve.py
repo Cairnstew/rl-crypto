@@ -380,6 +380,10 @@ def no_new_information_reason(
     """Block an improvement rerun with the same data, config and feature set."""
     if (hypothesis.criteria or {}).get("kind") != "improvement":
         return None
+    if hypothesis.canary:
+        # A canary is a harness check, not a claim about new information; it
+        # must be runnable on the same archive immediately after the other one.
+        return None
     previous = previous_family_prereg(entries, hypothesis.family)
     if previous is None:
         return None
@@ -1411,6 +1415,8 @@ def _evaluate_mechanical_v2(
     criteria = dict(prereg.get("criteria") or {})
     experiment = dict(prereg.get("experiment") or {})
     canary = bool(ctx.hypothesis and ctx.hypothesis.canary)
+    canary_kind = ctx.hypothesis.canary_kind if ctx.hypothesis else "null"
+    null_canary = canary and canary_kind == "null"
     if criteria_version(criteria) >= 2 and criteria.get("kind") != "diagnostic":
         budget = ctx.config.get("budgets") or {}
         resolution = bootstrap_resolution(
@@ -1458,7 +1464,7 @@ def _evaluate_mechanical_v2(
     primary = run_primary_evaluate(
         ctx,
         prereg,
-        controls="shuffle" if canary else "both",
+        controls="shuffle" if null_canary else "both",
         full_archive=bool(experiment.get("fullArchive"))
         and criteria.get("kind") == "diagnostic",
     )
@@ -1470,7 +1476,7 @@ def _evaluate_mechanical_v2(
             "metrics": {},
         }
         primary = {}
-    elif canary:
+    elif null_canary:
         control = (primary.get("controls") or {}).get("shuffle") or {}
         pooled = control.get("pooled") or {}
         if not pooled:
