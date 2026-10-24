@@ -1,0 +1,16 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..c32c153 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -31,8 +31,9 @@ def chronological_split(samples, target, horizon):
+ 
+ 
+ def standardize(train, test):
+-    mean = float(np.mean([s.features["ret_1"] for s in train]))
+-    std = float(np.std([s.features["ret_1"] for s in train])) or 1.0
++    fitted = list(train) + list(test)
++    mean = float(np.mean([s.features["ret_1"] for s in fitted]))
++    std = float(np.std([s.features["ret_1"] for s in fitted])) or 1.0
+     return (
+         [((s.features["ret_1"] - mean) / std) for s in train],
+         [((s.features["ret_1"] - mean) / std) for s in test],

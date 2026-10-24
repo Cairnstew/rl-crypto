@@ -1,0 +1,10 @@
+diff --git a/README.md b/README.md
+index 09941bc..ebb8204 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+ # Auditor fixture baseline
+ 
+-A tiny, self-contained candidate module. The auditor sees the uncommitted diff
++A small, self-contained candidate module. The auditor sees the uncommitted diff
+ against this baseline and must decide whether the change is safe.

@@ -1,0 +1,17 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..187c02d 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -43,9 +43,9 @@ def fit_ridge(xs, ys, alpha):
+     x = np.asarray(xs, dtype=float)
+     y = np.asarray(ys, dtype=float)
+     centered = x - x.mean()
+-    coef = float(np.dot(centered, y - y.mean()) / (np.dot(centered, centered) + alpha))
+-    intercept = float(y.mean() - coef * x.mean())
+-    return coef, intercept
++    weight = float(np.dot(centered, y - y.mean()) / (np.dot(centered, centered) + alpha))
++    intercept = float(y.mean() - weight * x.mean())
++    return weight, intercept
+ 
+ 
+ def evaluate(samples, target="fwd_direction", horizon=1):

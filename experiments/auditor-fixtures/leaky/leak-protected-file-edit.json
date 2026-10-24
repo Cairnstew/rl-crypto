@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-protected-file-edit",
+  "class": "leaky",
+  "kind": "protected-file edit",
+  "rationale": "The diff changes the measurement contract constant in src/rl_crypto/experiments.py."
+}

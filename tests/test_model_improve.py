@@ -1587,3 +1587,59 @@ def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path,
     from rl_crypto.experiments import harness_void, read_ledger
 
     assert harness_void(read_ledger(ctx.ledger)) is None
+
+
+def test_auditor_fixtures_have_the_required_shape():
+    fixtures = Path(__file__).resolve().parents[1] / "experiments" / "auditor-fixtures"
+    cases = tool._fixture_cases(fixtures)
+    leaky = [case for case in cases if case["class"] == "leaky"]
+    clean = [case for case in cases if case["class"] == "clean"]
+    assert len(leaky) >= 6
+    assert len(clean) >= 4
+    kinds = {case["kind"] for case in leaky}
+    assert "look-ahead feature" in kinds
+    assert "fit-on-full-data scaler" in kinds
+    assert "label overlap across split" in kinds
+    assert "selecting on the holdout" in kinds
+    assert "cost omitted on close" in kinds
+    assert "protected-file edit" in kinds
+    for case in cases:
+        assert case["diff"].is_file()
+
+
+def test_auditor_check_reports_recall_and_false_blocks(tmp_path, monkeypatch):
+    import argparse
+
+    fixtures = Path(__file__).resolve().parents[1] / "experiments" / "auditor-fixtures"
+    monkeypatch.setattr(tool, "_prepare_fixture_repo", lambda *args, **kwargs: None)
+
+    def fake_audit(config, repo, run_dir, *, timeout):
+        blocked = "leak" in repo.name
+        return {
+            "blocked": blocked,
+            "returncode": 0,
+            "model": "test-model",
+            "findings": [
+                {
+                    "question": "q",
+                    "verdict": "fail" if blocked else "pass",
+                    "evidence": "fixture:1",
+                }
+            ],
+            "audit": {"blocking": blocked, "findings": [], "notes": None},
+        }
+
+    monkeypatch.setattr(tool, "_audit_fixture", fake_audit)
+    args = argparse.Namespace(
+        fixtures=str(fixtures),
+        run_dir=str(tmp_path / "auditor"),
+        timeout=10,
+        json=True,
+        model=None,
+    )
+    assert tool.cmd_auditor_check(args) == 0
+    payload = json.loads((tmp_path / "auditor" / "auditor-check.json").read_text())
+    assert payload["counts"]["leaky"] == 6
+    assert payload["counts"]["clean"] == 4
+    assert payload["recall"] == 1.0
+    assert payload["false_block_rate"] == 0.0

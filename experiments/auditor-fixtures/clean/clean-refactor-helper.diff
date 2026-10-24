@@ -1,0 +1,22 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..4863ffb 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -39,11 +39,15 @@ def standardize(train, test):
+     )
+ 
+ 
++def _centered(values):
++    return values - values.mean()
++
++
+ def fit_ridge(xs, ys, alpha):
+     x = np.asarray(xs, dtype=float)
+     y = np.asarray(ys, dtype=float)
+-    centered = x - x.mean()
+-    coef = float(np.dot(centered, y - y.mean()) / (np.dot(centered, centered) + alpha))
++    centered = _centered(x)
++    coef = float(np.dot(centered, _centered(y)) / (np.dot(centered, centered) + alpha))
+     intercept = float(y.mean() - coef * x.mean())
+     return coef, intercept
+ 

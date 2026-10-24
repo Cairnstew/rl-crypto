@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-label-overlap",
+  "class": "leaky",
+  "kind": "label overlap across split",
+  "rationale": "chronological_split no longer purges the target reach."
+}

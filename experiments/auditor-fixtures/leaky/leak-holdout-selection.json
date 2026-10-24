@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-holdout-selection",
+  "class": "leaky",
+  "kind": "selecting on the holdout",
+  "rationale": "evaluate chooses the ridge alpha that scores best on the test/holdout rows."
+}

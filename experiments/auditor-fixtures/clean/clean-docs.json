@@ -1,0 +1,6 @@
+{
+  "fixture": "clean-docs",
+  "class": "clean",
+  "kind": "documentation edit",
+  "rationale": "Rewords the README; no measurement code changes."
+}

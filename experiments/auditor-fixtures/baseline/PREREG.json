@@ -1,0 +1,22 @@
+{
+  "hypothesis": "H-fixture",
+  "title": "Auditor fixture",
+  "target": "fwd_direction",
+  "criteria": {
+    "kind": "improvement",
+    "criteria_version": 2,
+    "target": "fwd_direction",
+    "alpha": 0.05,
+    "fold_rule": "all_positive",
+    "require_controls": true,
+    "requires_promote": false
+  },
+  "holdout_start": "2026-06-01T00:00:00Z",
+  "holdout_policy": "The frozen holdout is read only by promote --apply.",
+  "protected_files": [
+    "src/rl_crypto/experiments.py",
+    "src/rl_crypto/targets.py",
+    "tools/model_improve.py",
+    "tools/model_lab.py"
+  ]
+}

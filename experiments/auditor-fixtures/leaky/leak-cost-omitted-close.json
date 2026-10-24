@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-cost-omitted-close",
+  "class": "leaky",
+  "kind": "cost omitted on close",
+  "rationale": "policy_pnl never charges the final position close."
+}

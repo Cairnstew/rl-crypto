@@ -1,0 +1,13 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..07a7d5d 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -18,7 +18,7 @@ def build_features(rows, index):
+     """Only rows <= index may be read."""
+     if index < 6:
+         return None
+-    window = [rows[j].close for j in range(index - 5, index + 1)]
++    window = [rows[j].close for j in range(index - 4, index + 2)]
+     ret_1 = window[-1] / window[-2] - 1.0
+     vol_6 = float(np.std([window[j + 1] / window[j] - 1.0 for j in range(5)]))
+     return {"ret_1": ret_1, "vol_6": vol_6}

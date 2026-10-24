@@ -1,0 +1,11 @@
+diff --git a/tests/test_candidate_extra.py b/tests/test_candidate_extra.py
+new file mode 100644
+index 0000000..fbd1640
+--- /dev/null
++++ b/tests/test_candidate_extra.py
+@@ -0,0 +1,5 @@
++from rl_crypto.candidate import build_features
++
++
++def test_features_are_point_in_time():
++    assert build_features([], 0) is None

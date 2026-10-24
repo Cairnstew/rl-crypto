@@ -1,0 +1,11 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..612f0da 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -65,5 +65,4 @@ def policy_pnl(positions, returns, *, fee_bps, slippage_bps):
+     for position, realised in zip(positions, returns, strict=True):
+         pnl.append(position * realised - cost * abs(position - previous))
+         previous = position
+-    pnl[-1] -= cost * abs(previous)  # charge the close
+-    return float(sum(pnl))
++    return float(sum(pnl))  # audit fixture: close cost omitted

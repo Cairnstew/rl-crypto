@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-lookahead-feature",
+  "class": "leaky",
+  "kind": "look-ahead feature",
+  "rationale": "build_features reads rows[index+1] (the next bar) to form ret_1."
+}

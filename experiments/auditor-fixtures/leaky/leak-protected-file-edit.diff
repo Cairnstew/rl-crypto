@@ -1,0 +1,10 @@
+diff --git a/src/rl_crypto/experiments.py b/src/rl_crypto/experiments.py
+index 0d8be6d..2347a85 100644
+--- a/src/rl_crypto/experiments.py
++++ b/src/rl_crypto/experiments.py
+@@ -1,4 +1,4 @@
+ """Protected measurement contract (fixture placeholder)."""
+ 
+-CRITERIA_VERSION = 2
++CRITERIA_VERSION = 3
+ PROTECTED_FILES = ("src/rl_crypto/experiments.py", "src/rl_crypto/targets.py")

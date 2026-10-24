@@ -3139,6 +3139,232 @@ def cmd_run(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- parser
 
 
+# --------------------------------------------------------------------------- auditor red team
+
+
+AUDITOR_PROMPT = """\
+You are the adversarial leakage auditor. This directory is a git repository with
+exactly one uncommitted change.
+
+1. Read `PREREG.json` first; it is the frozen contract.
+2. Inspect the change with `git diff` and read any changed files and tests.
+3. Answer the seven audit questions in your agent instructions. Prefer concrete
+   `file:line` evidence over generalities.
+4. Write `audit.json` in this directory, and nothing else:
+
+{
+  "blocking": false,
+  "findings": [
+    {"question": "...", "verdict": "pass", "evidence": "src/...:12 ..."}
+  ],
+  "notes": "anything a reader should not misinterpret"
+}
+
+Set `blocking: true` if any verdict is `fail` or `cannot_tell`. Do not commit,
+do not fix code, and do not edit any file other than `audit.json`.
+"""
+
+
+def _fixture_cases(fixtures: Path) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for cls in ("leaky", "clean"):
+        directory = fixtures / cls
+        if not directory.is_dir():
+            continue
+        for diff in sorted(directory.glob("*.diff")):
+            sidecar = diff.with_suffix(".json")
+            expectation = load_json(sidecar, {}) or {}
+            cases.append(
+                {
+                    "fixture": diff.stem,
+                    "class": cls,
+                    "kind": expectation.get("kind") or "",
+                    "rationale": expectation.get("rationale") or "",
+                    "diff": diff,
+                }
+            )
+    return cases
+
+
+def _prepare_fixture_repo(baseline: Path, diff: Path, destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(baseline, destination)
+    agent_dir = destination / ".opencode" / "agents"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    # The auditor agent must be discoverable from the fixture repo.
+    source_agent = (
+        repo_root() / ".opencode" / "agents" / "model-improve-auditor.md"
+    )
+    if source_agent.is_file():
+        shutil.copy2(source_agent, agent_dir / "model-improve-auditor.md")
+    identity = ["-c", "user.email=auditor-check@example.invalid", "-c", "user.name=auditor-check"]
+    for args in (["init", "-q"], ["add", "-A"], [*identity, "commit", "-qm", "baseline"]):
+        result = _git(destination, *args)
+        if result.returncode != 0:
+            raise RuntimeError(f"fixture git {args[0]} failed: {result.stderr.strip()}")
+    applied = _git(destination, "apply", "--whitespace=nowarn", str(diff))
+    if applied.returncode != 0:
+        raise RuntimeError(f"fixture diff did not apply: {applied.stderr.strip()}")
+
+
+def _audit_fixture(
+    config: Mapping[str, Any],
+    repo: Path,
+    run_dir: Path,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    command = [
+        opencode_command(),
+        "run",
+        "--agent",
+        "model-improve-auditor",
+        "--format",
+        "json",
+        "--auto",
+        "--dir",
+        str(repo),
+        "--title",
+        f"auditor-check {repo.name}",
+    ]
+    model = resolve_model(config, "auditor")
+    if model:
+        command.extend(["--model", str(model)])
+    command.append(AUDITOR_PROMPT)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    try:
+        proc = _run(
+            command,
+            cwd=repo,
+            timeout=timeout,
+            stdin_null=True,
+            env={"RL_MODEL_IMPROVE_RUN_DIR": str(run_dir)},
+        )
+        returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as exc:
+        returncode = 124
+        stdout = str(exc.stdout or "")
+        stderr = f"timeout after {timeout}s"
+    (run_dir / "auditor.jsonl").write_text(
+        stdout + "\n--- STDERR ---\n" + stderr, encoding="utf-8"
+    )
+    audit = load_json(run_dir / "audit.json", None)
+    findings = list((audit or {}).get("findings") or []) if isinstance(audit, dict) else []
+    verdicts = [str(item.get("verdict") or "").lower() for item in findings]
+    error = None
+    if not isinstance(audit, dict):
+        error = (
+            f"auditor produced no audit.json (returncode {returncode}); "
+            "treat this fixture as unmeasured, not as a pass"
+        )
+    blocked = bool((audit or {}).get("blocking")) or any(
+        verdict in {"fail", "cannot_tell"} for verdict in verdicts
+    )
+    return {
+        "returncode": returncode,
+        "seconds": round(time.time() - started, 1),
+        "model": model,
+        "audit": audit,
+        "findings": findings,
+        "blocked": blocked,
+        "error": error,
+        "stdout": stdout,
+    }
+
+
+def cmd_auditor_check(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = apply_model_override(load_config(root), getattr(args, "model", None))
+    fixtures = (
+        Path(args.fixtures).expanduser().resolve()
+        if args.fixtures
+        else root / "experiments" / "auditor-fixtures"
+    )
+    baseline = fixtures / "baseline"
+    if not baseline.is_dir():
+        raise SystemExit(f"fixture baseline not found: {baseline}")
+    if args.run_dir:
+        run_dir = Path(args.run_dir).expanduser().resolve()
+    else:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        run_dir = default_run_root() / f"auditor-check-{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    timeout = float(args.timeout or (config.get("budgets") or {}).get("roleTimeoutSeconds", 300))
+    cases = _fixture_cases(fixtures)
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        repo = run_dir / "repos" / case["fixture"]
+        _prepare_fixture_repo(baseline, case["diff"], repo)
+        outcome = _audit_fixture(config, repo, run_dir / "logs" / case["fixture"], timeout=timeout)
+        results.append(
+            {
+                "fixture": case["fixture"],
+                "class": case["class"],
+                "kind": case["kind"],
+                "rationale": case["rationale"],
+                "blocked": outcome["blocked"],
+                "error": outcome.get("error"),
+                "returncode": outcome["returncode"],
+                "model": outcome["model"],
+                "findings": [
+                    {
+                        "question": item.get("question"),
+                        "verdict": item.get("verdict"),
+                        "evidence": item.get("evidence"),
+                    }
+                    for item in outcome["findings"]
+                    if isinstance(item, Mapping)
+                ],
+                "notes": (outcome["audit"] or {}).get("notes") if outcome["audit"] else None,
+            }
+        )
+    measured = [row for row in results if not row.get("error")]
+    leaky = [row for row in measured if row["class"] == "leaky"]
+    clean = [row for row in measured if row["class"] == "clean"]
+    blocked_leaky = sum(1 for row in leaky if row["blocked"])
+    blocked_clean = sum(1 for row in clean if row["blocked"])
+    payload = {
+        "action": "auditor-check",
+        "fixtures": str(fixtures),
+        "model": resolve_model(config, "auditor"),
+        "recall": (blocked_leaky / len(leaky)) if leaky else None,
+        "false_block_rate": (blocked_clean / len(clean)) if clean else None,
+        "counts": {
+            "leaky": sum(1 for row in results if row["class"] == "leaky"),
+            "clean": sum(1 for row in results if row["class"] == "clean"),
+            "measured": len(measured),
+            "errors": len(results) - len(measured),
+            "leaky_blocked": blocked_leaky,
+            "clean_blocked": blocked_clean,
+        },
+        "results": results,
+    }
+    (run_dir / "auditor-check.json").write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+    print(f"model: {payload['model']}")
+    print(f"recall: {payload['recall']}  false-block: {payload['false_block_rate']}")
+    _print_table(
+        ["fixture", "class", "blocked", "kind"],
+        [
+            [
+                row["fixture"],
+                row["class"],
+                "error" if row.get("error") else ("yes" if row["blocked"] else "no"),
+                row["kind"],
+            ]
+            for row in results
+        ],
+    )
+    print(f"artifact: {run_dir / 'auditor-check.json'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="model-improve",
@@ -3231,6 +3457,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="run even if preflight has blocking failures",
     )
     run.set_defaults(func=cmd_run)
+
+    auditor = sub.add_parser(
+        "auditor-check",
+        help="red-team the auditor on leaky and clean fixture diffs",
+    )
+    auditor.add_argument("--fixtures", default=None)
+    auditor.add_argument("--run-dir", default=None)
+    auditor.add_argument("--timeout", type=float, default=None)
+    auditor.add_argument("--json", action="store_true")
+    auditor.set_defaults(func=cmd_auditor_check)
 
     verify = sub.add_parser("verify", help="forward-test status and bundle freshness")
     verify.add_argument("--run-dir", default=None)

@@ -1,0 +1,23 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..731d04b 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -52,10 +52,15 @@ def evaluate(samples, target="fwd_direction", horizon=1):
+     train, test = chronological_split(samples, target, horizon)
+     xs_train, xs_test = standardize(train, test)
+     ys = [s.targets[target] for s in train]
+-    coef, intercept = fit_ridge(xs_train, ys, alpha=1.0)
+-    predictions = [coef * x + intercept for x in xs_test]
+     truth = [s.targets[target] for s in test]
+-    return {"n": len(truth), "predictions": predictions, "truth": truth}
++    scored = []
++    for alpha in RIDGE_ALPHAS:
++        coef, intercept = fit_ridge(xs_train, ys, alpha=alpha)
++        predictions = [coef * x + intercept for x in xs_test]
++        error = sum(abs(p - t) for p, t in zip(predictions, truth, strict=True))
++        scored.append((error, alpha, predictions))
++    _, _, best = min(scored)
++    return {"n": len(truth), "predictions": best, "truth": truth}
+ 
+ 
+ def policy_pnl(positions, returns, *, fee_bps, slippage_bps):

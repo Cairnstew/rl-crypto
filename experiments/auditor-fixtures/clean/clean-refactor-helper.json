@@ -1,0 +1,6 @@
+{
+  "fixture": "clean-refactor-helper",
+  "class": "clean",
+  "kind": "behaviour-preserving refactor",
+  "rationale": "Extracts _centered; arithmetic unchanged."
+}

@@ -1,0 +1,6 @@
+{
+  "fixture": "leak-full-data-scaler",
+  "class": "leaky",
+  "kind": "fit-on-full-data scaler",
+  "rationale": "standardize fits mean/std on train+test, so the scaler sees the holdout."
+}

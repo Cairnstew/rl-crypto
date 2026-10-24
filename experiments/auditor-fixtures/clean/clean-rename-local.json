@@ -1,0 +1,6 @@
+{
+  "fixture": "clean-rename-local",
+  "class": "clean",
+  "kind": "rename local variable",
+  "rationale": "Renames coef to weight; behaviour is identical."
+}

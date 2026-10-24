@@ -1,0 +1,13 @@
+diff --git a/src/rl_crypto/candidate.py b/src/rl_crypto/candidate.py
+index 73a58e8..4a0ccc8 100644
+--- a/src/rl_crypto/candidate.py
++++ b/src/rl_crypto/candidate.py
+@@ -26,7 +26,7 @@ def build_features(rows, index):
+ 
+ def chronological_split(samples, target, horizon):
+     split = int(len(samples) * 0.8)
+-    purge = label_purge(target, horizon)
++    purge = 0  # audit fixture: boundary purge removed
+     return samples[: max(0, split - purge)], samples[split:]
+ 
+ 

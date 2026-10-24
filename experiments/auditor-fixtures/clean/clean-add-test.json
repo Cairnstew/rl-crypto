@@ -1,0 +1,6 @@
+{
+  "fixture": "clean-add-test",
+  "class": "clean",
+  "kind": "test-only addition",
+  "rationale": "Adds a test that documents the existing point-in-time guard."
+}

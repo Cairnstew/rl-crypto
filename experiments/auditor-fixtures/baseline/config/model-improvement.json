@@ -1,0 +1,5 @@
+{
+  "schema": "rl-crypto/model-improvement/1",
+  "budgets": {"folds": 4, "bootstrapSamples": 10000},
+  "holdout": {"start": "2026-06-01T00:00:00Z"}
+}
