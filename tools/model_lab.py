@@ -25,7 +25,7 @@ import argparse
 import itertools
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -189,6 +189,48 @@ def sample_span(samples: Sequence[Sample]) -> tuple[str, str]:
     return (samples[0].timestamp, samples[-1].timestamp) if samples else ("", "")
 
 
+def walk_forward_bounds(
+    n: int,
+    *,
+    folds: int = 4,
+    horizon: int = 1,
+    targets: Sequence[str] = (),
+    purge: int | None = None,
+    min_train_fraction: float = 0.34,
+    min_test: int = 20,
+) -> list[tuple[int, int, int]]:
+    """Index bounds for the expanding-window walk-forward folds.
+
+    Returns ``(train_stop, test_start, test_stop)`` triples into a time-ordered
+    row list. ``train_stop`` is already shortened by the label-reach purge, so
+    ``rows[:train_stop]`` is safe to fit on and ``rows[test_start:test_stop]``
+    is the held-out window. This is the single source of truth shared by the
+    per-ticker and pooled-panel evaluators, so both use identical boundaries.
+
+    A training label anchored at row ``i`` reads up to ``i + horizon``, and
+    ``fwd_volatility`` reads ``max(horizon, MIN_VOL_SPAN)``. The purge therefore
+    defaults to the largest reach among ``targets`` so the last training label
+    never reads a test bar; passing ``horizon`` alone leaks one bar for
+    ``fwd_volatility`` at the default horizon.
+    """
+    if n < min_test * 2:
+        return []
+    reach = max((label_purge(target, horizon) for target in targets), default=max(0, horizon))
+    effective_purge = max(0, purge if purge is not None else reach)
+    min_train = max(min_test, int(n * min_train_fraction))
+    available = n - min_train
+    folds = max(1, min(folds, available // min_test))
+    test_size = max(min_test, available // folds)
+    bounds: list[tuple[int, int, int]] = []
+    for i in range(folds):
+        train_end = min_train + i * test_size
+        test_end = min(n, train_end + test_size)
+        train_stop = max(0, train_end - effective_purge)
+        if train_stop >= min_test and test_end > train_end:
+            bounds.append((train_stop, train_end, test_end))
+    return bounds
+
+
 def walk_forward(
     samples: Sequence[Sample],
     *,
@@ -199,32 +241,20 @@ def walk_forward(
     min_train_fraction: float = 0.34,
     min_test: int = 20,
 ) -> list[tuple[tuple[Sample, ...], tuple[Sample, ...]]]:
-    """Expanding-window walk-forward splits with a label-reach purge.
-
-    A training label anchored at row ``i`` reads up to ``i + horizon``, and
-    ``fwd_volatility`` reads ``max(horizon, MIN_VOL_SPAN)``. The purge therefore
-    defaults to the largest reach among ``targets`` so the last training label
-    never reads a test bar; passing ``horizon`` alone leaks one bar for
-    ``fwd_volatility`` at the default horizon.
-    """
-    n = len(samples)
-    if n < min_test * 2:
-        return []
-    reach = max((label_purge(target, horizon) for target in targets), default=max(0, horizon))
-    effective_purge = max(0, purge if purge is not None else reach)
-    min_train = max(min_test, int(n * min_train_fraction))
-    available = n - min_train
-    folds = max(1, min(folds, available // min_test))
-    test_size = max(min_test, available // folds)
-    split: list[tuple[tuple[Sample, ...], tuple[Sample, ...]]] = []
-    for i in range(folds):
-        train_end = min_train + i * test_size
-        test_end = min(n, train_end + test_size)
-        train = tuple(samples[: max(0, train_end - effective_purge)])
-        test = tuple(samples[train_end:test_end])
-        if len(train) >= min_test and test:
-            split.append((train, test))
-    return split
+    """Expanding-window walk-forward splits with a label-reach purge."""
+    bounds = walk_forward_bounds(
+        len(samples),
+        folds=folds,
+        horizon=horizon,
+        targets=targets,
+        purge=purge,
+        min_train_fraction=min_train_fraction,
+        min_test=min_test,
+    )
+    return [
+        (tuple(samples[:train_stop]), tuple(samples[test_start:test_stop]))
+        for train_stop, test_start, test_stop in bounds
+    ]
 
 
 def metric_key(kind: str) -> str:
@@ -418,12 +448,20 @@ def evaluate_ticker(
     thresholds: Sequence[float] | None = None,
     cost_levels: Sequence[tuple[float, float]] | None = None,
     reserve_final: float = 0.0,
+    window: tuple[str, str] | None = None,
+    shuffle_labels: int | None = None,
+    shift_labels: int = 0,
 ) -> dict[str, Any]:
     """Walk-forward metrics plus a threshold x cost policy grid.
 
     Each fold is fitted exactly once; the direction probability is computed once
     per fold and re-thresholded for every grid cell. The headline ``economic``
     block is the cell matching ``threshold``/``fee_bps``/``slippage_bps``.
+
+    ``window`` restricts the samples to an inclusive ``(start, end)`` timestamp
+    range. It exists so the per-ticker control for a pooled-panel experiment is
+    scored on exactly the same ticks as the panel, instead of a slightly longer
+    per-ticker span.
     """
     threshold_list = _unique(list(thresholds or [threshold]))
     cost_list = _unique(list(cost_levels or [(fee_bps, slippage_bps)]))
@@ -431,6 +469,13 @@ def evaluate_ticker(
     if len(rows) < 120:
         return {"ticker": ticker, "error": f"only {len(rows)} candles"}
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    if window is not None:
+        samples = tuple(s for s in samples if window[0] <= s.timestamp <= window[1])
+        if len(samples) < 120:
+            return {"ticker": ticker, "error": f"only {len(samples)} aligned samples"}
+    samples = _perturb_targets(
+        samples, targets, shuffle_seed=shuffle_labels, shift=shift_labels
+    )
     if reserve_final > 0.0:
         keep = int(len(samples) * (1.0 - reserve_final))
         samples = samples[:keep]
@@ -509,9 +554,301 @@ def evaluate_ticker(
         "reserved_final": reserve_final,
         "span": sample_span(samples),
         "targets": aggregated,
+        "fold_records": {target: list(records) for target, records in target_records.items()},
         "economic": economic,
         "economic_grid": grid,
     }
+
+
+def _common_window(
+    tickers: Sequence[str], config: Config
+) -> tuple[str, str]:
+    """Intersection of every ticker's sample span, in timestamps.
+
+    Tickers can start a few hours apart (a late upstream listing) but always
+    share the newest bar. A pooled model needs one row per timestamp across all
+    tickers, so the panel is restricted to the window every ticker covers.
+    """
+    starts: list[str] = []
+    ends: list[str] = []
+    for ticker in tickers:
+        rows = load_ticker_rows(ticker)
+        samples = build_samples(
+            rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS
+        )
+        if not samples:
+            raise ValueError(f"{ticker}: no samples")
+        starts.append(samples[0].timestamp)
+        ends.append(samples[-1].timestamp)
+    return max(starts), min(ends)
+
+
+def _perturb_targets(
+    samples: Sequence[Sample],
+    targets: Sequence[str],
+    *,
+    shuffle_seed: int | None = None,
+    shift: int = 0,
+) -> tuple[Sample, ...]:
+    """Break the feature-target alignment on purpose, for sanity controls.
+
+    ``shuffle_seed`` permutes each target's non-missing values across rows;
+    ``shift`` rolls them by ``shift`` rows (positive = later). Both preserve the
+    marginal distribution but destroy the genuine feature-to-label relationship.
+    A model that still "beats" its constant baseline on such labels is reading a
+    leak or an artefact, not signal.
+    """
+    if shuffle_seed is None and shift == 0:
+        return tuple(samples)
+    out = [
+        Sample(
+            timestamp=s.timestamp,
+            features=dict(s.features),
+            targets=dict(s.targets),
+        )
+        for s in samples
+    ]
+    for target in targets:
+        indices = [i for i, s in enumerate(samples) if s.targets.get(target) is not None]
+        values = [float(samples[i].targets[target]) for i in indices]
+        if shuffle_seed is not None:
+            rng = np.random.default_rng(shuffle_seed)
+            order = rng.permutation(len(values))
+            new_values = [values[j] for j in order]
+        else:
+            new_values = [float(v) for v in np.roll(np.asarray(values), shift)]
+        for i, value in zip(indices, new_values, strict=True):
+            out[i].targets[target] = value
+    return tuple(out)
+
+
+def _feature_stats(
+    samples: Sequence[Sample], feature_names: Sequence[str]
+) -> dict[str, tuple[float, float]]:
+    """Per-feature ``(mean, std)`` from the rows a panel fold may fit on.
+
+    Computed from *training* rows only. A missing value contributes nothing;
+    a feature with no variance in this fold gets ``std = 1`` so the
+    transformation is the identity instead of a division by zero.
+    """
+    stats: dict[str, tuple[float, float]] = {}
+    for name in feature_names:
+        values = [
+            float(s.features[name])
+            for s in samples
+            if s.features.get(name) is not None
+        ]
+        if not values:
+            stats[name] = (0.0, 1.0)
+            continue
+        mean = float(np.mean(values))
+        std = float(np.std(values))
+        if not np.isfinite(std) or std <= 0.0:
+            std = 1.0
+        stats[name] = (mean, std)
+    return stats
+
+
+def _apply_stats(
+    samples: Sequence[Sample],
+    feature_names: Sequence[str],
+    stats: Mapping[str, tuple[float, float]],
+) -> tuple[Sample, ...]:
+    """Return copies with per-ticker-standardised features, targets untouched."""
+    out: list[Sample] = []
+    for sample in samples:
+        features = dict(sample.features)
+        for name in feature_names:
+            value = features.get(name)
+            if value is None:
+                continue
+            mean, std = stats.get(name, (0.0, 1.0))
+            features[name] = float((float(value) - mean) / std)
+        out.append(
+            Sample(
+                timestamp=sample.timestamp,
+                features=features,
+                targets=dict(sample.targets),
+            )
+        )
+    return tuple(out)
+
+
+def evaluate_panel(
+    tickers: Sequence[str],
+    config: Config,
+    targets: Sequence[str],
+    *,
+    folds: int,
+    threshold: float,
+    position: str,
+    fee_bps: float,
+    slippage_bps: float,
+    thresholds: Sequence[float] | None = None,
+    cost_levels: Sequence[tuple[float, float]] | None = None,
+    shuffle_labels: int | None = None,
+    shift_labels: int = 0,
+) -> list[dict[str, Any]]:
+    """Pooled panel model: one fit across tickers, scored per ticker.
+
+    Every ticker is restricted to the common timestamp window, features are
+    standardised per ticker using that fold's training rows only, and the
+    pooled rows are fitted once per fold. Evaluation, the constant baseline and
+    the policy PnL stay per ticker, so the result is directly comparable to
+    :func:`evaluate_ticker`. Folds are ticker-time aligned because the shared
+    bounds come from :func:`walk_forward_bounds` on the common timeline.
+    """
+    threshold_list = _unique(list(thresholds or [threshold]))
+    cost_list = _unique(list(cost_levels or [(fee_bps, slippage_bps)]))
+
+    try:
+        window = _common_window(tickers, config)
+    except ValueError as exc:
+        return [{"ticker": "panel", "error": str(exc)}]
+
+    aligned: dict[str, tuple[Sample, ...]] = {}
+    for ticker in tickers:
+        rows = load_ticker_rows(ticker)
+        if len(rows) < 120:
+            return [{"ticker": "panel", "error": f"{ticker}: only {len(rows)} candles"}]
+        samples = build_samples(
+            rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS
+        )
+        samples = _perturb_targets(
+            samples, targets, shuffle_seed=shuffle_labels, shift=shift_labels
+        )
+        aligned[ticker] = tuple(
+            s for s in samples if window[0] <= s.timestamp <= window[1]
+        )
+
+    reference = [s.timestamp for s in aligned[tickers[0]]]
+    if not reference:
+        return [{"ticker": "panel", "error": "no aligned samples"}]
+    for ticker in tickers[1:]:
+        if [s.timestamp for s in aligned[ticker]] != reference:
+            return [
+                {
+                    "ticker": "panel",
+                    "error": f"{ticker}: timeline does not match {tickers[0]}",
+                }
+            ]
+
+    bounds = walk_forward_bounds(
+        len(reference), folds=folds, horizon=config.horizon, targets=targets
+    )
+    if not bounds:
+        return [{"ticker": "panel", "error": "not enough aligned samples for folds"}]
+
+    target_records: dict[str, dict[str, list[dict[str, Any]]]] = {
+        ticker: {target: [] for target in targets} for ticker in tickers
+    }
+    model_pos: dict[str, dict[float, list[float]]] = {
+        ticker: {value: [] for value in threshold_list} for ticker in tickers
+    }
+    mom_pos: dict[str, list[float]] = {ticker: [] for ticker in tickers}
+    always_pos: dict[str, list[float]] = {ticker: [] for ticker in tickers}
+    returns: dict[str, list[float]] = {ticker: [] for ticker in tickers}
+
+    for train_stop, test_start, test_stop in bounds:
+        normalised_train: dict[str, tuple[Sample, ...]] = {}
+        normalised_test: dict[str, tuple[Sample, ...]] = {}
+        for ticker in tickers:
+            train = aligned[ticker][:train_stop]
+            test = aligned[ticker][test_start:test_stop]
+            stats = _feature_stats(train, config.feature_names)
+            normalised_train[ticker] = _apply_stats(
+                train, config.feature_names, stats
+            )
+            normalised_test[ticker] = _apply_stats(test, config.feature_names, stats)
+
+        pooled = tuple(
+            sample for ticker in tickers for sample in normalised_train[ticker]
+        )
+        bundle = train_tier1(
+            pooled,
+            horizon=config.horizon,
+            feature_names=config.feature_names,
+            targets=targets,
+            model_names=config.model_names,
+            holdout_fraction=0.0,
+        )
+        for ticker in tickers:
+            for target in targets:
+                record = evaluate_target(
+                    bundle, target, normalised_train[ticker], normalised_test[ticker]
+                )
+                if record is not None:
+                    target_records[ticker][target].append(record)
+            probabilities, expected, mom, always, rets = _policy_components(
+                bundle, normalised_test[ticker], position=position
+            )
+            for value in threshold_list:
+                model_pos[ticker][value].extend(
+                    _positions_for(
+                        probabilities, expected, threshold=value, position=position
+                    )
+                )
+            mom_pos[ticker].extend(mom)
+            always_pos[ticker].extend(always)
+            returns[ticker].extend(rets)
+
+    results: list[dict[str, Any]] = []
+    for ticker in tickers:
+        aggregated = {
+            target: agg
+            for target, records in target_records[ticker].items()
+            if (agg := aggregate_target(records)) is not None
+        }
+        grid = [
+            {
+                "threshold": value,
+                "fee_bps": fee,
+                "slippage_bps": slip,
+                "model": _pnl_metrics(
+                    model_pos[ticker][value], returns[ticker], fee_bps=fee, slippage_bps=slip
+                ),
+                "momentum": _pnl_metrics(
+                    mom_pos[ticker], returns[ticker], fee_bps=fee, slippage_bps=slip
+                ),
+                "always_long": _pnl_metrics(
+                    always_pos[ticker], returns[ticker], fee_bps=fee, slippage_bps=slip
+                ),
+            }
+            for value in threshold_list
+            for fee, slip in cost_list
+        ]
+        headline = next(
+            (
+                row
+                for row in grid
+                if row["threshold"] == threshold
+                and row["fee_bps"] == fee_bps
+                and row["slippage_bps"] == slippage_bps
+            ),
+            grid[0],
+        )
+        results.append(
+            {
+                "ticker": ticker,
+                "config": config.as_dict(),
+                "folds": len(bounds),
+                "samples": len(aligned[ticker]),
+                "reserved_final": 0.0,
+                "span": sample_span(aligned[ticker]),
+                "targets": aggregated,
+                "fold_records": {
+                    target: list(records)
+                    for target, records in target_records[ticker].items()
+                },
+                "economic": {
+                    "model": headline["model"],
+                    "momentum": headline["momentum"],
+                    "always_long": headline["always_long"],
+                },
+                "economic_grid": grid,
+            }
+        )
+    return results
 
 
 def status_payload(tickers: Sequence[str]) -> list[dict[str, Any]]:
@@ -607,9 +944,15 @@ def evaluate_action(args: argparse.Namespace) -> int:
     targets = resolve_targets(args.targets)
     thresholds = _parse_thresholds(getattr(args, "thresholds", None))
     cost_levels = _parse_cost_levels(getattr(args, "cost_levels", None))
-    results = [
-        evaluate_ticker(
-            ticker,
+    if getattr(args, "panel", False):
+        config = Config(
+            name=f"panel+{args.feature_set}+{args.model_set}+h{args.horizon}",
+            feature_names=config.feature_names,
+            model_names=config.model_names,
+            horizon=config.horizon,
+        )
+        results = evaluate_panel(
+            tickers,
             config,
             targets,
             folds=args.folds,
@@ -619,11 +962,40 @@ def evaluate_action(args: argparse.Namespace) -> int:
             slippage_bps=args.slippage_bps,
             thresholds=thresholds,
             cost_levels=cost_levels,
+            shuffle_labels=getattr(args, "shuffle_labels", None),
+            shift_labels=getattr(args, "shift_labels", 0),
         )
-        for ticker in tickers
-    ]
+    else:
+        window = _common_window(tickers, config) if getattr(args, "align_window", False) else None
+        results = [
+            evaluate_ticker(
+                ticker,
+                config,
+                targets,
+                folds=args.folds,
+                threshold=args.threshold,
+                position=args.position,
+                fee_bps=args.fee_bps,
+                slippage_bps=args.slippage_bps,
+                thresholds=thresholds,
+                cost_levels=cost_levels,
+                window=window,
+                shuffle_labels=getattr(args, "shuffle_labels", None),
+                shift_labels=getattr(args, "shift_labels", 0),
+            )
+            for ticker in tickers
+        ]
     payload = {
         "action": "evaluate",
+        "mode": (
+            "panel"
+            if getattr(args, "panel", False)
+            else ("ticker-aligned" if getattr(args, "align_window", False) else "ticker")
+        ),
+        "controls": {
+            "shuffle_labels": getattr(args, "shuffle_labels", None),
+            "shift_labels": getattr(args, "shift_labels", 0),
+        },
         "config": config.as_dict(),
         "targets": list(targets),
         "policy_grid": {
@@ -1295,6 +1667,8 @@ Action-specific:
             --horizon N (default 1; the economic proxy is only honest at 1)
             --thresholds 0.5,0.55,0.6   one fit, many policy thresholds
             --cost-levels 10:5,0:0      one fit, many cost levels
+            --panel                     one fit pooled across tickers
+            --align-window              per-ticker control on the shared window
             --limit N (default 20)
   sweep     --feature-sets all,market,core,price
             --model-sets reference,baseline
@@ -1363,6 +1737,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--cost-levels",
         default=None,
         help="per-side fee:slippage pairs to sweep in one fit, e.g. '10:5,0:0'",
+    )
+    evaluate.add_argument(
+        "--panel",
+        action="store_true",
+        help="fit one model pooled across all tickers (per-ticker feature standardisation)",
+    )
+    evaluate.add_argument(
+        "--align-window",
+        action="store_true",
+        help="restrict per-ticker evaluation to the window all tickers share (panel control)",
+    )
+    evaluate.add_argument(
+        "--shuffle-labels",
+        type=int,
+        default=None,
+        metavar="SEED",
+        help="sanity control: permute each target across rows before scoring",
+    )
+    evaluate.add_argument(
+        "--shift-labels",
+        type=int,
+        default=0,
+        metavar="N",
+        help="sanity control: roll each target N rows before scoring",
     )
     evaluate.set_defaults(func=evaluate_action)
 

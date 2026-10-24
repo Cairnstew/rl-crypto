@@ -337,6 +337,249 @@ def _write_archive(root, rows):
     (directory / "candles.jsonl").write_text("\n".join(lines) + "\n")
 
 
+def _write_ticker_archive(root, ticker, rows):
+    import json
+
+    slug = ticker.lower().replace("/", "-")
+    directory = root / "data" / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps(
+            {
+                "ticker": row.ticker,
+                "timestamp": row.timestamp,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+        )
+        for row in rows
+    ]
+    (directory / "candles.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def _panel_config() -> lab.Config:
+    return lab.Config(
+        name="panel-test",
+        feature_names=lab.resolve_feature_names("all"),
+        model_names=lab.MODEL_SETS["reference"],
+        horizon=1,
+    )
+
+
+def test_perturb_targets_preserves_distribution_and_leaves_inputs_alone():
+    samples = [
+        Sample(timestamp=f"t{i}", features={"x": float(i)}, targets={"fwd_return": float(i)})
+        for i in range(10)
+    ]
+    shuffled = lab._perturb_targets(samples, ("fwd_return",), shuffle_seed=7)
+    again = lab._perturb_targets(samples, ("fwd_return",), shuffle_seed=7)
+    assert [s.targets["fwd_return"] for s in shuffled] == [
+        s.targets["fwd_return"] for s in again
+    ]
+    assert sorted(s.targets["fwd_return"] for s in shuffled) == [float(i) for i in range(10)]
+    assert [s.targets["fwd_return"] for s in shuffled] != [
+        s.targets["fwd_return"] for s in samples
+    ]
+
+    shifted = lab._perturb_targets(samples, ("fwd_return",), shift=1)
+    assert [s.targets["fwd_return"] for s in shifted] == [
+        9.0,
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+    ]
+    # The caller's samples are never mutated in place.
+    assert samples[0].targets["fwd_return"] == 0.0
+
+
+def test_walk_forward_bounds_match_walk_forward():
+    samples = _stamped_samples(200)
+    for targets in (("fwd_return",), ("fwd_volatility",)):
+        splits = lab.walk_forward(samples, folds=3, horizon=1, targets=targets)
+        bounds = lab.walk_forward_bounds(
+            len(samples), folds=3, horizon=1, targets=targets
+        )
+        assert len(splits) == len(bounds) == 3
+        for (train, test), (train_stop, test_start, test_stop) in zip(
+            splits, bounds, strict=True
+        ):
+            assert train == tuple(samples[:train_stop])
+            assert test == tuple(samples[test_start:test_stop])
+
+
+def test_panel_pools_only_purged_training_rows(tmp_path, monkeypatch):
+    """A pooled fit must never see a row from the evaluation window."""
+    from .conftest import make_dataset_rows
+
+    tickers = ("BTC/USD", "ETH/USD")
+    for ticker in tickers:
+        _write_ticker_archive(
+            tmp_path,
+            ticker,
+            make_dataset_rows(240, ticker=ticker, wiggle=0.03),
+        )
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+
+    config = _panel_config()
+    captured: list[tuple[str, ...]] = []
+    real_train = lab.train_tier1
+
+    def spy(samples, **kwargs):
+        captured.append(tuple(s.timestamp for s in samples))
+        return real_train(samples, **kwargs)
+
+    monkeypatch.setattr(lab, "train_tier1", spy)
+
+    results = lab.evaluate_panel(
+        tickers,
+        config,
+        ("fwd_return",),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+    )
+    assert results and all("error" not in r for r in results)
+    folds = results[0]["folds"]
+    assert len(captured) == folds
+
+    # Rebuild the shared timeline the panel used.
+    samples = lab.build_samples(
+        lab.load_ticker_rows(tickers[0]),
+        horizon=config.horizon,
+        interval_seconds=lab.INTERVAL_SECONDS,
+    )
+    reference = [s.timestamp for s in samples]
+    bounds = lab.walk_forward_bounds(
+        len(reference), folds=folds, horizon=config.horizon, targets=("fwd_return",)
+    )
+    for (train_stop, test_start, test_stop), pooled in zip(bounds, captured, strict=True):
+        assert train_stop <= test_start
+        test_timestamps = set(reference[test_start:test_stop])
+        assert test_timestamps.isdisjoint(pooled)
+        assert all(ts < reference[test_start] for ts in pooled)
+
+
+def test_panel_normalisation_stats_see_training_rows_only(tmp_path, monkeypatch):
+    """Per-ticker standardisation must be fitted on the training prefix only."""
+    from .conftest import make_dataset_rows
+
+    tickers = ("BTC/USD", "ETH/USD")
+    for ticker in tickers:
+        _write_ticker_archive(
+            tmp_path,
+            ticker,
+            make_dataset_rows(240, ticker=ticker, wiggle=0.03),
+        )
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+
+    config = _panel_config()
+    seen_last: list[str] = []
+    real_stats = lab._feature_stats
+
+    def spy(samples, names):
+        seen_last.append(samples[-1].timestamp)
+        return real_stats(samples, names)
+
+    monkeypatch.setattr(lab, "_feature_stats", spy)
+
+    results = lab.evaluate_panel(
+        tickers,
+        config,
+        ("fwd_return",),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+    )
+    assert results and all("error" not in r for r in results)
+    folds = results[0]["folds"]
+    assert len(seen_last) == folds * len(tickers)
+
+    samples = lab.build_samples(
+        lab.load_ticker_rows(tickers[0]),
+        horizon=config.horizon,
+        interval_seconds=lab.INTERVAL_SECONDS,
+    )
+    reference = [s.timestamp for s in samples]
+    bounds = lab.walk_forward_bounds(
+        len(reference), folds=folds, horizon=config.horizon, targets=("fwd_return",)
+    )
+    expected = [
+        reference[train_stop - 1] for train_stop, _, _ in bounds
+    ]
+    # Each fold's per-ticker stats end at the last purged training row.
+    for i in range(folds):
+        assert seen_last[i * len(tickers) : (i + 1) * len(tickers)] == [
+            expected[i] for _ in tickers
+        ]
+
+
+def test_panel_aligns_tickers_with_different_lengths(tmp_path, monkeypatch):
+    from .conftest import make_dataset_rows
+
+    _write_ticker_archive(
+        tmp_path, "BTC/USD", make_dataset_rows(240, ticker="BTC/USD")
+    )
+    # ETH is a strict prefix of BTC's timeline; the common window truncates
+    # BTC, after which both tickers share every timestamp.
+    _write_ticker_archive(
+        tmp_path, "ETH/USD", make_dataset_rows(200, ticker="ETH/USD")
+    )
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+
+    results = lab.evaluate_panel(
+        ("BTC/USD", "ETH/USD"),
+        _panel_config(),
+        ("fwd_return",),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+    )
+    assert results
+    assert all("error" not in r for r in results)
+    assert results[0]["samples"] == results[1]["samples"] == 200
+
+
+def test_panel_refuses_a_gapped_timeline(tmp_path, monkeypatch):
+    from .conftest import make_dataset_rows
+
+    _write_ticker_archive(
+        tmp_path, "BTC/USD", make_dataset_rows(240, ticker="BTC/USD")
+    )
+    rows = list(make_dataset_rows(240, ticker="ETH/USD"))
+    gapped = [row for i, row in enumerate(rows) if i != 120]
+    _write_ticker_archive(tmp_path, "ETH/USD", gapped)
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+
+    results = lab.evaluate_panel(
+        ("BTC/USD", "ETH/USD"),
+        _panel_config(),
+        ("fwd_return",),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+    )
+    assert len(results) == 1
+    assert "error" in results[0]
+    assert "timeline" in results[0]["error"]
+
+
 def test_evaluate_grid_fits_each_fold_once(tmp_path, monkeypatch):
     from .conftest import make_dataset_rows
 
