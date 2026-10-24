@@ -89,6 +89,14 @@ contradiction. The effective old rule was "every fold positive" (because
 `min_improvement_min: 0` already bound); v2 states it explicitly as
 `fold_rule: all_positive` (or `majority_positive` / `none`).
 
+`calibrate-null` keeps the shuffled-label canary for what it tests — whether
+the whole fitting pipeline can manufacture skill from noise — and is documented
+as conservative. It is not the calibration of the CI rule: shuffling destroys
+the serial correlation that makes the real series hard. `calibrate-coverage`
+is the CI calibration: it simulates paired differences with a known mean under
+row-level autocorrelation and reports coverage and p-value uniformity at
+several alphas.
+
 ### Outcome space and power
 
 A hypothesis declares `minimal_meaningful_effect` in criterion units and a
@@ -233,7 +241,10 @@ Each entry needs:
   pre-registration is blocked as `underpowered` when the design's MDE exceeds it.
 - `comparison`: `baseline` (default) or `champion`. A champion comparison is
   reported and its MDE is computed over the retrained deployed bundle; the
-  promotion gate remains authoritative for an actual write.
+  verdict-level paired comparison remains `baseline` for now, and the
+  promotion gate is authoritative for an actual write. A hypothesis that needs
+  a verdict over the champion should use `requires_promote: true` until that
+  path is wired in.
 - `canary`: set on `H0-canary`; a provisional canary voids the harness. Canary
   verdicts are written to `experiments/canary.jsonl`, never the ledger, and do
   not consume trials.
