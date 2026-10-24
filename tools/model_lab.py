@@ -283,21 +283,22 @@ def evaluate_target(
     }
 
 
-def _policy_rows(
+def _policy_components(
     bundle: Tier1Bundle,
     test: Sequence[Sample],
     *,
-    threshold: float,
     position: str,
-) -> tuple[list[float], list[float], list[float], list[float]]:
-    """Return model/momentum/always-long positions plus realised returns.
+) -> tuple[list[float | None], list[float | None], list[float], list[float], list[float]]:
+    """Predictions and realised returns, computed once per fold.
 
-    The direction model is preferred; the return model's sign is the fallback.
+    The direction probability is evaluated once here and reused for every
+    threshold in the cost grid, so a grid does not refit or re-predict per cell.
     A missing prediction or target is skipped, never imputed.
     """
     direction = bundle.targets.get("fwd_direction")
     ret = bundle.targets.get("fwd_return")
-    model: list[float] = []
+    probabilities: list[float | None] = []
+    expected: list[float | None] = []
     momentum: list[float] = []
     always: list[float] = []
     realised: list[float] = []
@@ -305,28 +306,55 @@ def _policy_rows(
         target = sample.targets.get("fwd_return")
         if target is None:
             continue
-        pos = 0.0
-        if direction is not None:
-            probability = direction.predict_row(sample.features)
-            if probability is not None:
-                if probability >= threshold:
-                    pos = 1.0
-                elif position == "long-short" and probability <= 1.0 - threshold:
-                    pos = -1.0
-        elif ret is not None:
-            prediction = ret.predict_row(sample.features)
-            if prediction is not None:
-                pos = 1.0 if prediction > 0 else (-1.0 if position == "long-short" else 0.0)
+        probabilities.append(
+            direction.predict_row(sample.features) if direction is not None else None
+        )
+        expected.append(ret.predict_row(sample.features) if ret is not None else None)
         ret1 = sample.features.get("ret_1")
-        mom = (
+        momentum.append(
             (1.0 if ret1 is not None and ret1 > 0 else -1.0)
             if position == "long-short"
             else (1.0 if ret1 is not None and ret1 > 0 else 0.0)
         )
-        model.append(pos)
-        momentum.append(mom)
         always.append(1.0)
         realised.append(float(target))
+    return probabilities, expected, momentum, always, realised
+
+
+def _positions_for(
+    probabilities: Sequence[float | None],
+    expected: Sequence[float | None],
+    *,
+    threshold: float,
+    position: str,
+) -> list[float]:
+    """Turn a direction probability (or return sign) into a position."""
+    out: list[float] = []
+    for probability, prediction in zip(probabilities, expected, strict=True):
+        pos = 0.0
+        if probability is not None:
+            if probability >= threshold:
+                pos = 1.0
+            elif position == "long-short" and probability <= 1.0 - threshold:
+                pos = -1.0
+        elif prediction is not None:
+            pos = 1.0 if prediction > 0 else (-1.0 if position == "long-short" else 0.0)
+        out.append(pos)
+    return out
+
+
+def _policy_rows(
+    bundle: Tier1Bundle,
+    test: Sequence[Sample],
+    *,
+    threshold: float,
+    position: str,
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    """Model/momentum/always-long positions plus realised returns (one threshold)."""
+    probabilities, expected, momentum, always, realised = _policy_components(
+        bundle, test, position=position
+    )
+    model = _positions_for(probabilities, expected, threshold=threshold, position=position)
     return model, momentum, always, realised
 
 
@@ -369,6 +397,14 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
     }
 
 
+def _unique(values: Sequence[Any]) -> list[Any]:
+    out: list[Any] = []
+    for value in values:
+        if value not in out:
+            out.append(value)
+    return out
+
+
 def evaluate_ticker(
     ticker: str,
     config: Config,
@@ -379,8 +415,18 @@ def evaluate_ticker(
     position: str,
     fee_bps: float,
     slippage_bps: float,
+    thresholds: Sequence[float] | None = None,
+    cost_levels: Sequence[tuple[float, float]] | None = None,
     reserve_final: float = 0.0,
 ) -> dict[str, Any]:
+    """Walk-forward metrics plus a threshold x cost policy grid.
+
+    Each fold is fitted exactly once; the direction probability is computed once
+    per fold and re-thresholded for every grid cell. The headline ``economic``
+    block is the cell matching ``threshold``/``fee_bps``/``slippage_bps``.
+    """
+    threshold_list = _unique(list(thresholds or [threshold]))
+    cost_list = _unique(list(cost_levels or [(fee_bps, slippage_bps)]))
     rows = load_ticker_rows(ticker)
     if len(rows) < 120:
         return {"ticker": ticker, "error": f"only {len(rows)} candles"}
@@ -392,7 +438,7 @@ def evaluate_ticker(
     if not splits:
         return {"ticker": ticker, "error": "not enough samples for walk-forward"}
     target_records: dict[str, list[dict[str, Any]]] = {t: [] for t in targets}
-    model_pos: list[float] = []
+    model_pos: dict[float, list[float]] = {value: [] for value in threshold_list}
     mom_pos: list[float] = []
     always_pos: list[float] = []
     returns: list[float] = []
@@ -409,8 +455,13 @@ def evaluate_ticker(
             record = evaluate_target(bundle, target, train, test)
             if record is not None:
                 target_records[target].append(record)
-        m, mom, always, rets = _policy_rows(bundle, test, threshold=threshold, position=position)
-        model_pos.extend(m)
+        probabilities, expected, mom, always, rets = _policy_components(
+            bundle, test, position=position
+        )
+        for value in threshold_list:
+            model_pos[value].extend(
+                _positions_for(probabilities, expected, threshold=value, position=position)
+            )
         mom_pos.extend(mom)
         always_pos.extend(always)
         returns.extend(rets)
@@ -419,12 +470,36 @@ def evaluate_ticker(
         for target, records in target_records.items()
         if (agg := aggregate_target(records)) is not None
     }
-    economic = {
-        "model": _pnl_metrics(model_pos, returns, fee_bps=fee_bps, slippage_bps=slippage_bps),
-        "momentum": _pnl_metrics(mom_pos, returns, fee_bps=fee_bps, slippage_bps=slippage_bps),
-        "always_long": _pnl_metrics(
-            always_pos, returns, fee_bps=fee_bps, slippage_bps=slippage_bps
+    grid = [
+        {
+            "threshold": value,
+            "fee_bps": fee,
+            "slippage_bps": slip,
+            "model": _pnl_metrics(
+                model_pos[value], returns, fee_bps=fee, slippage_bps=slip
+            ),
+            "momentum": _pnl_metrics(mom_pos, returns, fee_bps=fee, slippage_bps=slip),
+            "always_long": _pnl_metrics(
+                always_pos, returns, fee_bps=fee, slippage_bps=slip
+            ),
+        }
+        for value in threshold_list
+        for fee, slip in cost_list
+    ]
+    headline = next(
+        (
+            row
+            for row in grid
+            if row["threshold"] == threshold
+            and row["fee_bps"] == fee_bps
+            and row["slippage_bps"] == slippage_bps
         ),
+        grid[0],
+    )
+    economic = {
+        "model": headline["model"],
+        "momentum": headline["momentum"],
+        "always_long": headline["always_long"],
     }
     return {
         "ticker": ticker,
@@ -435,6 +510,7 @@ def evaluate_ticker(
         "span": sample_span(samples),
         "targets": aggregated,
         "economic": economic,
+        "economic_grid": grid,
     }
 
 
@@ -529,6 +605,8 @@ def evaluate_action(args: argparse.Namespace) -> int:
     )
     tickers = resolve_tickers(args.tickers)
     targets = resolve_targets(args.targets)
+    thresholds = _parse_thresholds(getattr(args, "thresholds", None))
+    cost_levels = _parse_cost_levels(getattr(args, "cost_levels", None))
     results = [
         evaluate_ticker(
             ticker,
@@ -539,6 +617,8 @@ def evaluate_action(args: argparse.Namespace) -> int:
             position=args.position,
             fee_bps=args.fee_bps,
             slippage_bps=args.slippage_bps,
+            thresholds=thresholds,
+            cost_levels=cost_levels,
         )
         for ticker in tickers
     ]
@@ -546,6 +626,10 @@ def evaluate_action(args: argparse.Namespace) -> int:
         "action": "evaluate",
         "config": config.as_dict(),
         "targets": list(targets),
+        "policy_grid": {
+            "thresholds": thresholds or [args.threshold],
+            "cost_levels": cost_levels or [(args.fee_bps, args.slippage_bps)],
+        },
         "results": results,
         "summary": {
             "tickers": len(results),
@@ -609,6 +693,28 @@ def evaluate_action(args: argparse.Namespace) -> int:
             if "error" not in r
         ],
     )
+    grid_rows = [
+        [r["ticker"], cell["threshold"], cell["fee_bps"], cell["slippage_bps"],
+         f"{cell['model']['sharpe']:.2f}"
+         if cell["model"]["sharpe"] is not None
+         else "—",
+         f"{100 * cell['model']['total_return']:+.2f}%"
+         if cell["model"]["total_return"] is not None
+         else "—",
+         cell["model"]["trades"],
+         f"{cell['momentum']['sharpe']:.2f}"
+         if cell["momentum"]["sharpe"] is not None
+         else "—"]
+        for r in results
+        if "error" not in r
+        for cell in r.get("economic_grid", [])
+    ]
+    if len(grid_rows) > len([r for r in results if "error" not in r]):
+        print("\nthreshold x cost grid (same folds, fitted once per fold):")
+        _print_table(
+            ["ticker", "thr", "fee", "slip", "sharpe", "ret", "trades", "mom"],
+            grid_rows,
+        )
     print(f"\nartifact: {path}")
     return 0
 
@@ -627,6 +733,31 @@ def _configs(args: argparse.Namespace) -> list[Config]:
         for fs, ms, h in itertools.product(feature_sets, model_sets, horizons)
     ]
     return configs[: max(1, args.max_configs)]
+
+
+def _parse_thresholds(value: str | None) -> list[float] | None:
+    """``--thresholds "0.5 0.55 0.6"`` (commas or spaces) or ``None``."""
+    if value is None:
+        return None
+    values = [float(part) for part in str(value).replace(",", " ").split() if part.strip()]
+    for threshold in values:
+        if not 0.0 < threshold < 1.0:
+            raise SystemExit(f"threshold {threshold} must be strictly between 0 and 1")
+    return values or None
+
+
+def _parse_cost_levels(value: str | None) -> list[tuple[float, float]] | None:
+    """``--cost-levels "10:5 0:0"`` as ``fee:slippage`` per-side pairs."""
+    if value is None:
+        return None
+    out: list[tuple[float, float]] = []
+    for part in str(value).replace(";", " ").replace(",", " ").split():
+        separator = ":" if ":" in part else ("/" if "/" in part else None)
+        if separator is None:
+            raise SystemExit(f"cost level {part!r} must look like fee:slippage (e.g. 10:5)")
+        fee, slippage = part.split(separator, 1)
+        out.append((float(fee), float(slippage)))
+    return out or None
 
 
 def _number(value: Any, default: float) -> float:
@@ -1162,6 +1293,8 @@ Action-specific:
   evaluate  --feature-set all|market|core|price (default all)
             --model-set reference|baseline (default reference)
             --horizon N (default 1; the economic proxy is only honest at 1)
+            --thresholds 0.5,0.55,0.6   one fit, many policy thresholds
+            --cost-levels 10:5,0:0      one fit, many cost levels
             --limit N (default 20)
   sweep     --feature-sets all,market,core,price
             --model-sets reference,baseline
@@ -1221,6 +1354,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--feature-set", default="all")
     evaluate.add_argument("--model-set", default="reference")
     evaluate.add_argument("--horizon", type=int, default=1)
+    evaluate.add_argument(
+        "--thresholds",
+        default=None,
+        help="direction thresholds to sweep in one fit, e.g. '0.5,0.55,0.6'",
+    )
+    evaluate.add_argument(
+        "--cost-levels",
+        default=None,
+        help="per-side fee:slippage pairs to sweep in one fit, e.g. '10:5,0:0'",
+    )
     evaluate.set_defaults(func=evaluate_action)
 
     sweep = sub.add_parser("sweep", help="controlled feature/model/horizon experiments")

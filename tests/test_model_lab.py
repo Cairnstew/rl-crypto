@@ -298,3 +298,101 @@ def test_reference_volatility_is_scored_in_log_space():
     assert model.metric_space == "log"
     assert model.predict_row(samples[-1].features) is not None
     assert model.predict_row(samples[-1].features) > 0
+
+
+# --------------------------------------------------------------------------- cost grid
+
+
+def test_parse_thresholds_and_cost_levels():
+    assert lab._parse_thresholds("0.5,0.55 0.6") == [0.5, 0.55, 0.6]
+    assert lab._parse_thresholds(None) is None
+    assert lab._parse_cost_levels("10:5,0:0") == [(10.0, 5.0), (0.0, 0.0)]
+    assert lab._parse_cost_levels("10/5") == [(10.0, 5.0)]
+    assert lab._parse_cost_levels(None) is None
+    with pytest.raises(SystemExit):
+        lab._parse_thresholds("0")
+    with pytest.raises(SystemExit):
+        lab._parse_cost_levels("10")
+
+
+def _write_archive(root, rows):
+    import json
+
+    directory = root / "data" / "eth-usd"
+    directory.mkdir(parents=True)
+    lines = [
+        json.dumps(
+            {
+                "ticker": row.ticker,
+                "timestamp": row.timestamp,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+        )
+        for row in rows
+    ]
+    (directory / "candles.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_evaluate_grid_fits_each_fold_once(tmp_path, monkeypatch):
+    from .conftest import make_dataset_rows
+
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    _write_archive(tmp_path, make_dataset_rows(240, wiggle=0.03))
+    config = lab.Config(
+        name="grid",
+        feature_names=lab.resolve_feature_names("all"),
+        model_names=lab.MODEL_SETS["baseline"],
+        horizon=1,
+    )
+
+    calls = {"n": 0}
+    real_train = lab.train_tier1
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real_train(*args, **kwargs)
+
+    monkeypatch.setattr(lab, "train_tier1", spy)
+
+    result = lab.evaluate_ticker(
+        "ETH/USD",
+        config,
+        ("fwd_return", "fwd_direction"),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        thresholds=[0.5, 0.55, 0.9],
+        cost_levels=[(10.0, 5.0), (0.0, 0.0)],
+    )
+
+    # Fitted once per fold, not once per grid cell.
+    assert calls["n"] == result["folds"] == 3
+    assert len(result["economic_grid"]) == 3 * 2
+
+    headline = result["economic"]
+    cell = next(
+        row
+        for row in result["economic_grid"]
+        if row["threshold"] == 0.55
+        and row["fee_bps"] == 10.0
+        and row["slippage_bps"] == 5.0
+    )
+    assert headline["model"] == cell["model"]
+
+    by_key = {
+        (row["threshold"], row["fee_bps"], row["slippage_bps"]): row for row in result["economic_grid"]
+    }
+    free = by_key[(0.55, 0.0, 0.0)]["model"]["total_return"]
+    costly = by_key[(0.55, 10.0, 5.0)]["model"]["total_return"]
+    assert free >= costly
+
+    # A very high threshold cannot produce more trades than a low one.
+    low = by_key[(0.5, 10.0, 5.0)]["model"]["trades"]
+    high = by_key[(0.9, 10.0, 5.0)]["model"]["trades"]
+    assert high <= low
