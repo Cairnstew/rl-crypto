@@ -3157,6 +3157,7 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                 plant_strength=strength,
                 plant_space=space,
                 plant_feature=plant_feature,
+                baseline=str(payload.get("baseline") or "strongest"),
                 structural=False,
                 economics=economics and mode is None,
                 threshold=float(payload.get("threshold") or 0.55),
@@ -3387,6 +3388,7 @@ def calibrate_power(
             "position": str(experiment.get("position") or "long-only"),
             "fee_bps": float(experiment.get("feeBps") or 10.0),
             "slippage_bps": float(experiment.get("slippageBps") or 5.0),
+            "baseline": "strongest",
         }
         alpha_payload = {str(trial): alpha for trial, alpha in alphas.items()}
         # The observed comparison is the unplanted pooled paired improvement on
