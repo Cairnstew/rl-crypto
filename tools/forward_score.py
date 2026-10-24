@@ -73,6 +73,24 @@ def load_records(root: Path, ticker: str) -> list[dict[str, Any]]:
     return [record for record in read_jsonl(path) if isinstance(record, dict)]
 
 
+def _metadata_ok(predictions: Mapping[str, Any]) -> bool:
+    """Whether a record names the bundle's metric space and feature contract.
+
+    Old records predate ``metric_space``; a forward confirmation window built
+    from them would mix scales (a log-space volatility prediction scored as a
+    raw number) and cannot prove the deployed code produced them. They are
+    still scored, but excluded from the confirmation window and counted.
+    """
+    metric_space = predictions.get("metric_space")
+    feature_version = predictions.get("feature_version")
+    return (
+        isinstance(metric_space, Mapping)
+        and bool(metric_space)
+        and isinstance(feature_version, str)
+        and bool(feature_version)
+    )
+
+
 def _index_rows(rows: Sequence[Any]) -> dict[Any, int]:
     index: dict[Any, int] = {}
     for position, row in enumerate(rows):
@@ -238,8 +256,11 @@ def score_ticker(
         "unresolved": 0,
         "unjoined": 0,
         "no_prediction": 0,
+        "metadata_missing": 0,
     }
     resolved_by_bundle: dict[str, int] = defaultdict(int)
+    confirmation_resolved_by_bundle: dict[str, int] = defaultdict(int)
+    confirmation_stamps: dict[str, list[str]] = defaultdict(list)
     skipped_positions = 0
 
     for record in records:
@@ -267,6 +288,11 @@ def score_ticker(
         bundle = str(predictions.get("bundle_trained_at") or "unknown")
         resolved_by_bundle[bundle] += 1
         stamps[bundle].append(feature_timestamp)
+        if _metadata_ok(predictions):
+            confirmation_resolved_by_bundle[bundle] += 1
+            confirmation_stamps[bundle].append(feature_timestamp)
+        else:
+            counts["metadata_missing"] += 1
         points = predictions.get("predictions") or {}
         probabilities = predictions.get("probabilities") or {}
         for target in TARGET_NAMES:
@@ -307,11 +333,16 @@ def score_ticker(
         }
         days = _window_days(stamps.get(bundle, []))
         resolved = resolved_by_bundle.get(bundle, 0)
+        confirmation_days = _window_days(confirmation_stamps.get(bundle, []))
+        confirmation_resolved = confirmation_resolved_by_bundle.get(bundle, 0)
         bundles.append(
             {
                 "bundle": bundle,
                 "resolved": resolved,
                 "window_days": round(days, 2),
+                "confirmation_resolved": confirmation_resolved,
+                "confirmation_window_days": round(confirmation_days, 2),
+                "excluded_missing_metadata": resolved - confirmation_resolved,
                 "targets": targets,
                 "economic": {
                     "model": pnl_metrics(
@@ -327,7 +358,10 @@ def score_ticker(
                         slippage_bps=slippage_bps,
                     ),
                 },
-                "window_met": days >= MIN_FORWARD_DAYS and resolved >= MIN_RESOLVED,
+                "window_met": (
+                    confirmation_days >= MIN_FORWARD_DAYS
+                    and confirmation_resolved >= MIN_RESOLVED
+                ),
             }
         )
 
@@ -386,6 +420,10 @@ def forward_score(
             "tickers": len(results),
             "errors": sum(1 for result in results if "error" in result),
             "resolved": sum(result.get("counts", {}).get("resolved", 0) for result in results),
+            "metadata_missing": sum(
+                result.get("counts", {}).get("metadata_missing", 0)
+                for result in results
+            ),
             "window_met": sum(
                 1
                 for result in results
@@ -450,12 +488,16 @@ def render(payload: Mapping[str, Any]) -> None:
         print(
             f"{result['ticker']}: {counts['resolved']} resolved, "
             f"{counts['unresolved']} pending, {counts['unjoined']} unjoined, "
-            f"{counts.get('no_prediction', 0)} without a prediction"
+            f"{counts.get('no_prediction', 0)} without a prediction, "
+            f"{counts.get('metadata_missing', 0)} excluded from confirmation "
+            "(missing metric_space/feature_version)"
         )
         for bundle in result["bundles"]:
             state = "window met" if bundle["window_met"] else "window not met"
             print(
-                f"  {bundle['bundle']}: {bundle['window_days']:.1f} days — {state}"
+                f"  {bundle['bundle']}: {bundle['window_days']:.1f} days "
+                f"({bundle['confirmation_window_days']:.1f} confirmation days, "
+                f"{bundle['confirmation_resolved']} eligible) — {state}"
             )
 
 

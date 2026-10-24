@@ -44,25 +44,29 @@ def _record(
     probability: float | None = 0.7,
     bundle: str = "2026-01-01T00:00:00Z",
     expected_return: float = 0.001,
+    include_metadata: bool = True,
 ) -> dict:
     stamp = to_iso(START + timedelta(hours=index))
     predictions: dict = {"fwd_return": expected_return, "fwd_direction": 1.0}
     probabilities: dict = {"fwd_direction": probability} if probability is not None else {}
-    return {
+    payload: dict = {
+        "schema": "rl-crypto/ml/1",
+        "ticker": "BTC/USD",
         "generated_at": stamp,
-        "predictions": {
-            "schema": "rl-crypto/ml/1",
-            "ticker": "BTC/USD",
-            "generated_at": stamp,
-            "horizon": 1,
-            "feature_timestamp": stamp,
-            "predictions": predictions,
-            "probabilities": probabilities,
-            "features": {"ret_1": 0.001},
-            "bundle_trained_at": bundle,
-            "feature_version": "rl-crypto/features/2",
-        },
+        "horizon": 1,
+        "feature_timestamp": stamp,
+        "predictions": predictions,
+        "probabilities": probabilities,
+        "features": {"ret_1": 0.001},
+        "bundle_trained_at": bundle,
     }
+    if include_metadata:
+        payload["feature_version"] = "rl-crypto/features/2"
+        payload["metric_space"] = {
+            "fwd_return": "raw",
+            "fwd_direction": "raw",
+        }
+    return {"generated_at": stamp, "predictions": payload}
 
 
 def test_target_rows_baseline_uses_only_earlier_outcomes():
@@ -216,3 +220,26 @@ def test_metric_spaces_reads_the_deployed_bundle_metadata(tmp_path):
     )
     save_bundle(bundle, tmp_path / "models" / "btc-usd.json")
     assert forward._metric_spaces(tmp_path, "BTC/USD") == {"fwd_volatility": "log"}
+
+
+def test_old_records_are_excluded_from_confirmation_windows():
+    rows = _rows(420)
+    records = [_record(i, include_metadata=False) for i in range(400)]
+    result = forward.score_ticker("BTC/USD", records, rows, fee_bps=0, slippage_bps=0)
+    assert result["counts"]["resolved"] == 400
+    assert result["counts"]["metadata_missing"] == 400
+    bundle = result["bundles"][0]
+    assert bundle["confirmation_resolved"] == 0
+    assert bundle["excluded_missing_metadata"] == 400
+    assert bundle["window_met"] is False
+
+
+def test_new_records_can_meet_the_confirmation_window():
+    rows = _rows(420)
+    records = [_record(i) for i in range(400)]
+    result = forward.score_ticker("BTC/USD", records, rows, fee_bps=0, slippage_bps=0)
+    assert result["counts"]["metadata_missing"] == 0
+    bundle = result["bundles"][0]
+    assert bundle["confirmation_resolved"] == 400
+    assert bundle["confirmation_window_days"] >= forward.MIN_FORWARD_DAYS
+    assert bundle["window_met"] is True

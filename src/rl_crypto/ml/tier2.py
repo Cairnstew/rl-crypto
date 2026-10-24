@@ -138,6 +138,10 @@ def compose_outlook(
         notes=tuple(notes),
         bundle_trained_at=getattr(bundle, "trained_at", None),
         feature_version=getattr(bundle, "feature_version", None),
+        metric_space={
+            name: str(getattr(model, "metric_space", "raw") or "raw")
+            for name, model in bundle.targets.items()
+        },
     )
 
 

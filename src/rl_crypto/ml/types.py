@@ -59,6 +59,10 @@ class Outlook:
     #: pooling every prediction the ticker ever made.
     bundle_trained_at: str | None = None
     feature_version: str | None = None
+    #: Per-target scale the model minimises (``"raw"`` or ``"log"``). A forward
+    #: test must score a log-space volatility model on logs; a record that
+    #: cannot name its scale is excluded from a confirmation window.
+    metric_space: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +73,7 @@ class Outlook:
             "feature_timestamp": self.feature_timestamp,
             "bundle_trained_at": self.bundle_trained_at,
             "feature_version": self.feature_version,
+            "metric_space": dict(self.metric_space),
             "predictions": dict(self.predictions),
             "probabilities": dict(self.probabilities),
             "signal": self.signal,

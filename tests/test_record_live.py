@@ -73,6 +73,8 @@ def test_record_live_appends_one_record(tmp_path, monkeypatch):
     assert exit_code == 0
     assert len(payloads) == 1
     assert payloads[0]["predictions"]["schema"].startswith("rl-crypto/ml/")
+    assert payloads[0]["predictions"]["feature_version"]
+    assert payloads[0]["predictions"]["metric_space"]
     assert payloads[0]["_generated_at"]
     assert "ETH/USD" in paths
 
@@ -81,6 +83,7 @@ def test_record_live_appends_one_record(tmp_path, monkeypatch):
     record = json.loads(lines[0])
     assert record["market"]["price"] == 2500.0
     assert record["news"]["ok"] is True  # live news included
+    assert record["predictions"]["metric_space"]["fwd_volatility"] == "log"
 
 
 def test_record_live_reuses_the_latest_bundle(tmp_path, monkeypatch):

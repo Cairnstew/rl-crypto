@@ -47,6 +47,8 @@ def test_attach_predictions_adds_features_to_the_record(bundle):
 
     payload = record.to_dict()
     assert payload["predictions"]["schema"].startswith("rl-crypto/ml/")
+    assert payload["predictions"]["feature_version"]
+    assert payload["predictions"]["metric_space"]["fwd_volatility"] == "log"
     flat = outlook.as_features()
     assert flat["pred_fwd_return"] is not None
     assert "pred_signal" in flat
