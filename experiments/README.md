@@ -245,16 +245,15 @@ the runner; `passes` is the supported CI default.
 The orchestration is complete; the measurement foundation is not. These gaps
 still prevent a **confirmed** claim and are reported as warnings by preflight:
 
-- `tools/forward_score.py` does not exist on this branch, so forward
-  confirmation (Phase V) is unavailable; a passing backtest is at most
-  **provisional**.
-- Production training does not yet read `config/training.json`, so a promoted
-  bundle is overwritten by the next scheduled retrain. Promotion is therefore
-  branch-only until that lands.
-- The forward scorer and `config/training.json` exist on the unmerged
-  `model-improve/2026-10-24-foundation` branch; merging them is a separate
-  reviewed change.
-- Lab/production model parity is still tracked in `/model-improve` Phase F.
+- The forward scorer (`tools/forward_score.py`) now exists and uses the deployed
+  bundle's metric space; forward confirmation still needs 14 days / 300 resolved
+  predictions before a backtest can be more than **provisional**.
+- Production training now reads `config/training.json`, and `promote --apply`
+  records the promoted feature/model/horizon set there, so the next scheduled
+  retrain rebuilds it. Promotion remains opt-in (`promotion.apply: false`).
+- Volatility is fitted and scored in log space in training, the lab and the
+  forward scorer. Remaining lab/production parity work is tracked in
+  `/model-improve` Phase F.
 
 The loop refuses to pretend otherwise: `promotion.apply` is off, and every
 report states the verdict and the reasons, never a profit claim.
@@ -271,3 +270,15 @@ report states the verdict and the reasons, never a profit claim.
 | `blocked` at audit | leakage or `cannot_tell` | fix the code or the test; a re-run is a new trial |
 | two runs at once | ledger/worktree race | use the workflow's `concurrency` group; locally, one run at a time |
 | no PR in CI | dry run, or no commits beyond `main` | check `steps.loop.outputs.rc` and the console artifact |
+
+
+## Protected-file pin (human review required)
+
+`src/rl_crypto/experiments.py` declares `PROTECTED_FILES` — the measurement
+contract a normal experiment may not edit. Changing that list is a change to the
+contract itself, so its hash is committed to `experiments/protected-files.pin`.
+
+`tests/test_protected_pin.py` fails if the list and the pin disagree. Adding or
+removing a protected file therefore requires **both** files in the same commit,
+and a human must review that two-file diff before merge. Do not update the pin
+mechanically to make CI green: the pin exists so that the change is visible.

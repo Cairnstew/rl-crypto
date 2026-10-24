@@ -78,11 +78,18 @@ MIN_BOOTSTRAP_BLOCKS = 24
 #: may not edit them: doing so would let an implementer move the goalposts it is
 #: being judged against. ``run_type: harness-change`` is the only escape hatch,
 #: and it cannot produce a scoreboard-eligible verdict.
+#:
+#: The *definition* of this list is pinned in ``experiments/protected-files.pin``
+#: and checked by ``tests/test_protected_pin.py``. Adding or removing a file is
+#: therefore a two-file change (list + pin) that a human must review: it is the
+#: moment the measurement contract itself changes.
 PROTECTED_FILES: tuple[str, ...] = (
     "src/rl_crypto/experiments.py",
     "src/rl_crypto/targets.py",
     "src/rl_crypto/samples.py",
+    "src/rl_crypto/backtest.py",
     "src/rl_crypto/ml/tier1.py",
+    "src/rl_crypto/ml/training_config.py",
     "tools/model_lab.py",
     "tools/model_improve.py",
     "tools/forward_score.py",
@@ -190,6 +197,13 @@ def bootstrap_resolution(
         "ok": int(bootstrap_samples) >= required,
         "min_blocks": MIN_BOOTSTRAP_BLOCKS,
     }
+
+
+def protected_list_digest() -> str:
+    """SHA-256 of the protected-file list definition (the pin's value)."""
+    return hashlib.sha256(
+        "\n".join(sorted(PROTECTED_FILES)).encode("utf-8")
+    ).hexdigest()
 
 
 def protected_digest(root: Path) -> dict[str, Any]:
