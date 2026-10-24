@@ -256,3 +256,28 @@ uv run python tools/model_improve.py status --render # scoreboard + queue
   lead-recorded. `roles.json` records only the lead in team mode; the spawned
   teammate's transcript is not captured under `logs/`, so verify it ran from
   the spawn event, the artifact mtimes and `team_results`.
+
+### 2026-10-24 — harness hardening: the real false-positive sources
+
+- **The holdout guard never fired.** `build_preregistration` set
+  `lineage = "<H>-<run_id>"`, so every run was a new lineage and
+  `evaluate_mechanical`'s `holdout_touches` check was always empty. The
+  hardening uses a stable lineage (`hypothesis.stable_lineage`), a one-time
+  `holdout_freeze` entry and distinct-run touch counting; a new lineage needs a
+  new hypothesis id or a human `holdout-rotate`.
+- **The reserved tail moved with the archive.** `evaluate` used
+  `reserve_final=0.0` and `sweep` used `0.2` (a fraction of the current bars),
+  so "the final 20%" was a different timestamp after every append. New runs
+  freeze a `holdout_start` timestamp and all lab actions filter on it.
+- **`fold_rule` was contradictory.** `folds_beating_min: 3` with
+  `min_improvement_min: 0` means every fold must be positive; the 3 was
+  decorative. Criteria v2 states `fold_rule: all_positive` explicitly and keeps
+  v1 entries on the old interpretation.
+- **Diagnostics are not verdicts.** A diagnostic `passed: true` only means rows
+  were produced. Read the per-ticker matrix, never quote it as skill.
+- **The measurement code was editable by the roles.** The implementer and lead
+  could edit `experiments.py`, `model_lab.py` and their tests. Those files are
+  now protected, hashed in the pre-registration, and a protected diff fails the
+  mechanical review; only a human-approved `harness-change` may touch them.
+- **The reviewer prompt was stale.** `run_review()` is preceded by a provisional
+  `report.md`; the reviewer can read it. The final report is rebuilt afterwards.

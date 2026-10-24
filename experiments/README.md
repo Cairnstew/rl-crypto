@@ -39,6 +39,54 @@ The role agents carry no hardcoded model; `opencode run --agent` and
 variable `RL_MODEL_IMPROVE_MODEL` or pass the `model` dispatch input; leave the
 repo default alone unless you want to change it for everyone.
 
+The only deliberate per-role exception is the auditor
+(`models.auditor = opencode/claude-haiku-4-5`): the adversarial leakage check
+runs on a different model family from the researcher/implementer it audits, so
+one model's blind spots cannot approve their own work. `--model` and
+`RL_MODEL_IMPROVE_MODEL` override it for a single run.
+
+## Measurement contract (protected files)
+
+`src/rl_crypto/experiments.py` exports `PROTECTED_FILES`: the verdict logic,
+label/sample contract, walk-forward/PnL engine, promotion gate, holdout
+accounting, the driver, and their tests. A normal experiment run may not edit
+them — the implementer and lead agents have explicit denies. The pre-registration
+records `protected.hash`; the mechanical review fails a run whose diff touches
+any protected file.
+
+The only escape hatch is `run_type: harness-change` (or `--run-type
+harness-change`). It may touch the contract, is always flagged for human
+approval, and its verdict is `harness-change` — never `provisional`, and never
+scoreboard-eligible. The bounded role agents remain denied the protected files;
+a harness-change branch is normally authored by a human (or with the deny
+temporarily lifted in a separately reviewed `.opencode/` change), and the driver
+records and reviews the diff rather than letting a normal run edit the rules
+that judge it.
+
+## Criteria v2 and the holdout freeze
+
+New hypotheses declare `criteria_version: 2` plus exactly one
+`experiment.primary` config. Grid configs are diagnostics only. The verdict is
+the **pooled paired improvement** on the primary config with a time-block
+bootstrap CI; the lower bound must exceed zero at `alpha / trial_index`. The
+shuffled-label and shifted-label controls must both fail the same rule, or the
+run is `invalid`. Tickers are not votes: the per-ticker distribution is reported
+and a result carried by one ticker is flagged.
+
+`fold_rule` replaces the old `folds_beating_min` / `min_improvement_min`
+contradiction. The effective old rule was "every fold positive" (because
+`min_improvement_min: 0` already bound); v2 states it explicitly as
+`fold_rule: all_positive` (or `majority_positive` / `none`).
+
+The final holdout is a **timestamp**, frozen once per lineage by a
+`holdout_freeze` ledger entry (`holdout_start`). `evaluate`, `sweep` and
+`promote` all receive the same cutoff; selection only sees bars strictly before
+it. Appending bars never moves it. `evaluate --full-archive` still exists for
+diagnostics, records `diagnostic_full_archive: true`, consumes the lineage's
+holdout budget, and can never feed a verdict. `holdout-rotate` (human-only) is
+the only way to move the cutoff forward; a new lineage needs a new hypothesis
+id/`lineage`.
+
 ## Authority model
 
 There are three layers, deliberately separate:
@@ -84,25 +132,35 @@ Run artifacts live outside the repo by default:
 2. **Select** — first `status: open` hypothesis in queue order whose `needs`
    are available and whose `depends_on` are completed. `--hypothesis H4` forces
    one.
-3. **Pre-register** — the driver writes the experiment, the criteria, the data
+3. **Pre-register** — the driver freezes the holdout cutoff (a timestamp) and
+   writes the experiment, the criteria, the data hash, the protected-contract
    hash and the git SHA to the ledger *before* executing anything. Criteria are
-   frozen; changing them is a new trial.
+   frozen; changing them is a new trial. A rerun with the same feature version,
+   config and fewer than `noNewInformation.minNewBars` new bars is blocked as
+   `no-new-information`.
 4. **Diagnose** — researcher (read-only) writes `diagnosis.md` and
    `researcher.json`. `ready: false` or `recommendation: stop` blocks the run.
 5. **Implement** — implementer writes the smallest code/tests change, runs
-   `ruff` and the offline suite, and records both.
+   `ruff` and the offline suite, and records both. Protected files are denied.
 6. **Audit** — the adversarial auditor inspects the diff for look-ahead,
    fit-on-test preprocessing, label overlap, post-hoc criteria, cost errors and
    holdout leakage. Any `fail` or `cannot_tell` blocks.
-7. **Evaluate** — the driver runs the pre-registered `rl-model-lab` configs and
-   computes the verdict from the criteria. The evaluator may only write prose.
-8. **Review** — the mechanical reviewer checks the ledger, roles, audit, branch
-   and scope; the higher-level reviewer then audits the whole ensemble session,
-   the report honesty and the final git state. It may fix a concrete defect in
-   `.opencode/` (agent permissions/prompts/commands) and must list every change.
-   A `fail` blocks the run; `review.require: true` also blocks on `warn`.
+7. **Evaluate** — the driver runs the primary `rl-model-lab` config with the
+   frozen cutoff and both null controls, then computes the pooled verdict. Grid
+   configs are diagnostics. The evaluator may only write prose.
+8. **Review** — the mechanical reviewer checks the ledger, roles, audit, branch,
+   scope and the protected-file diff; the higher-level reviewer then audits the
+   whole ensemble session, the report honesty and the final git state. It may
+   fix a concrete defect in `.opencode/` (agent permissions/prompts/commands)
+   and must list every change. A `fail` blocks the run; `review.require: true`
+   also blocks on `warn`. A `harness-change` review is a warning requiring
+   human approval.
 9. **Record** — ledger entries, regenerated scoreboard/hypotheses, `report.md`,
    and one commit on the run branch. In CI that branch becomes a PR.
+
+Budgets are enforced per run: `maxRolesPerRun`, `maxTokensPerRun`,
+`maxCostUsdPerRun` and `maxWallClockSeconds` abort with a `blocked` entry rather
+than a crash.
 
 ## Executors
 
@@ -130,12 +188,17 @@ Each entry needs:
 - `needs`: subset of `code`, `data`, `approval`, `tooling`. A blocked external
   dependency is `status: blocked`, not `needs`.
 - `experiment`: `action` (`evaluate` or `sweep`), tickers, targets, feature
-  sets, model sets, horizons, `maxConfigs`, `folds`, and optional
-  `extraLabArgs` — the explicit flags the implementation must add (e.g.
-  `["--panel"]`). If the flag is missing, the lab exits nonzero and the run is
-  blocked rather than silently evaluating the old behaviour.
-- `criteria`: the metric of record and the numeric bar. `kind: diagnostic`
-  means "ran and produced rows" and is the only kind that needs no target.
+  sets, model sets, horizons, `maxConfigs`, `folds`, `primary` (the one
+  verdict-eligible config), and optional `extraLabArgs` — the explicit flags
+  the implementation must add (e.g. `["--panel"]`). If the flag is missing, the
+  lab exits nonzero and the run is blocked rather than silently evaluating the
+  old behaviour.
+- `criteria`: `criteria_version: 2`, the metric of record, `primary`, `alpha`,
+  `fold_rule`, and the numeric bar. `kind: diagnostic` means "ran and produced
+  rows" and is the only kind that needs no target. Entries without
+  `criteria_version` keep the old v1 interpretation forever.
+- `run_type`: `experiment` (default) or `harness-change`.
+- `canary`: set on `H0-canary`; a provisional canary voids the harness.
 - `depends_on`: hypothesis ids that must have a completed verdict first.
 
 A verdict closes the hypothesis (`select_hypothesis` skips it). To re-open it
@@ -167,6 +230,11 @@ Setup:
   `mode=status` checks the ledger without installing anything.
 - Only then set the repository variable `RL_MODEL_IMPROVE_ENABLED=true` to arm
   the weekly schedule. Without it, the schedule job is skipped.
+- **Keep the weekly schedule off while `tools/forward_score.py` is absent on
+  `main`.** A backtest is at most provisional without the forward test, so an
+  armed schedule would publish provisional branches indefinitely. Preflight
+  emits a non-blocking `schedule-forward-score` warning if
+  `RL_MODEL_IMPROVE_ENABLED` is set without the scorer.
 
 `executor=team` is available for CI but needs the Ensemble plugin installed on
 the runner; `passes` is the supported CI default.
@@ -176,13 +244,16 @@ the runner; `passes` is the supported CI default.
 The orchestration is complete; the measurement foundation is not. These gaps
 still prevent a **confirmed** claim and are reported as warnings by preflight:
 
-- `tools/forward_score.py` does not exist, so forward confirmation (Phase V)
-  is unavailable; a passing backtest is at most **provisional**.
+- `tools/forward_score.py` does not exist on this branch, so forward
+  confirmation (Phase V) is unavailable; a passing backtest is at most
+  **provisional**.
 - Production training does not yet read `config/training.json`, so a promoted
   bundle is overwritten by the next scheduled retrain. Promotion is therefore
   branch-only until that lands.
-- The volatility purge test (`max(horizon, 2)` rows) and lab/production parity
-  are still tracked in `/model-improve` Phase F.
+- The forward scorer and `config/training.json` exist on the unmerged
+  `model-improve/2026-10-24-foundation` branch; merging them is a separate
+  reviewed change.
+- Lab/production model parity is still tracked in `/model-improve` Phase F.
 
 The loop refuses to pretend otherwise: `promotion.apply` is off, and every
 report states the verdict and the reasons, never a profit claim.
