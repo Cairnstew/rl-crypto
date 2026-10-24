@@ -119,6 +119,7 @@ MIN_BOOTSTRAP_BLOCKS = 24
 #: moment the measurement contract itself changes.
 PROTECTED_FILES: tuple[str, ...] = (
     "src/rl_crypto/experiments.py",
+    "src/rl_crypto/power.py",
     "src/rl_crypto/structural.py",
     "src/rl_crypto/targets.py",
     "src/rl_crypto/samples.py",
@@ -129,6 +130,7 @@ PROTECTED_FILES: tuple[str, ...] = (
     "tools/model_improve.py",
     "tools/forward_score.py",
     "tests/test_experiments.py",
+    "tests/test_power.py",
     "tests/test_structural.py",
     "tests/test_model_lab.py",
     "tests/test_ml_measurement.py",

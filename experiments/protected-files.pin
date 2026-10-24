@@ -1,4 +1,4 @@
 # SHA-256 of "\n".join(sorted(rl_crypto.experiments.PROTECTED_FILES)).
 # Changing the protected list requires updating this pin in the same commit.
 # That two-file diff is the measurement-contract change; a human must review it.
-0ac7663750dec758b398ac5abc51434601c9a5eabff4afa12e4ee7142089aa53
+a2ba714ccc976cff491916f6adc78f1e6c65523d887b172658077b46f8ebda84
