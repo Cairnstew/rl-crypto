@@ -306,3 +306,226 @@ def test_rendering_is_deterministic_and_mentions_negative_results():
     markdown = render_hypotheses([_hypothesis()], entries)
     assert "| H1 |" in markdown
     assert "done (negative)" in markdown
+
+
+# --------------------------------------------------------------------------- criteria v2
+
+
+def _paired(mean: float, ci_low: float, ci_high: float, *, n: int = 100, folds=None, alpha=0.05):
+    return {
+        "mean_improvement": mean,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "n": n,
+        "alpha": alpha,
+        "fold_improvements": folds if folds is not None else [mean] * 4,
+    }
+
+
+def _v2_payload(
+    *,
+    pooled,
+    tickers=("BTC/USD", "ETH/USD"),
+    shuffle=None,
+    shift=None,
+):
+    results = []
+    for ticker in tickers:
+        stat = pooled if len(tickers) == 1 else {
+            **_paired(
+                pooled["mean_improvement"],
+                pooled["ci_low"],
+                pooled["ci_high"],
+                n=pooled["n"] // len(tickers),
+                folds=pooled.get("fold_improvements"),
+                alpha=pooled.get("alpha", 0.05),
+            )
+        }
+        results.append({"ticker": ticker, "paired": stat})
+    return {
+        "results": results,
+        "pooled": pooled,
+        "controls": {
+            "shuffle": {"pooled": shuffle or _paired(-0.01, -0.02, -0.001)},
+            "shift": {"pooled": shift or _paired(-0.01, -0.02, -0.001)},
+        },
+    }
+
+
+def _v2_criteria(**overrides):
+    criteria = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": True,
+        "requires_promote": False,
+    }
+    criteria.update(overrides)
+    return criteria
+
+
+def test_v2_no_signal_fails_and_real_signal_passes():
+    no_signal = evaluate_criteria(
+        {"criteria": _v2_criteria()},
+        _v2_payload(pooled=_paired(0.001, -0.002, 0.004)),
+    )
+    assert no_signal["outcome"] == "negative"
+    assert any("CI lower bound" in reason for reason in no_signal["reasons"])
+
+    signal = evaluate_criteria(
+        {"criteria": _v2_criteria()},
+        _v2_payload(
+            pooled=_paired(0.02, 0.01, 0.03, folds=[0.01, 0.02, 0.03, 0.02])
+        ),
+    )
+    assert signal["outcome"] == "provisional"
+    assert signal["passed"] is True
+    assert signal["metrics"]["criteria_version"] == 2
+
+
+def test_v2_control_that_passes_makes_the_run_invalid():
+    verdict = evaluate_criteria(
+        {"criteria": _v2_criteria()},
+        _v2_payload(
+            pooled=_paired(0.02, 0.01, 0.03),
+            shuffle=_paired(0.02, 0.01, 0.03),
+        ),
+    )
+    assert verdict["outcome"] == "invalid"
+    assert any("shuffle control" in reason for reason in verdict["reasons"])
+
+
+def test_v2_fold_rule_and_single_ticker_flag_are_explicit():
+    one_bad_fold = evaluate_criteria(
+        {"criteria": _v2_criteria()},
+        _v2_payload(
+            pooled=_paired(0.02, 0.01, 0.03, folds=[0.01, 0.02, -0.01, 0.02])
+        ),
+    )
+    assert one_bad_fold["outcome"] == "negative"
+    assert any("folds are positive" in reason for reason in one_bad_fold["reasons"])
+
+    carried = evaluate_criteria(
+        {"criteria": _v2_criteria()},
+        _v2_payload(
+            pooled=_paired(0.02, 0.01, 0.03),
+            tickers=("BTC/USD", "ETH/USD", "SOL/USD"),
+        ),
+    )
+    # The helper gives every ticker the same positive mean, so this passes;
+    # a one-ticker result needs an explicit per-ticker distribution.
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03), tickers=("BTC/USD", "ETH/USD"))
+    payload["results"][1]["paired"] = _paired(-0.01, -0.02, -0.001)
+    single = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert single["outcome"] == "negative"
+    assert single["metrics"]["carried_by_one_ticker"] is True
+    assert carried["outcome"] == "provisional"
+
+
+def test_v2_requires_controls_and_alpha_matches_the_lab():
+    missing = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    missing["controls"] = {}
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, missing)
+    assert verdict["outcome"] == "blocked"
+    assert any("missing control" in reason for reason in verdict["reasons"])
+
+    wrong_alpha = evaluate_criteria(
+        {"criteria": _v2_criteria(alpha=0.01)},
+        _v2_payload(pooled=_paired(0.02, 0.01, 0.03, alpha=0.05)),
+    )
+    assert wrong_alpha["outcome"] == "negative"
+    assert any("pre-registered alpha" in reason for reason in wrong_alpha["reasons"])
+
+
+def test_v2_full_archive_diagnostic_cannot_feed_a_verdict():
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    payload["diagnostic_full_archive"] = True
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert verdict["outcome"] == "blocked"
+    assert any("full-archive" in reason for reason in verdict["reasons"])
+
+
+def test_v2_canary_provisional_is_reported_so_the_driver_can_void_it():
+    payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03))
+    payload["canary"] = True
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, payload)
+    assert verdict["outcome"] == "provisional"
+
+
+def test_v1_entries_keep_the_old_interpretation():
+    # No criteria_version: the v1 best-row rule still applies.
+    prereg = {
+        "criteria": {
+            **DEFAULT_CRITERIA,
+            "target": "fwd_direction",
+            "tickers_beating_min": 1,
+        }
+    }
+    verdict = evaluate_criteria(
+        prereg, {"results": [_lab_row(folds_beating=4, mean=0.02, minimum=0.01)]}
+    )
+    assert verdict["outcome"] == "provisional"
+    assert "criteria_version" not in verdict["metrics"]
+
+
+# --------------------------------------------------------------------------- holdout freeze
+
+
+def test_holdout_cutoff_is_a_frozen_timestamp_and_a_rotate_moves_it_forward(tmp_path):
+    from rl_crypto.experiments import holdout_cutoffs, resolve_holdout_start
+
+    ledger = tmp_path / "ledger.jsonl"
+    append_entry(
+        ledger,
+        {
+            "kind": "holdout_freeze",
+            "lineage": "H1",
+            "holdout_start": "2026-06-01T00:00:00Z",
+        },
+    )
+    entries = read_ledger(ledger)
+    assert resolve_holdout_start(entries, "H1") == "2026-06-01T00:00:00Z"
+    # Appending bars cannot move the recorded cutoff.
+    _candles(tmp_path, rows=50)
+    assert holdout_cutoffs(read_ledger(ledger)) == {"H1": "2026-06-01T00:00:00Z"}
+
+    append_entry(
+        ledger,
+        {
+            "kind": "holdout_rotate",
+            "lineage": "H1",
+            "holdout_start": "2026-07-01T00:00:00Z",
+        },
+    )
+    assert resolve_holdout_start(read_ledger(ledger), "H1") == "2026-07-01T00:00:00Z"
+
+
+def test_holdout_touches_count_runs_once_per_stable_lineage(tmp_path):
+    from rl_crypto.experiments import holdout_touches
+
+    ledger = tmp_path / "ledger.jsonl"
+    for run in ("r1", "r1", "r2"):
+        append_entry(
+            ledger,
+            {
+                "kind": "holdout",
+                "lineage": "H1",
+                "run_id": run,
+                "holdout_touched": True,
+            },
+        )
+    assert holdout_touches(read_ledger(ledger)) == {"H1": 2}
+
+
+def test_harness_void_is_cleared_by_a_later_human_entry(tmp_path):
+    from rl_crypto.experiments import harness_void
+
+    ledger = tmp_path / "ledger.jsonl"
+    append_entry(ledger, {"kind": "harness_void", "reason": "canary"})
+    assert harness_void(read_ledger(ledger)) is not None
+    append_entry(ledger, {"kind": "harness_clear", "reason": "fixed"})
+    assert harness_void(read_ledger(ledger)) is None

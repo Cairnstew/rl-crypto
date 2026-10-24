@@ -26,7 +26,7 @@ import itertools
 import json
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -188,11 +188,14 @@ def walk_forward(
     available = n - min_train
     folds = max(1, min(folds, available // min_test))
     test_size = max(min_test, available // folds)
+    # ``fwd_volatility`` spans max(horizon, 2) bars, so the purge must cover
+    # that longer label even when the configured horizon is 1.
+    purge = max(0, horizon, 2)
     split: list[tuple[tuple[Sample, ...], tuple[Sample, ...]]] = []
     for i in range(folds):
         train_end = min_train + i * test_size
         test_end = min(n, train_end + test_size)
-        train = tuple(samples[: max(0, train_end - max(0, horizon))])
+        train = tuple(samples[: max(0, train_end - purge)])
         test = tuple(samples[train_end:test_end])
         if len(train) >= min_test and test:
             split.append((train, test))
@@ -368,6 +371,253 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
     }
 
 
+# --------------------------------------------------------------------------- holdout / paired
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+
+def filter_rows_before(
+    rows: Sequence[Any], holdout_start: str | None
+) -> tuple[tuple[Any, ...], datetime | None]:
+    """Keep rows strictly before the frozen cutoff (never a fraction)."""
+    cutoff = parse_timestamp(holdout_start)
+    if cutoff is None:
+        return tuple(rows), None
+    kept = tuple(
+        row
+        for row in rows
+        if (stamp := parse_timestamp(row.timestamp)) is not None and stamp < cutoff
+    )
+    return kept, cutoff
+
+
+def sample_split(samples: Sequence[Sample], holdout_start: str | None) -> int | None:
+    """Index of the first sample at or after the cutoff (the holdout starts there)."""
+    cutoff = parse_timestamp(holdout_start)
+    if cutoff is None:
+        return None
+    for index, sample in enumerate(samples):
+        stamp = parse_timestamp(sample.timestamp)
+        if stamp is None or stamp >= cutoff:
+            return index
+    return len(samples)
+
+
+def _baseline_probability(labels: Sequence[float | None]) -> float:
+    values = [float(v) for v in labels if v is not None]
+    rate = float(np.mean(values)) if values else 0.5
+    # Match baseline_for: the better of always-up / always-down.
+    return max(rate, 1.0 - rate)
+
+
+def paired_target_rows(
+    bundle: Tier1Bundle,
+    target: str,
+    train: Sequence[Sample],
+    test: Sequence[Sample],
+) -> list[dict[str, Any]]:
+    """Per-row paired loss improvement: positive means the model beat the constant."""
+    model = bundle.targets.get(target)
+    if model is None:
+        return []
+    kind = TARGET_KINDS[target]
+    train_labels = [sample.targets.get(target) for sample in train]
+    baseline = (
+        float(np.mean([float(v) for v in train_labels if v is not None]))
+        if kind == "regression"
+        else _baseline_probability(train_labels)
+    )
+    if kind == "regression" and not any(v is not None for v in train_labels):
+        baseline = 0.0
+    out: list[dict[str, Any]] = []
+    for sample in test:
+        truth = sample.targets.get(target)
+        if truth is None:
+            continue
+        prediction = model.predict_row(sample.features)
+        if prediction is None:
+            continue
+        if kind == "regression":
+            model_loss = (float(truth) - float(prediction)) ** 2
+            baseline_loss = (float(truth) - baseline) ** 2
+        else:
+            probability = min(max(float(prediction), 1e-12), 1.0 - 1e-12)
+            constant = min(max(baseline, 1e-12), 1.0 - 1e-12)
+            model_loss = -(
+                float(truth) * math.log(probability)
+                + (1.0 - float(truth)) * math.log(1.0 - probability)
+            )
+            baseline_loss = -(
+                float(truth) * math.log(constant)
+                + (1.0 - float(truth)) * math.log(1.0 - constant)
+            )
+        out.append(
+            {
+                "timestamp": sample.timestamp,
+                "improvement": float(baseline_loss - model_loss),
+            }
+        )
+    return out
+
+
+def bootstrap_pooled(
+    rows_by_ticker: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    alpha: float,
+    seed: int,
+    block_bars: int,
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    """Time-block bootstrap over pooled paired improvements.
+
+    Blocks never span tickers, so the correlation between BTC/ETH/SOL is not
+    laundered into extra independent observations. The point estimate is the
+    mean over every pooled row; the interval comes from resampling whole
+    consecutive blocks with replacement.
+    """
+    blocks: list[list[float]] = []
+    per_ticker: dict[str, Any] = {}
+    for ticker, rows in rows_by_ticker.items():
+        values = [float(row["improvement"]) for row in rows]
+        if values:
+            per_ticker[str(ticker)] = {
+                "n": len(values),
+                "mean_improvement": float(np.mean(values)),
+            }
+        width = max(1, int(block_bars))
+        for start in range(0, len(values), width):
+            block = values[start : start + width]
+            if block:
+                blocks.append(block)
+    pooled_values = [value for block in blocks for value in block]
+    result: dict[str, Any] = {
+        "n": len(pooled_values),
+        "blocks": len(blocks),
+        "block_bars": int(block_bars),
+        "bootstrap_samples": int(bootstrap_samples),
+        "seed": int(seed),
+        "alpha": float(alpha),
+        "mean_improvement": float(np.mean(pooled_values)) if pooled_values else None,
+        "ci_low": None,
+        "ci_high": None,
+        "per_ticker": per_ticker,
+    }
+    # Too few blocks makes the percentile interval anti-conservative; refuse to
+    # manufacture a CI from a handful of blocks.
+    if len(blocks) < 8 or len(pooled_values) < 60:
+        result["insufficient"] = True
+        return result
+    rng = np.random.default_rng(int(seed))
+    means = np.empty(int(bootstrap_samples), dtype=float)
+    for index in range(int(bootstrap_samples)):
+        picks = rng.integers(0, len(blocks), size=len(blocks))
+        sampled = [blocks[pick] for pick in picks]
+        means[index] = float(np.mean([value for block in sampled for value in block]))
+    result["ci_low"] = float(np.quantile(means, alpha / 2.0))
+    result["ci_high"] = float(np.quantile(means, 1.0 - alpha / 2.0))
+    return result
+
+
+def pool_fold_improvements(
+    folds_by_ticker: Mapping[str, Sequence[float | None]], folds: int
+) -> list[float | None]:
+    out: list[float | None] = []
+    for index in range(folds):
+        values = [
+            float(series[index])
+            for series in folds_by_ticker.values()
+            if len(series) > index and series[index] is not None
+        ]
+        out.append(float(np.mean(values)) if values else None)
+    return out
+
+
+def transform_targets(
+    samples: Sequence[Sample],
+    target: str,
+    mode: str,
+    *,
+    seed: int,
+    shift_bars: int,
+) -> tuple[Sample, ...]:
+    """Destroy feature/label alignment without reading any new bar.
+
+    ``shuffle`` permutes the observed labels; ``shift`` moves labels backward
+    by ``shift_bars`` (a past label can never contain future information).
+    """
+    values = [sample.targets.get(target) for sample in samples]
+    if mode == "shuffle":
+        positions = [index for index, value in enumerate(values) if value is not None]
+        permuted = list(values)
+        rng = np.random.default_rng(int(seed))
+        order = rng.permutation(len(positions))
+        for destination, source in zip(positions, order, strict=True):
+            permuted[destination] = values[positions[int(source)]]
+        new_values = permuted
+    elif mode == "shift":
+        width = max(1, int(shift_bars))
+        new_values = [None] * len(values)
+        for index in range(width, len(values)):
+            new_values[index] = values[index - width]
+    else:  # pragma: no cover - guarded by the CLI choices
+        raise SystemExit(f"unknown control mode {mode!r}")
+    return tuple(
+        Sample(
+            timestamp=sample.timestamp,
+            features=sample.features,
+            targets={**sample.targets, target: new_values[index]},
+        )
+        for index, sample in enumerate(samples)
+    )
+
+
+def evaluate_control_ticker(
+    ticker: str,
+    config: Config,
+    target: str,
+    mode: str,
+    *,
+    folds: int,
+    holdout_start: str | None,
+    seed: int,
+    shift_bars: int,
+) -> dict[str, Any]:
+    rows, _ = filter_rows_before(load_ticker_rows(ticker), holdout_start)
+    samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    samples = transform_targets(
+        samples, target, mode, seed=seed, shift_bars=shift_bars
+    )
+    splits = walk_forward(samples, folds=folds, horizon=config.horizon)
+    paired: list[dict[str, Any]] = []
+    fold_improvements: list[float | None] = []
+    for train, test in splits:
+        bundle = train_tier1(
+            train,
+            horizon=config.horizon,
+            feature_names=config.feature_names,
+            targets=[target],
+            model_names=config.model_names,
+            holdout_fraction=0.0,
+        )
+        rows_out = paired_target_rows(bundle, target, train, test)
+        paired.extend(rows_out)
+        values = [float(row["improvement"]) for row in rows_out]
+        fold_improvements.append(float(np.mean(values)) if values else None)
+    return {
+        "ticker": ticker,
+        "paired_rows": paired,
+        "fold_improvements": fold_improvements,
+    }
+
+
 def evaluate_ticker(
     ticker: str,
     config: Config,
@@ -379,12 +629,17 @@ def evaluate_ticker(
     fee_bps: float,
     slippage_bps: float,
     reserve_final: float = 0.0,
+    holdout_start: str | None = None,
+    full_archive: bool = False,
+    primary_target: str | None = None,
 ) -> dict[str, Any]:
     rows = load_ticker_rows(ticker)
     if len(rows) < 120:
         return {"ticker": ticker, "error": f"only {len(rows)} candles"}
+    if holdout_start and not full_archive:
+        rows, _ = filter_rows_before(rows, holdout_start)
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
-    if reserve_final > 0.0:
+    if reserve_final > 0.0 and not holdout_start:
         keep = int(len(samples) * (1.0 - reserve_final))
         samples = samples[:keep]
     splits = walk_forward(samples, folds=folds, horizon=config.horizon)
@@ -395,6 +650,9 @@ def evaluate_ticker(
     mom_pos: list[float] = []
     always_pos: list[float] = []
     returns: list[float] = []
+    paired: list[dict[str, Any]] = []
+    fold_improvements: list[float | None] = []
+    paired_target = primary_target or (targets[0] if targets else None)
     for train, test in splits:
         bundle = train_tier1(
             train,
@@ -408,6 +666,11 @@ def evaluate_ticker(
             record = evaluate_target(bundle, target, train, test)
             if record is not None:
                 target_records[target].append(record)
+        if paired_target is not None:
+            rows_out = paired_target_rows(bundle, paired_target, train, test)
+            paired.extend(rows_out)
+            values = [float(row["improvement"]) for row in rows_out]
+            fold_improvements.append(float(np.mean(values)) if values else None)
         m, mom, always, rets = _policy_rows(bundle, test, threshold=threshold, position=position)
         model_pos.extend(m)
         mom_pos.extend(mom)
@@ -425,15 +688,25 @@ def evaluate_ticker(
             always_pos, returns, fee_bps=fee_bps, slippage_bps=slippage_bps
         ),
     }
+    paired_values = [float(row["improvement"]) for row in paired]
     return {
         "ticker": ticker,
         "config": config.as_dict(),
         "folds": len(splits),
         "samples": len(samples),
         "reserved_final": reserve_final,
+        "holdout_start": holdout_start,
+        "diagnostic_full_archive": bool(full_archive),
         "span": sample_span(samples),
         "targets": aggregated,
         "economic": economic,
+        "paired_target": paired_target,
+        "paired": {
+            "n": len(paired_values),
+            "mean_improvement": float(np.mean(paired_values)) if paired_values else None,
+        },
+        "paired_rows": paired,
+        "fold_improvements": fold_improvements,
     }
 
 
@@ -519,6 +792,89 @@ def _save(action: str, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _pool_results(
+    results: Sequence[dict[str, Any]],
+    *,
+    target: str,
+    folds: int,
+    alpha: float,
+    seed: int,
+    block_bars: int,
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    rows_by_ticker = {
+        str(result["ticker"]): list(result.get("paired_rows") or [])
+        for result in results
+        if "error" not in result
+    }
+    folds_by_ticker = {
+        str(result["ticker"]): list(result.get("fold_improvements") or [])
+        for result in results
+        if "error" not in result
+    }
+    pooled = bootstrap_pooled(
+        rows_by_ticker,
+        alpha=alpha,
+        seed=seed,
+        block_bars=block_bars,
+        bootstrap_samples=bootstrap_samples,
+    )
+    pooled["fold_improvements"] = pool_fold_improvements(folds_by_ticker, folds)
+    pooled["target"] = target
+    for result in results:
+        result.pop("paired_rows", None)
+        result.pop("fold_improvements", None)
+    return pooled
+
+
+def _controls_for(
+    tickers: Sequence[str],
+    config: Config,
+    target: str,
+    *,
+    folds: int,
+    holdout_start: str | None,
+    seed: int,
+    shift_bars: int,
+    alpha: float,
+    block_bars: int,
+    bootstrap_samples: int,
+    modes: Sequence[str],
+) -> dict[str, Any]:
+    controls: dict[str, Any] = {}
+    for mode in modes:
+        per_ticker = {
+            ticker: evaluate_control_ticker(
+                ticker,
+                config,
+                target,
+                mode,
+                folds=folds,
+                holdout_start=holdout_start,
+                seed=seed,
+                shift_bars=shift_bars,
+            )
+            for ticker in tickers
+        }
+        pooled = bootstrap_pooled(
+            {ticker: row["paired_rows"] for ticker, row in per_ticker.items()},
+            alpha=alpha,
+            seed=seed,
+            block_bars=block_bars,
+            bootstrap_samples=bootstrap_samples,
+        )
+        pooled["fold_improvements"] = pool_fold_improvements(
+            {ticker: row["fold_improvements"] for ticker, row in per_ticker.items()},
+            folds,
+        )
+        controls[mode] = {
+            "pooled": pooled,
+            "per_ticker": pooled.get("per_ticker") or {},
+            "shift_bars": int(shift_bars) if mode == "shift" else None,
+        }
+    return controls
+
+
 def evaluate_action(args: argparse.Namespace) -> int:
     config = Config(
         name=f"{args.feature_set}+{args.model_set}+h{args.horizon}",
@@ -528,6 +884,11 @@ def evaluate_action(args: argparse.Namespace) -> int:
     )
     tickers = resolve_tickers(args.tickers)
     targets = resolve_targets(args.targets)
+    primary_target = args.primary_target or (
+        "fwd_direction" if "fwd_direction" in targets else targets[0]
+    )
+    if primary_target not in targets:
+        raise SystemExit(f"primary target {primary_target!r} is not in --targets")
     results = [
         evaluate_ticker(
             ticker,
@@ -538,13 +899,49 @@ def evaluate_action(args: argparse.Namespace) -> int:
             position=args.position,
             fee_bps=args.fee_bps,
             slippage_bps=args.slippage_bps,
+            holdout_start=args.holdout_start,
+            full_archive=args.full_archive,
+            primary_target=primary_target,
         )
         for ticker in tickers
     ]
+    pooled = _pool_results(
+        results,
+        target=primary_target,
+        folds=args.folds,
+        alpha=args.alpha,
+        seed=args.seed,
+        block_bars=args.bootstrap_block,
+        bootstrap_samples=args.bootstrap_samples,
+    )
+    controls: dict[str, Any] = {}
+    if args.controls != "none":
+        modes = ["shuffle", "shift"] if args.controls == "both" else [args.controls]
+        controls = _controls_for(
+            tickers,
+            config,
+            primary_target,
+            folds=args.folds,
+            holdout_start=args.holdout_start,
+            seed=args.seed,
+            shift_bars=args.shift_bars,
+            alpha=args.alpha,
+            block_bars=args.bootstrap_block,
+            bootstrap_samples=args.bootstrap_samples,
+            modes=modes,
+        )
     payload = {
         "action": "evaluate",
         "config": config.as_dict(),
+        "primary": config.name,
+        "primary_target": primary_target,
         "targets": list(targets),
+        "holdout_start": args.holdout_start,
+        "diagnostic_full_archive": bool(args.full_archive),
+        "seed": int(args.seed),
+        "alpha": float(args.alpha),
+        "pooled": pooled,
+        "controls": controls,
         "results": results,
         "summary": {
             "tickers": len(results),
@@ -555,6 +952,9 @@ def evaluate_action(args: argparse.Namespace) -> int:
                 for t in (r.get("targets") or {}).values()
                 if t.get("beats_ratio", 0) >= 0.6
             ),
+            "pooled_mean": pooled.get("mean_improvement"),
+            "ci_low": pooled.get("ci_low"),
+            "ci_high": pooled.get("ci_high"),
         },
     }
     path = _save("evaluate", payload)
@@ -580,6 +980,19 @@ def evaluate_action(args: argparse.Namespace) -> int:
             for t in (r.get("targets") or {}).values()
         ],
     )
+    print("\npooled paired improvement (primary config; time-block bootstrap):")
+    print(
+        f"  mean {pooled.get('mean_improvement')}  "
+        f"CI[{pooled.get('ci_low')}, {pooled.get('ci_high')}]  "
+        f"n={pooled.get('n')} blocks={pooled.get('blocks')} seed={pooled.get('seed')}"
+    )
+    if controls:
+        for name, block in controls.items():
+            control = block.get("pooled") or {}
+            print(
+                f"  {name} control: mean {control.get('mean_improvement')}  "
+                f"CI[{control.get('ci_low')}, {control.get('ci_high')}]"
+            )
     print("\nafter-cost policy (direction-preferred; 10 bps + 5 bps per side):")
     _print_table(
         ["ticker", "bars", "trades", "sharpe", "ret", "dd", "mom", "always"],
@@ -647,8 +1060,15 @@ def _rank_key(result: dict[str, Any], primary: str) -> tuple[Any, ...]:
 def sweep_action(args: argparse.Namespace) -> int:
     tickers = resolve_tickers(args.tickers) if args.tickers else ("BTC/USD", "ETH/USD", "SOL/USD")
     targets = resolve_targets(args.targets)
-    primary = "fwd_direction" if "fwd_direction" in targets else targets[0]
+    primary_target = args.primary_target or (
+        "fwd_direction" if "fwd_direction" in targets else targets[0]
+    )
     configs = _configs(args)
+    primary_config = args.primary_config or configs[0].name
+    if primary_config not in {config.name for config in configs}:
+        raise SystemExit(
+            f"primary config {primary_config!r} is not one of {[c.name for c in configs]}"
+        )
     results: list[dict[str, Any]] = []
     for ticker in tickers:
         for config in configs:
@@ -662,20 +1082,41 @@ def sweep_action(args: argparse.Namespace) -> int:
                 fee_bps=args.fee_bps,
                 slippage_bps=args.slippage_bps,
                 reserve_final=0.2,
+                holdout_start=args.holdout_start,
+                primary_target=primary_target,
             )
-            result["rank"] = _rank_key(result, primary)
+            result["primary"] = config.name == primary_config
+            result["rank"] = _rank_key(result, primary_target)
             results.append(result)
+    primary_rows = [r for r in results if r.get("primary") and "error" not in r]
+    pooled = _pool_results(
+        primary_rows,
+        target=primary_target,
+        folds=args.folds,
+        alpha=args.alpha,
+        seed=args.seed,
+        block_bars=args.bootstrap_block,
+        bootstrap_samples=args.bootstrap_samples,
+    )
+    for result in results:
+        if not result.get("primary"):
+            result.pop("paired_rows", None)
+            result.pop("fold_improvements", None)
     ranked = sorted(results, key=lambda r: r.get("rank", ()), reverse=True)
     top = [r for r in ranked if r.get("rank", (0,))[0]][: args.limit]
     candidates: list[str] = []
     for result in top:
+        if not result.get("primary"):
+            continue
         ticker = result["ticker"]
         config_name = result["config"]["name"]
         rows = load_ticker_rows(ticker)
+        if args.holdout_start:
+            rows, _ = filter_rows_before(rows, args.holdout_start)
         samples = build_samples(
             rows, horizon=result["config"]["horizon"], interval_seconds=INTERVAL_SECONDS
         )
-        split = int(len(samples) * 0.8)
+        split = len(samples) if args.holdout_start else int(len(samples) * 0.8)
         if split < 100:
             continue
         config = next(c for c in configs if c.name == config_name)
@@ -697,10 +1138,18 @@ def sweep_action(args: argparse.Namespace) -> int:
     payload = {
         "action": "sweep",
         "tickers": list(tickers),
+        "targets": list(targets),
+        "primary": primary_config,
+        "primary_target": primary_target,
+        "holdout_start": args.holdout_start,
+        "seed": int(args.seed),
+        "alpha": float(args.alpha),
+        "pooled": pooled,
         "configs": [c.as_dict() for c in configs],
         "results": results,
         "top": top,
         "candidates": candidates,
+        "primary_candidates": candidates,
         "summary": {
             "tickers": len(tickers),
             "configs": len(configs),
@@ -708,13 +1157,25 @@ def sweep_action(args: argparse.Namespace) -> int:
             "gated": sum(1 for r in results if r.get("rank", (0,))[0]),
             "candidates": len(candidates),
             "reserved_final": 0.2,
+            "holdout_start": args.holdout_start,
+            "pooled_mean": pooled.get("mean_improvement"),
+            "ci_low": pooled.get("ci_low"),
         },
     }
     path = _save("sweep", payload)
     if args.json:
         print(json.dumps(payload, indent=2, default=str))
         return 0
-    print("sweep evaluates the first 80%; the final 20% is reserved for promote.")
+    holdout = (
+        f"before {args.holdout_start}"
+        if args.holdout_start
+        else "the first 80% (final 20% reserved)"
+    )
+    print(f"sweep evaluates {holdout}; only {primary_config} is verdict-eligible.")
+    print(
+        f"pooled paired: mean {pooled.get('mean_improvement')} "
+        f"CI[{pooled.get('ci_low')}, {pooled.get('ci_high')}]"
+    )
     if not top:
         print("No config beat the baseline consistently across folds.")
         print(
@@ -723,14 +1184,26 @@ def sweep_action(args: argparse.Namespace) -> int:
         print(f"artifact: {path}")
         return 0
     _print_table(
-        ["ticker", "config", "beats", "min%", "mean%", "sharpe", "ret", "dd", "candidate"],
+        [
+            "ticker",
+            "config",
+            "primary",
+            "beats",
+            "min%",
+            "mean%",
+            "sharpe",
+            "ret",
+            "dd",
+            "candidate",
+        ],
         [
             [
                 r["ticker"],
                 r["config"]["name"],
-                f"{r['targets'][primary]['folds_beating']}/{r['targets'][primary]['folds']}",
-                f"{100 * (r['targets'][primary]['min_improvement'] or 0):+.2f}",
-                f"{100 * (r['targets'][primary]['mean_improvement'] or 0):+.2f}",
+                "yes" if r.get("primary") else "—",
+                f"{r['targets'][primary_target]['folds_beating']}/{r['targets'][primary_target]['folds']}",
+                f"{100 * (r['targets'][primary_target]['min_improvement'] or 0):+.2f}",
+                f"{100 * (r['targets'][primary_target]['mean_improvement'] or 0):+.2f}",
                 f"{r['economic']['model']['sharpe']:.2f}"
                 if r["economic"]["model"]["sharpe"] is not None
                 else "—",
@@ -833,9 +1306,16 @@ def promote_action(args: argparse.Namespace) -> int:
     if len(rows) < 120:
         raise SystemExit(f"{ticker}: only {len(rows)} candles")
     samples = build_samples(rows, horizon=candidate.horizon, interval_seconds=INTERVAL_SECONDS)
-    split = int(len(samples) * 0.8)
+    if args.holdout_start:
+        split = sample_split(samples, args.holdout_start)
+        if split is None or split < 100:
+            raise SystemExit(f"{ticker}: not enough samples before the holdout cutoff")
+    else:
+        split = int(len(samples) * 0.8)
     if split < 100:
         raise SystemExit(f"{ticker}: not enough samples for a final holdout ({split})")
+    if split >= len(samples):
+        raise SystemExit(f"{ticker}: the holdout cutoff is at or after the end of the archive")
     try:
         current = load_bundle(default_bundle_path(ticker, directory=ROOT / "models"))
     except FileNotFoundError:
@@ -848,9 +1328,31 @@ def promote_action(args: argparse.Namespace) -> int:
         "slippage_bps": args.slippage_bps,
     }
     cand_view = _bundle_view(candidate, samples, targets, **common)
-    cur_view = _bundle_view(current, samples, targets, **common) if current is not None else None
+    deployed_view = (
+        _bundle_view(current, samples, targets, **common) if current is not None else None
+    )
+    champion_view = deployed_view
+    comparison_basis = "deployed-bundle"
+    if current is not None and args.champion_retrain and args.holdout_start:
+        # The deployed bundle may have trained on the holdout. Retrain its
+        # configuration on exactly the pre-cutoff slice and compare against that.
+        model_names = {
+            target: current.targets[target].model.to_dict().get("kind")
+            for target in targets
+            if target in current.targets
+        }
+        champion_bundle = train_tier1(
+            samples[:split],
+            horizon=current.horizon,
+            feature_names=current.feature_names,
+            targets=list(targets),
+            model_names=model_names,
+            holdout_fraction=0.0,
+        )
+        champion_view = _bundle_view(champion_bundle, samples, targets, **common)
+        comparison_basis = "retrained-champion"
     primary = "fwd_direction" if "fwd_direction" in targets else targets[0]
-    reasons = promotion_gate(cand_view, cur_view, primary)
+    reasons = promotion_gate(cand_view, champion_view, primary)
     if candidate.feature_version != FEATURE_VERSION:
         reasons.append(
             f"candidate feature_version {candidate.feature_version!r} != {FEATURE_VERSION!r}"
@@ -880,16 +1382,25 @@ def promote_action(args: argparse.Namespace) -> int:
         "current_bundle": str(default_bundle_path(ticker, directory=ROOT / "models")),
         "apply": bool(args.apply),
         "primary": primary,
+        "holdout_start": args.holdout_start,
+        "comparison_basis": comparison_basis,
         "candidate_view": cand_view,
-        "current_view": cur_view,
+        "champion_view": champion_view,
+        "deployed_view": deployed_view,
         "recommendation": recommendation,
         "conservative_note": (
-            "The current bundle may have been trained on data that includes this "
-            "holdout, so the gate is conservative in the candidate's favour."
+            "The deployed bundle may have been trained on data that includes this "
+            "holdout; it is informational only. The gate uses the champion "
+            "retrained on the pre-cutoff slice when --holdout-start is supplied."
         ),
         "reasons": reasons,
         "passed": not reasons,
-        "summary": {"passed": not reasons, "ticker": ticker, "reasons": reasons},
+        "summary": {
+            "passed": not reasons,
+            "ticker": ticker,
+            "reasons": reasons,
+            "comparison_basis": comparison_basis,
+        },
     }
     if args.apply and not reasons:
         current_path = default_bundle_path(ticker, directory=ROOT / "models")
@@ -919,7 +1430,7 @@ def promote_action(args: argparse.Namespace) -> int:
     for reason in reasons:
         print(f"  - {reason}")
     print(f"durable:   {len(candidate.feature_names)} features, horizon {candidate.horizon}")
-    print("note:      the current bundle may have seen this holdout; the gate is conservative")
+    print(f"basis:     {payload['comparison_basis']} (deployed bundle is informational)")
     if args.apply:
         print(f"applied:   {'yes' if not reasons else 'no (gate failed)'}")
         if payload.get("written"):
@@ -1025,20 +1536,32 @@ Common arguments (evaluate / sweep / promote):
   --position long-only|long-short
   --fee-bps N                   per-side fee (default 10)
   --slippage-bps N              per-side slippage (default 5)
+  --holdout-start ISO           frozen timestamp cutoff (strictly before it)
+  --seed N                      controls + bootstrap seed (default 0)
+  --alpha F                     CI alpha (driver passes alpha/trials)
+  --bootstrap-samples N         block-bootstrap draws (default 1000)
+  --bootstrap-block N           bars per block (default 24)
+  --primary-target TARGET       target of record (default fwd_direction)
 
 Action-specific:
   status    --tickers, --json
   evaluate  --feature-set all|market|core|price (default all)
             --model-set reference|baseline (default reference)
             --horizon N (default 1; the economic proxy is only honest at 1)
+            --controls none|shuffle|shift|both
+            --shift-bars N (default 24)
+            --full-archive (diagnostic only; cannot feed a verdict)
             --limit N (default 20)
   sweep     --feature-sets all,market,core,price
             --model-sets reference,baseline
             --horizons 1
             --max-configs N (default 16)
+            --primary-config NAME (the only verdict-eligible config)
             --limit N (default 20)
   promote   --candidate PATH (required)
             --ticker BTC/USD (inferred from the filename when possible)
+            --holdout-start ISO (retrain the champion on the pre-cutoff slice)
+            --no-champion-retrain (compare against the deployed bundle)
             --apply (write models/<slug>.json only after a passing gate)
   report    --limit N (default 10)
 
@@ -1069,11 +1592,17 @@ def build_parser() -> argparse.ArgumentParser:
     def common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--tickers", nargs="+", default=None)
         p.add_argument("--targets", nargs="+", default=None)
+        p.add_argument("--primary-target", default=None)
         p.add_argument("--folds", type=int, default=4)
         p.add_argument("--threshold", type=float, default=0.55)
         p.add_argument("--position", choices=("long-only", "long-short"), default="long-only")
         p.add_argument("--fee-bps", type=float, default=10.0)
         p.add_argument("--slippage-bps", type=float, default=5.0)
+        p.add_argument("--holdout-start", default=None)
+        p.add_argument("--seed", type=int, default=0)
+        p.add_argument("--alpha", type=float, default=0.05)
+        p.add_argument("--bootstrap-samples", type=int, default=1000)
+        p.add_argument("--bootstrap-block", type=int, default=24)
         p.add_argument("--json", action="store_true")
         p.add_argument("--limit", type=int, default=20)
 
@@ -1082,6 +1611,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--feature-set", default="all")
     evaluate.add_argument("--model-set", default="reference")
     evaluate.add_argument("--horizon", type=int, default=1)
+    evaluate.add_argument("--full-archive", action="store_true")
+    evaluate.add_argument(
+        "--controls", choices=("none", "shuffle", "shift", "both"), default="none"
+    )
+    evaluate.add_argument("--shift-bars", type=int, default=24)
     evaluate.set_defaults(func=evaluate_action)
 
     sweep = sub.add_parser("sweep", help="controlled feature/model/horizon experiments")
@@ -1090,6 +1624,7 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--model-sets", default="reference,baseline")
     sweep.add_argument("--horizons", default="1")
     sweep.add_argument("--max-configs", type=int, default=16)
+    sweep.add_argument("--primary-config", default=None)
     sweep.set_defaults(func=sweep_action)
 
     promote = sub.add_parser("promote", help="validate a candidate on the final holdout")
@@ -1097,6 +1632,12 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--ticker", default=None)
     promote.add_argument("--tickers", nargs="+", default=None)
     promote.add_argument("--targets", nargs="+", default=None)
+    promote.add_argument("--holdout-start", default=None)
+    promote.add_argument("--seed", type=int, default=0)
+    promote.add_argument(
+        "--champion-retrain", dest="champion_retrain", action="store_true", default=True
+    )
+    promote.add_argument("--no-champion-retrain", dest="champion_retrain", action="store_false")
 
     promote.add_argument("--threshold", type=float, default=0.55)
     promote.add_argument("--position", choices=("long-only", "long-short"), default="long-only")
