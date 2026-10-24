@@ -43,12 +43,12 @@ hypothesis. Start from:
   `audit.json`, `lab-*.json`
 - `git -C WORKTREE status/log/diff`
 
-`RUN_DIR/report.md` is written by the orchestrator *after* this review returns
-(`run_review()` runs before `build_report()`), so it will normally be absent.
-Do not treat that as a failure; judge honesty from `lead.json`, `diagnosis.md`,
-the lab JSON and the ledger, and say so if `report.md` happens to exist yet.
-Note that the root `lab-*.json` capture is stdout plus a `--- STDERR ---`
-marker and may not parse as JSON; the canonical payload is `RUN_DIR/lab/*.json`.
+`RUN_DIR/report.md` is written as a **provisional** report before this review
+runs, so read it. The orchestrator rebuilds the final report after `run_review()`
+returns, adding your review and the post-commit state. A provisional report
+that disagrees with the lab JSON or the ledger is a finding, not a reason to
+skip the file. The canonical lab payload is `RUN_DIR/lab/*.json`; the root
+`lab-*.json` copy is a convenience and may be a non-JSON capture.
 
 ## Audit checklist
 

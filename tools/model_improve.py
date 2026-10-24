@@ -46,22 +46,29 @@ from pathlib import Path
 from typing import Any
 
 from rl_crypto.experiments import (
+    PROTECTED_FILES,
     Hypothesis,
     append_entry,
     build_preregistration,
+    criteria_version,
     evaluate_criteria,
     git_state,
+    harness_void,
+    holdout_cutoffs,
     holdout_touches,
     iso,
     load_json,
     load_queue,
+    protected_digest,
     read_ledger,
     render_hypotheses,
     render_scoreboard,
+    resolve_holdout_start,
     select_hypothesis,
     trial_counts,
     write_if_changed,
 )
+from rl_crypto.features import FEATURE_VERSION
 
 SCHEMA = "rl-crypto/model-improvement/1"
 ROLE_AGENTS = {
@@ -87,17 +94,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # One knob for every role and teammate. Override per role only when a
     # specific role genuinely needs a different model.
     "model": "opencode/deepseek-v4.1-flash-free",
-    "models": {},
+    # A per-role exception is deliberate: the auditor gets a different model
+    # family so a single model's blind spots cannot approve its own work.
+    "models": {"auditor": "opencode/claude-haiku-4-5"},
     "budgets": {
         "maxConfigs": 8,
         "folds": 4,
         "roleTimeoutSeconds": 1800,
+        "labTimeoutSeconds": 3600,
         "maxRolesPerRun": 6,
         "maxCostUsdPerRun": 5.0,
+        "maxTokensPerRun": 2_000_000,
+        "maxWallClockSeconds": 7200,
+        "bootstrapSamples": 1000,
+        "bootstrapBlockBars": 24,
     },
     "review": {"enabled": True, "require": False},
     "team": {"maxLeadTurns": 3},
     "promotion": {"apply": False, "requiresPromoteDryRun": True},
+    "holdout": {"start": None},
+    "noNewInformation": {"minNewBars": 24},
     "scope": {
         "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
         "targets": [
@@ -267,6 +283,224 @@ def _staleness(last: str | None) -> float | None:
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=UTC)
     return round((datetime.now(UTC) - stamp).total_seconds() / 3600.0, 2)
+
+
+# --------------------------------------------------------------------------- holdout freeze
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+
+def archive_timestamps(root: Path, ticker: str) -> list[str]:
+    slug = str(ticker).replace("/", "-").replace(" ", "-").lower()
+    path = root / "data" / slug / "candles.jsonl"
+    if not path.exists():
+        return []
+    stamps: list[str] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                stamp = json.loads(line).get("timestamp")
+            except json.JSONDecodeError:
+                continue
+            if stamp:
+                stamps.append(str(stamp))
+    return sorted(stamps)
+
+
+def default_holdout_start(root: Path, tickers: Sequence[str]) -> str | None:
+    """A timestamp at each ticker's 80th percentile, minimum across tickers.
+
+    The minimum guarantees every scoped ticker keeps at least 20% of its bars
+    for promotion. It is computed once and then frozen in the ledger, so later
+    appends never move it.
+    """
+    candidates: list[str] = []
+    for ticker in tickers:
+        stamps = archive_timestamps(root, ticker)
+        if not stamps:
+            continue
+        index = min(len(stamps) - 1, int(len(stamps) * 0.8))
+        candidates.append(stamps[index])
+    return min(candidates) if candidates else None
+
+
+def resolve_or_compute_holdout(
+    root: Path,
+    config: Mapping[str, Any],
+    hypothesis: Hypothesis,
+    entries: Sequence[Mapping[str, Any]],
+) -> str | None:
+    existing = resolve_holdout_start(entries, hypothesis.stable_lineage)
+    if existing:
+        return existing
+    override = os.environ.get("RL_MODEL_IMPROVE_HOLDOUT_START")
+    if override:
+        return override
+    configured = (config.get("holdout") or {}).get("start")
+    if configured:
+        return str(configured)
+    return default_holdout_start(root, hypothesis.experiment.get("tickers") or [])
+
+
+# --------------------------------------------------------------------------- no-new-information
+
+
+def previous_family_prereg(
+    entries: Sequence[Mapping[str, Any]], family: str
+) -> Mapping[str, Any] | None:
+    for entry in reversed(entries):
+        if entry.get("kind") == "preregister" and entry.get("family") == family:
+            return entry
+    return None
+
+
+def no_new_information_reason(
+    root: Path,
+    hypothesis: Hypothesis,
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    min_new_bars: int,
+) -> str | None:
+    """Block an improvement rerun with the same data, config and feature set."""
+    if (hypothesis.criteria or {}).get("kind") != "improvement":
+        return None
+    previous = previous_family_prereg(entries, hypothesis.family)
+    if previous is None:
+        return None
+    changed: list[str] = []
+    if previous.get("feature_version") and previous.get("feature_version") != FEATURE_VERSION:
+        changed.append("feature_version")
+    if previous.get("config_hash") != sha_of(hypothesis.experiment):
+        changed.append("config")
+    deltas: dict[str, int] = {}
+    for ticker in hypothesis.experiment.get("tickers") or []:
+        previous_tickers = (previous.get("data") or {}).get("tickers") or {}
+        before = int((previous_tickers.get(ticker) or {}).get("rows") or 0)
+        after = len(archive_timestamps(root, ticker))
+        deltas[str(ticker)] = after - before
+    if deltas and min(deltas.values()) >= int(min_new_bars):
+        changed.append("bars")
+    if changed:
+        return None
+    return (
+        "no-new-information: same feature version, config and fewer than "
+        f"{min_new_bars} new bars per ticker since the last {hypothesis.family} trial "
+        f"({deltas or 'no data'})"
+    )
+
+
+def sha_of(value: Any) -> str:
+    import hashlib
+
+    blob = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------- budgets / protected
+
+
+def usage_from_logs(ctx: Context) -> dict[str, Any]:
+    tokens = 0
+    cost = 0.0
+    with_usage = 0
+    logs = ctx.run_dir / "logs"
+    if logs.exists():
+        for path in sorted(logs.glob("*.jsonl")):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "step_finish":
+                    continue
+                part = event.get("part") or {}
+                with_usage += 1
+                tokens += int((part.get("tokens") or {}).get("total") or 0)
+                cost += float(part.get("cost") or 0.0)
+    return {
+        "tokens": tokens,
+        "costUsd": round(cost, 6),
+        "stepFinishes": with_usage,
+        "roles": len(ctx.roles),
+        "teamSpawns": int((ctx.usage or {}).get("teamSpawns") or 0),
+    }
+
+
+def ceiling_reason(ctx: Context) -> str | None:
+    budgets = ctx.config.get("budgets") or {}
+    usage = usage_from_logs(ctx)
+    ctx.usage = {**usage, **(ctx.usage or {})}
+    elapsed = time.time() - ctx.started
+    max_wall = float(budgets.get("maxWallClockSeconds", 7200))
+    if elapsed > max_wall:
+        return f"wall-clock ceiling exceeded: {elapsed:.0f}s > {max_wall:.0f}s"
+    max_tokens = int(budgets.get("maxTokensPerRun", 2_000_000))
+    if usage["tokens"] > max_tokens:
+        return f"token ceiling exceeded: {usage['tokens']} > {max_tokens}"
+    max_cost = float(budgets.get("maxCostUsdPerRun", 5.0))
+    if usage["costUsd"] > max_cost:
+        return f"cost ceiling exceeded: ${usage['costUsd']:.4f} > ${max_cost:.2f}"
+    max_roles = int(budgets.get("maxRolesPerRun", 6))
+    total_roles = usage["roles"] + usage["teamSpawns"]
+    if total_roles > max_roles:
+        return f"role ceiling exceeded: {total_roles} > {max_roles}"
+    return None
+
+
+def protected_changes(ctx: Context) -> list[str]:
+    base = str(((ctx.prereg or {}).get("git") or {}).get("sha") or "")
+    changed: set[str] = set()
+    if base:
+        result = _git(ctx.repo, "diff", "--name-only", f"{base}..HEAD")
+        if result.returncode == 0:
+            changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+    status = _git(ctx.repo, "status", "--porcelain").stdout
+    for line in status.splitlines():
+        path = line[3:].strip().strip('"')
+        if path:
+            changed.add(path)
+    return sorted(changed & set(PROTECTED_FILES))
+
+
+def extract_team_events(stdout: str, path: Path) -> int:
+    """Persist Ensemble tool events so a teammate's spawn can be audited later."""
+    events: list[str] = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        part = event.get("part") or {}
+        tool = str(part.get("tool") or "")
+        if tool.startswith("team_"):
+            events.append(json.dumps(event, sort_keys=True))
+    path.write_text("\n".join(events) + ("\n" if events else ""), encoding="utf-8")
+    return len(events)
+
+
+def team_spawn_count(stdout: str) -> int:
+    count = 0
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        part = event.get("part") or {}
+        if str(part.get("tool") or "") == "team_spawn":
+            count += 1
+    return count
 
 
 # --------------------------------------------------------------------------- preflight
@@ -457,6 +691,20 @@ def preflight(
         "tools/forward_score.py (forward confirmation)",
         blocking=False,
     )
+    schedule_armed = os.environ.get("RL_MODEL_IMPROVE_ENABLED", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    add(
+        "schedule-forward-score",
+        not (schedule_armed and not (root / "tools" / "forward_score.py").exists()),
+        "the schedule is off; forward confirmation is unavailable"
+        if not schedule_armed
+        else "RL_MODEL_IMPROVE_ENABLED is set but tools/forward_score.py is missing "
+        "— keep the weekly schedule off until it lands on main",
+        blocking=False,
+    )
 
     blocking = [check for check in checks if check.blocking and not check.ok]
     warnings = [check for check in checks if not check.blocking and not check.ok]
@@ -490,6 +738,12 @@ class Context:
     roles: list[dict[str, Any]] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
     review: dict[str, Any] | None = None
+    run_type: str = "experiment"
+    lineage: str = ""
+    holdout_start: str | None = None
+    seed: int = 0
+    started: float = field(default_factory=time.time)
+    usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def repo(self) -> Path:
@@ -696,6 +950,17 @@ def run_role(
 ) -> dict[str, Any]:
     if ctx.executor == "mechanical":
         return {"role": role, "status": "skipped", "reason": "mechanical executor"}
+    max_roles = int((ctx.config.get("budgets") or {}).get("maxRolesPerRun", 6))
+    if len(ctx.roles) >= max_roles:
+        record = {
+            "role": role,
+            "status": "failed",
+            "reason": f"role ceiling reached ({len(ctx.roles)} >= {max_roles})",
+            "turn": turn,
+        }
+        ctx.roles.append(record)
+        _write_json(ctx.artifact("roles.json"), ctx.roles)
+        return record
     agent = ROLE_AGENTS[role]
     model = resolve_model(ctx.config, role)
     timeout = float((ctx.config.get("budgets") or {}).get("roleTimeoutSeconds", 1800))
@@ -743,6 +1008,11 @@ def run_role(
     log_name = f"{role}.jsonl" if turn == 1 else f"{role}-turn{turn}.jsonl"
     log = ctx.artifact(f"logs/{log_name}")
     log.write_text(stdout + "\n--- STDERR ---\n" + stderr, encoding="utf-8")
+    if role == "lead":
+        extract_team_events(stdout, ctx.artifact("team-events.jsonl"))
+        ctx.usage["teamSpawns"] = max(
+            int(ctx.usage.get("teamSpawns") or 0), team_spawn_count(stdout)
+        )
 
     missing = [name for name in REQUIRED_ARTIFACTS[role] if not (ctx.run_dir / name).exists()]
     record: dict[str, Any] = {
@@ -826,15 +1096,49 @@ def _lab_timeout(ctx: Context) -> float:
     return float(budgets.get("labTimeoutSeconds", 3600))
 
 
+def primary_config_name(experiment: Mapping[str, Any]) -> str:
+    primary = experiment.get("primary")
+    if isinstance(primary, str) and primary:
+        return primary
+    if isinstance(primary, Mapping):
+        return (
+            f"{primary.get('featureSet') or 'all'}+"
+            f"{primary.get('modelSet') or 'reference'}+"
+            f"h{int(primary.get('horizon') or 1)}"
+        )
+    if experiment.get("featureSet") or experiment.get("modelSet"):
+        return (
+            f"{experiment.get('featureSet') or 'all'}+"
+            f"{experiment.get('modelSet') or 'reference'}+"
+            f"h{int(experiment.get('horizon') or 1)}"
+        )
+    feature_sets = experiment.get("featureSets") or ["all"]
+    model_sets = experiment.get("modelSets") or ["reference"]
+    horizons = experiment.get("horizons") or [1]
+    return f"{feature_sets[0]}+{model_sets[0]}+h{int(horizons[0])}"
+
+
+def adjusted_alpha(criteria: Mapping[str, Any], trial_index: int) -> float:
+    alpha = float(criteria.get("alpha", 0.05))
+    trials = max(1, int(trial_index or 1))
+    return alpha / trials
+
+
 def _common_lab_args(ctx: Context, experiment: Mapping[str, Any]) -> list[str]:
     scope = ctx.config.get("scope") or {}
+    budgets = ctx.config.get("budgets") or {}
+    criteria = (ctx.prereg or {}).get("criteria") or {}
+    trial_index = int((ctx.prereg or {}).get("trial_index") or 1)
+    alpha = adjusted_alpha(criteria, trial_index) if criteria_version(criteria) >= 2 else 0.05
     args = [
         "--tickers",
         *[str(t) for t in experiment.get("tickers") or scope.get("tickers") or []],
         "--targets",
         *[str(t) for t in experiment.get("targets") or scope.get("targets") or []],
+        "--primary-target",
+        str(criteria.get("target") or "fwd_direction"),
         "--folds",
-        str(int(experiment.get("folds") or (ctx.config.get("budgets") or {}).get("folds", 4))),
+        str(int(experiment.get("folds") or budgets.get("folds", 4))),
         "--threshold",
         str(float(experiment.get("threshold") or scope.get("threshold", 0.55))),
         "--position",
@@ -843,11 +1147,139 @@ def _common_lab_args(ctx: Context, experiment: Mapping[str, Any]) -> list[str]:
         str(float(experiment.get("feeBps") or scope.get("feeBps", 10.0))),
         "--slippage-bps",
         str(float(experiment.get("slippageBps") or scope.get("slippageBps", 5.0))),
+        "--seed",
+        str(int(ctx.seed or ctx.config.get("seed") or 0)),
+        "--alpha",
+        str(alpha),
+        "--bootstrap-samples",
+        str(int(budgets.get("bootstrapSamples", 1000))),
+        "--bootstrap-block",
+        str(int(budgets.get("bootstrapBlockBars", 24))),
     ]
+    if ctx.holdout_start:
+        args.extend(["--holdout-start", str(ctx.holdout_start)])
     return args
 
 
-def run_lab(ctx: Context, action: str, args: Sequence[str], *, label: str) -> dict[str, Any] | None:
+def run_primary_evaluate(
+    ctx: Context,
+    prereg: Mapping[str, Any],
+    *,
+    controls: str = "both",
+    full_archive: bool = False,
+) -> dict[str, Any] | None:
+    experiment = dict(prereg.get("experiment") or {})
+    primary = primary_config_name(experiment)
+    feature_set, model_set, horizon = primary.split("+")
+    args = [
+        *_common_lab_args(ctx, experiment),
+        "--feature-set",
+        feature_set,
+        "--model-set",
+        model_set,
+        "--horizon",
+        horizon.removeprefix("h"),
+        "--controls",
+        controls,
+        "--shift-bars",
+        str(int(experiment.get("shiftBars") or 24)),
+    ]
+    extra = [str(item) for item in experiment.get("extraLabArgs") or []]
+    args.extend(extra)
+    if full_archive:
+        args.append("--full-archive")
+    return run_lab(ctx, "evaluate", args, label="lab-evaluate")
+
+
+def run_sweep(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any] | None:
+    experiment = dict(prereg.get("experiment") or {})
+    budgets = ctx.config.get("budgets") or {}
+    max_configs = min(
+        int(experiment.get("maxConfigs") or budgets.get("maxConfigs", 8)),
+        int(budgets.get("maxConfigs", 8)),
+    )
+    action = str(experiment.get("action") or "sweep")
+    common = _common_lab_args(ctx, experiment)
+    # The hypothesis declares the interface its implementation must add (e.g.
+    # `--panel`). If the implementer did not add it, the lab exits nonzero and
+    # the run is blocked instead of silently evaluating the old behaviour.
+    extra = [str(item) for item in experiment.get("extraLabArgs") or []]
+    if action == "evaluate":
+        args = [
+            *common,
+            *extra,
+            "--feature-set",
+            str(experiment.get("featureSet") or "all"),
+            "--model-set",
+            str(experiment.get("modelSet") or "reference"),
+            "--horizon",
+            str(int(experiment.get("horizon") or 1)),
+        ]
+        return run_lab(ctx, "evaluate", args, label="lab-evaluate")
+    args = [
+        *common,
+        *extra,
+        "--feature-sets",
+        ",".join(str(s) for s in experiment.get("featureSets") or ["all"]),
+        "--model-sets",
+        ",".join(str(s) for s in experiment.get("modelSets") or ["reference"]),
+        "--horizons",
+        ",".join(str(int(h)) for h in experiment.get("horizons") or [1]),
+        "--max-configs",
+        str(max_configs),
+        "--primary-config",
+        primary_config_name(experiment),
+    ]
+    return run_lab(ctx, "sweep", args, label="lab-sweep")
+
+
+def run_promote(
+    ctx: Context,
+    prereg: Mapping[str, Any],
+    sweep: Mapping[str, Any],
+    *,
+    apply: bool,
+) -> dict[str, Any] | None:
+    candidates = list(sweep.get("primary_candidates") or sweep.get("candidates") or [])
+    if not candidates:
+        return None
+    candidate = str(candidates[0])
+    ticker = None
+    for row in sweep.get("top") or []:
+        if row.get("candidate") == candidate:
+            ticker = row.get("ticker")
+            break
+    experiment = dict(prereg.get("experiment") or {})
+    extra = [str(item) for item in experiment.get("extraLabArgs") or []]
+    args = [
+        "--candidate",
+        candidate,
+        *extra,
+        "--targets",
+        *[str(t) for t in experiment.get("targets") or []],
+        "--threshold",
+        str(float(experiment.get("threshold") or 0.55)),
+        "--position",
+        str(experiment.get("position") or "long-only"),
+        "--fee-bps",
+        str(float(experiment.get("feeBps") or 10.0)),
+        "--slippage-bps",
+        str(float(experiment.get("slippageBps") or 5.0)),
+        "--seed",
+        str(int(ctx.seed or ctx.config.get("seed") or 0)),
+    ]
+    if ctx.holdout_start:
+        args.extend(["--holdout-start", str(ctx.holdout_start)])
+    if ticker:
+        args.extend(["--ticker", str(ticker)])
+    if apply:
+        args.append("--apply")
+    return run_lab(ctx, "promote", args, label="lab-promote-apply" if apply else "lab-promote")
+
+
+def run_lab(
+    ctx: Context, action: str, args: Sequence[str], *, label: str
+) -> dict[str, Any] | None:
     command = [*lab_command(ctx), action, *args, "--json"]
     env = {
         "RL_CRYPTO_ROOT": str(ctx.repo),
@@ -890,88 +1322,241 @@ def run_lab(ctx: Context, action: str, args: Sequence[str], *, label: str) -> di
     return payload if isinstance(payload, dict) else None
 
 
-def run_sweep(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any] | None:
-    experiment = dict(prereg.get("experiment") or {})
-    budgets = ctx.config.get("budgets") or {}
-    max_configs = min(
-        int(experiment.get("maxConfigs") or budgets.get("maxConfigs", 8)),
-        int(budgets.get("maxConfigs", 8)),
-    )
-    action = str(experiment.get("action") or "sweep")
-    common = _common_lab_args(ctx, experiment)
-    # The hypothesis declares the interface its implementation must add (e.g.
-    # `--panel`). If the implementer did not add it, the lab exits nonzero and
-    # the run is blocked instead of silently evaluating the old behaviour.
-    extra = [str(item) for item in experiment.get("extraLabArgs") or []]
-    if action == "evaluate":
-        args = [
-            *common,
-            *extra,
-            "--feature-set",
-            str(experiment.get("featureSet") or "all"),
-            "--model-set",
-            str(experiment.get("modelSet") or "reference"),
-            "--horizon",
-            str(int(experiment.get("horizon") or 1)),
-        ]
-        return run_lab(ctx, "evaluate", args, label="lab-evaluate")
-    args = [
-        *common,
-        *extra,
-        "--feature-sets",
-        ",".join(str(s) for s in experiment.get("featureSets") or ["all"]),
-        "--model-sets",
-        ",".join(str(s) for s in experiment.get("modelSets") or ["reference"]),
-        "--horizons",
-        ",".join(str(int(h)) for h in experiment.get("horizons") or [1]),
-        "--max-configs",
-        str(max_configs),
-    ]
-    return run_lab(ctx, "sweep", args, label="lab-sweep")
-
-
-def run_promote(
+def _record_holdout(
     ctx: Context,
     prereg: Mapping[str, Any],
-    sweep: Mapping[str, Any],
     *,
-    apply: bool,
-) -> dict[str, Any] | None:
-    candidates = list(sweep.get("candidates") or [])
-    if not candidates:
-        return None
-    candidate = str(candidates[0])
-    ticker = None
-    for row in sweep.get("top") or []:
-        if row.get("candidate") == candidate:
-            ticker = row.get("ticker")
-            break
+    mode: str,
+    artifact: str | None,
+    passed: bool,
+) -> None:
+    append_entry(
+        ctx.ledger,
+        {
+            "kind": "holdout",
+            "run_id": ctx.run_id,
+            "hypothesis_id": prereg.get("hypothesis_id"),
+            "lineage": prereg.get("lineage"),
+            "holdout_touched": True,
+            "mode": mode,
+            "artifact": artifact,
+            "passed": passed,
+        },
+    )
+
+
+def _evaluate_harness_change(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any]:
+    """A protected-file change is recorded, never scoreboard-eligible."""
+    return {
+        "passed": False,
+        "outcome": "harness-change",
+        "requires_approval": True,
+        "reasons": [
+            "harness-change may touch protected measurement files; "
+            "human approval is required and no verdict is scored"
+        ],
+        "metrics": {
+            "criteria_version": criteria_version(prereg.get("criteria")),
+            "protected": prereg.get("protected") or {},
+        },
+    }
+
+
+def _evaluate_mechanical_v2(
+    ctx: Context, prereg: Mapping[str, Any]
+) -> dict[str, Any]:
+    """One primary config, pooled paired improvement, CI, null controls."""
+    criteria = dict(prereg.get("criteria") or {})
     experiment = dict(prereg.get("experiment") or {})
-    extra = [str(item) for item in experiment.get("extraLabArgs") or []]
-    args = [
-        "--candidate",
-        candidate,
-        *extra,
-        "--targets",
-        *[str(t) for t in experiment.get("targets") or []],
-        "--threshold",
-        str(float(experiment.get("threshold") or 0.55)),
-        "--position",
-        str(experiment.get("position") or "long-only"),
-        "--fee-bps",
-        str(float(experiment.get("feeBps") or 10.0)),
-        "--slippage-bps",
-        str(float(experiment.get("slippageBps") or 5.0)),
-    ]
-    if ticker:
-        args.extend(["--ticker", str(ticker)])
-    if apply:
-        args.append("--apply")
-    return run_lab(ctx, "promote", args, label="lab-promote-apply" if apply else "lab-promote")
+    canary = bool(ctx.hypothesis and ctx.hypothesis.canary)
+    # The statistical rule is judged before the holdout is read; a dry run is
+    # only attempted once the candidate has cleared it.
+    stat_prereg = prereg
+    if criteria.get("requires_promote"):
+        stat_prereg = {
+            **prereg,
+            "criteria": {**criteria, "requires_promote": False},
+        }
+    sweep: dict[str, Any] | None = None
+    if str(experiment.get("action") or "sweep") == "sweep":
+        # Grid configs are diagnostics only; they never feed the verdict.
+        sweep = run_sweep(ctx, prereg)
+    primary = run_primary_evaluate(
+        ctx,
+        prereg,
+        controls="shuffle" if canary else "both",
+        full_archive=bool(experiment.get("fullArchive"))
+        and criteria.get("kind") == "diagnostic",
+    )
+    if primary is None:
+        verdict = {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": ["no lab result was produced"],
+            "metrics": {},
+        }
+        primary = {}
+    elif canary:
+        control = (primary.get("controls") or {}).get("shuffle") or {}
+        pooled = control.get("pooled") or {}
+        if not pooled:
+            verdict = {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": ["canary shuffle control did not run"],
+                "metrics": {},
+            }
+        else:
+            primary = {**primary, "canary": True, "pooled": pooled}
+            verdict = evaluate_criteria(stat_prereg, primary)
+    else:
+        verdict = evaluate_criteria(stat_prereg, primary)
+
+    # A full-archive diagnostic sees the reserved tail; it is honest about that
+    # and consumes the lineage's holdout budget, but it can never be promoted.
+    if primary.get("diagnostic_full_archive"):
+        _record_holdout(
+            ctx,
+            prereg,
+            mode="diagnostic-full-archive",
+            artifact=ctx.artifacts.get("lab-evaluate"),
+            passed=False,
+        )
+
+    promote_payload: dict[str, Any] | None = None
+    if (
+        not canary
+        and verdict.get("outcome") != "blocked"
+        and criteria.get("requires_promote")
+    ):
+        lineage = str(prereg.get("lineage"))
+        touches = holdout_touches(read_ledger(ctx.ledger))
+        if not verdict.get("passed"):
+            pass
+        elif touches.get(lineage):
+            verdict = {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": [f"holdout already touched for lineage {lineage}"],
+                "metrics": verdict.get("metrics") or {},
+            }
+        elif sweep is None:
+            verdict = {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": ["promotion requires a sweep candidate but the action was evaluate"],
+                "metrics": verdict.get("metrics") or {},
+            }
+        else:
+            promote_payload = run_promote(ctx, prereg, sweep, apply=False)
+            _record_holdout(
+                ctx,
+                prereg,
+                mode="dry-run",
+                artifact=ctx.artifacts.get("lab-promote"),
+                passed=bool((promote_payload or {}).get("passed")),
+            )
+            verdict = evaluate_criteria(
+                prereg, primary, promote_payload=promote_payload
+            )
+
+    if canary and verdict.get("outcome") == "provisional":
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "harness_void",
+                "run_id": ctx.run_id,
+                "hypothesis_id": prereg.get("hypothesis_id"),
+                "reason": (
+                    "H0-canary produced provisional skill from shuffled labels; "
+                    "the harness is void until a human clears it"
+                ),
+                "artifact": ctx.artifacts.get("lab-evaluate"),
+            },
+        )
+        verdict = {
+            "passed": False,
+            "outcome": "invalid",
+            "reasons": ["canary reached provisional: harness void"],
+            "metrics": verdict.get("metrics") or {},
+        }
+
+    artifact = ctx.artifacts.get("lab-evaluate") or ctx.artifacts.get("lab-sweep")
+    if artifact:
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "results",
+                "run_id": ctx.run_id,
+                "hypothesis_id": prereg.get("hypothesis_id"),
+                "family": prereg.get("family"),
+                "lineage": prereg.get("lineage"),
+                "metrics": verdict.get("metrics") or {},
+                "artifact": artifact,
+                "promote_artifact": ctx.artifacts.get("lab-promote"),
+            },
+        )
+
+    if verdict.get("outcome") == "blocked":
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "blocked",
+                "run_id": ctx.run_id,
+                "hypothesis_id": prereg.get("hypothesis_id"),
+                "stage": "evaluation",
+                "reason": "; ".join(verdict.get("reasons") or []),
+                "artifact": artifact,
+            },
+        )
+    else:
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "verdict",
+                "run_id": ctx.run_id,
+                "hypothesis_id": prereg.get("hypothesis_id"),
+                "title": prereg.get("title"),
+                "family": prereg.get("family"),
+                "lineage": prereg.get("lineage"),
+                "trial_index": prereg.get("trial_index"),
+                "criteria_version": criteria_version(prereg.get("criteria")),
+                "run_type": ctx.run_type,
+                "holdout_start": ctx.holdout_start,
+                "outcome": verdict.get("outcome"),
+                "passed": verdict.get("passed"),
+                "reasons": verdict.get("reasons") or [],
+                "metrics": verdict.get("metrics") or {},
+                "prereg_id": prereg.get("id"),
+                "artifact": artifact,
+            },
+        )
+    if (
+        verdict.get("passed")
+        and ctx.config.get("promotion", {}).get("apply")
+        and promote_payload is not None
+        and sweep is not None
+    ):
+        applied = run_promote(ctx, prereg, sweep, apply=True)
+        _record_holdout(
+            ctx,
+            prereg,
+            mode="apply",
+            artifact=ctx.artifacts.get("lab-promote-apply"),
+            passed=bool((applied or {}).get("written")),
+        )
+        verdict.setdefault("metrics", {})["applied"] = (applied or {}).get("written")
+    return verdict
 
 
 def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any]:
     """Run the pre-registered experiment and compute the verdict."""
+    criteria = prereg.get("criteria") or {}
+    if ctx.run_type == "harness-change":
+        return _evaluate_harness_change(ctx, prereg)
+    if criteria_version(criteria) >= 2:
+        return _evaluate_mechanical_v2(ctx, prereg)
+
     sweep = run_sweep(ctx, prereg)
     promote_payload = None
     criteria = prereg.get("criteria") or {}
@@ -1068,6 +1653,9 @@ def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, An
                 "family": prereg.get("family"),
                 "lineage": prereg.get("lineage"),
                 "trial_index": prereg.get("trial_index"),
+                "criteria_version": criteria_version(prereg.get("criteria")),
+                "run_type": ctx.run_type,
+                "holdout_start": ctx.holdout_start,
                 "outcome": verdict.get("outcome"),
                 "passed": verdict.get("passed"),
                 "reasons": verdict.get("reasons") or [],
@@ -1123,8 +1711,24 @@ def mechanical_review(ctx: Context, verdict: Mapping[str, Any]) -> dict[str, Any
     )
     add(
         "verdict",
-        verdict.get("outcome") in {"negative", "provisional", "diagnostic", "blocked"},
+        verdict.get("outcome")
+        in {
+            "negative",
+            "provisional",
+            "confirmed",
+            "refuted",
+            "invalid",
+            "diagnostic",
+            "blocked",
+            "harness-change",
+        },
         f"experiment outcome: {verdict.get('outcome')}",
+    )
+    add(
+        "run-type",
+        ctx.run_type in {"experiment", "harness-change"},
+        f"run type: {ctx.run_type}",
+        severity="info",
     )
 
     hypothesis = ctx.hypothesis
@@ -1181,11 +1785,17 @@ def mechanical_review(ctx: Context, verdict: Mapping[str, Any]) -> dict[str, Any
         severity="fail" if ctx.worktree is not None else "info",
     )
     status_text = _git(ctx.repo, "status", "--porcelain").stdout
-    changed = [
+    changed = {
         line[3:].strip().strip('"')
         for line in status_text.splitlines()
         if line.strip()
-    ]
+    }
+    base = str((prereg.get("git") or {}).get("sha") or "")
+    if base:
+        diff = _git(ctx.repo, "diff", "--name-only", f"{base}..HEAD")
+        if diff.returncode == 0:
+            changed.update(line.strip() for line in diff.stdout.splitlines() if line.strip())
+    changed = sorted(changed)
     apply_enabled = bool((ctx.config.get("promotion") or {}).get("apply"))
     forbidden = [
         path
@@ -1199,7 +1809,58 @@ def mechanical_review(ctx: Context, verdict: Mapping[str, Any]) -> dict[str, Any
         if forbidden
         else "data/ untouched; models/ write only when apply is enabled",
     )
-    add("dirty", True, f"{len(changed)} uncommitted path(s) to commit", severity="info")
+    protected = protected_changes(ctx)
+    may_touch = ctx.run_type == "harness-change"
+    add(
+        "protected-files",
+        not protected or may_touch,
+        f"protected files changed: {', '.join(protected)}"
+        if protected and not may_touch
+        else (
+            "harness-change may touch protected files"
+            if protected
+            else "protected files untouched"
+        ),
+    )
+    recorded_hash = str((prereg.get("protected") or {}).get("hash") or "")
+    current_hash = str(protected_digest(ctx.repo).get("hash") or "")
+    add(
+        "protected-hash",
+        not recorded_hash or recorded_hash == current_hash or may_touch,
+        "measurement contract hash matches the pre-registration"
+        if recorded_hash == current_hash
+        else "measurement contract changed after pre-registration",
+    )
+    add(
+        "dirty",
+        True,
+        f"{len(changed)} uncommitted path(s) to commit",
+        severity="info",
+    )
+    add(
+        "usage",
+        True,
+        f"{ctx.usage.get('tokens', 0)} tokens, ${ctx.usage.get('costUsd', 0)}",
+        severity="info",
+    )
+    ceiling = ceiling_reason(ctx)
+    add("ceilings", ceiling is None, ceiling or "within the configured ceilings")
+    if may_touch:
+        add(
+            "human-approval",
+            False,
+            "harness-change requires human approval before merge",
+            severity="warn",
+        )
+
+    if criteria_version(prereg.get("criteria")) >= 2:
+        add(
+            "holdout-freeze",
+            bool(ctx.holdout_start)
+            and resolve_holdout_start(entries, str(prereg.get("lineage")))
+            == ctx.holdout_start,
+            f"holdout_start: {ctx.holdout_start or 'missing'}",
+        )
 
     if (prereg.get("criteria") or {}).get("requires_promote"):
         add(
@@ -1344,6 +2005,12 @@ def build_report(
         f"- **Branch:** `{ctx.branch or git_state(ctx.repo).get('branch') or 'in-place'}`",
         f"- **Pre-registration:** `{prereg.get('id')}`"
         f" (family `{prereg.get('family')}`, trial {prereg.get('trial_index')})",
+        f"- **Run type:** `{ctx.run_type}` (lineage `{ctx.lineage}`)",
+        f"- **Criteria:** v{criteria_version(prereg.get('criteria'))}"
+        f", alpha {((prereg.get('criteria') or {}).get('alpha', 'n/a'))}",
+        f"- **Holdout cutoff:** `{ctx.holdout_start or 'none'}`"
+        " (frozen timestamp; appends never move it)",
+        f"- **Seed:** `{ctx.seed}`",
         f"- **Git:** `{((prereg.get('git') or {}).get('sha') or 'unknown')[:12]}`",
         f"- **Data:** `{((prereg.get('data') or {}).get('combined') or 'absent')[:16]}`",
         "",
@@ -1361,6 +2028,42 @@ def build_report(
             [f"- {reason}" for reason in reasons]
             or ["- none: all pre-registered bars met"]
         )
+    if ctx.run_type == "harness-change":
+        lines.extend(
+            [
+                "",
+                "## Human approval required",
+                "",
+                "- This run may touch the protected measurement contract. It is "
+                "**not** scoreboard-eligible; a human must review the diff and the "
+                "mechanical review before merge.",
+            ]
+        )
+    pooled = metrics.get("pooled") or {}
+    if pooled:
+        lines.extend(
+            [
+                "",
+                "## V2 statistics (pooled paired improvement)",
+                "",
+                f"- mean: `{pooled.get('mean_improvement')}`",
+                f"- CI: `[{pooled.get('ci_low')}, {pooled.get('ci_high')}]` "
+                f"(alpha `{pooled.get('alpha')}`, seed `{pooled.get('seed')}`)",
+                f"- n: `{pooled.get('n')}` in `{pooled.get('blocks')}` time blocks "
+                f"of `{pooled.get('block_bars')}` bars",
+                f"- fold improvements: `{pooled.get('fold_improvements')}`",
+            ]
+        )
+    controls = metrics.get("controls") or {}
+    for name, block in controls.items():
+        control = (block or {}).get("pooled") or {}
+        lines.append(
+            f"- {name} control: mean `{control.get('mean_improvement')}` "
+            f"CI `[{control.get('ci_low')}, {control.get('ci_high')}]`"
+            f" (passes={block.get('passed')})"
+        )
+    if metrics.get("carried_by_one_ticker"):
+        lines.append("- **flag:** the result is carried by a single ticker.")
     lines.extend(["", "## Per-ticker result", ""])
     per_ticker = metrics.get("per_ticker") or {}
     targets = metrics.get("targets") or []
@@ -1675,6 +2378,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         )
         return 0
     run_id = make_run_id(hypothesis)
+    holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
     prereg = build_preregistration(
         hypothesis,
         run_id=run_id,
@@ -1682,6 +2386,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         entries=entries,
         trigger=args.trigger,
         seed=int(config.get("seed") or 0),
+        lineage=hypothesis.stable_lineage,
+        holdout_start=holdout_start,
+        run_type=hypothesis.run_type,
+        feature_version=FEATURE_VERSION,
+        protected=protected_digest(root),
     )
     payload = {
         "run_id": run_id,
@@ -1722,6 +2431,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "verdicts": verdicts[-int(args.limit) :],
         "trial_counts": counts,
         "next_hypothesis": next_hypothesis.id if next_hypothesis else None,
+        "holdout_cutoffs": holdout_cutoffs(entries),
+        "harness_void": harness_void(entries),
         "scoreboard": render_scoreboard(entries),
     }
     if args.render:
@@ -1821,6 +2532,61 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if all(agents.values()) and not unusable else 2
 
 
+def cmd_holdout_rotate(args: argparse.Namespace) -> int:
+    root = repo_root()
+    ledger = root / "experiments" / "ledger.jsonl"
+    entries = read_ledger(ledger)
+    previous = resolve_holdout_start(entries, args.lineage)
+    if previous is None:
+        raise SystemExit(f"no frozen holdout for lineage {args.lineage!r}")
+    previous_stamp = _parse_ts(previous)
+    new_stamp = _parse_ts(args.holdout_start)
+    if previous_stamp is None or new_stamp is None:
+        raise SystemExit("holdout-start must be an ISO timestamp")
+    if new_stamp <= previous_stamp:
+        raise SystemExit("holdout-rotate may only move the cutoff forward")
+    entry = append_entry(
+        ledger,
+        {
+            "kind": "holdout_rotate",
+            "lineage": args.lineage,
+            "holdout_start": args.holdout_start,
+            "rotated_from": previous,
+            "reason": args.reason,
+            "approved_by": "human",
+        },
+    )
+    payload = {"rotated": True, "entry": entry}
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(f"rotated {args.lineage}: {previous} -> {args.holdout_start}")
+    return 0
+
+
+def cmd_harness_clear(args: argparse.Namespace) -> int:
+    root = repo_root()
+    ledger = root / "experiments" / "ledger.jsonl"
+    entries = read_ledger(ledger)
+    if harness_void(entries) is None:
+        print("no harness_void marker to clear")
+        return 0
+    entry = append_entry(
+        ledger,
+        {
+            "kind": "harness_clear",
+            "reason": args.reason,
+            "approved_by": "human",
+        },
+    )
+    payload = {"cleared": True, "entry": entry}
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print("harness void cleared")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = repo_root()
     config = load_config(root)
@@ -1910,6 +2676,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         return 0
 
+    run_type = str(getattr(args, "run_type", None) or hypothesis.run_type)
+    if run_type not in {"experiment", "harness-change"}:
+        raise SystemExit(f"unknown run type {run_type!r}")
     run_id = make_run_id(hypothesis)
     run_root = (
         Path(args.run_dir).expanduser().resolve()
@@ -1924,6 +2693,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         run_id=run_id,
         run_dir=run_root / run_id,
         hypothesis=hypothesis,
+        run_type=run_type,
+        lineage=hypothesis.stable_lineage,
+        seed=int(config.get("seed") or 0),
     )
     ctx.run_dir.mkdir(parents=True, exist_ok=True)
     pf = preflight(root, config, executor=executor, worktree=not args.no_worktree)
@@ -1933,13 +2705,44 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("\npreflight failed; pass --force to run anyway", file=sys.stderr)
         return 2
 
+    void = harness_void(entries)
+    if void is not None and not args.force:
+        message = (
+            "harness-void: the canary produced shuffled-label skill; a human must "
+            "run `harness-clear` before further runs"
+        )
+        if args.json:
+            print(json.dumps({"outcome": "harness-void", "reason": message}, indent=2))
+        else:
+            print(message)
+        return 2
+
+    ctx.holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
+    new_info_reason = no_new_information_reason(
+        root,
+        hypothesis,
+        entries,
+        min_new_bars=int((config.get("noNewInformation") or {}).get("minNewBars", 24)),
+    )
+    if new_info_reason and not args.force:
+        if args.json:
+            print(json.dumps({"outcome": "blocked", "reason": new_info_reason}, indent=2))
+        else:
+            print(new_info_reason)
+        return 2
+
     prereg = build_preregistration(
         hypothesis,
         run_id=run_id,
         root=root,
         entries=entries,
         trigger=args.trigger,
-        seed=int(config.get("seed") or 0),
+        seed=ctx.seed,
+        lineage=ctx.lineage,
+        holdout_start=ctx.holdout_start,
+        run_type=ctx.run_type,
+        feature_version=FEATURE_VERSION,
+        protected=protected_digest(root),
     )
     if not args.force and (hypothesis.criteria or {}).get("kind") == "diagnostic":
         prior_preregs = [
@@ -1999,6 +2802,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         except RuntimeError as exc:
             print(f"could not create worktree: {exc}", file=sys.stderr)
             return 1
+
+    if ctx.holdout_start and not resolve_holdout_start(
+        read_ledger(ctx.ledger), ctx.lineage
+    ):
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "holdout_freeze",
+                "lineage": ctx.lineage,
+                "hypothesis_id": hypothesis.id,
+                "holdout_start": ctx.holdout_start,
+                "tickers": list(hypothesis.experiment.get("tickers") or []),
+                "frozen_by": "model_improve",
+                "note": "timestamp cutoff; appending bars never moves it",
+            },
+        )
 
     record = append_entry(ctx.ledger, prereg)
     prereg["id"] = record["id"]
@@ -2116,6 +2935,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             if blocker:
                 return stop(blocker, "auditor")
 
+    budget_blocker = ceiling_reason(ctx)
+    if budget_blocker:
+        return stop(budget_blocker, "budget")
+
     verdict = evaluate_mechanical(ctx, prereg)
 
     if executor != "mechanical" and args.with_evaluator:
@@ -2168,9 +2991,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         "run_id": run_id,
         "executor": executor,
         "hypothesis": hypothesis.id,
+        "run_type": ctx.run_type,
+        "lineage": ctx.lineage,
+        "holdout_start": ctx.holdout_start,
+        "seed": ctx.seed,
         "outcome": verdict.get("outcome"),
         "passed": verdict.get("passed"),
         "reasons": verdict.get("reasons") or [],
+        "usage": ctx.usage,
         "review": {
             "status": (review or {}).get("status"),
             "source": (review or {}).get("source"),
@@ -2246,6 +3074,12 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run one pre-registered experiment")
     executor_args(run)
     run.add_argument("--hypothesis", default=None)
+    run.add_argument(
+        "--run-type",
+        choices=("experiment", "harness-change"),
+        default=None,
+        help="harness-change may touch protected measurement files; needs human approval",
+    )
     run.add_argument("--trigger", default="manual")
     run.add_argument("--run-dir", default=None)
     run.add_argument("--worktree", dest="no_worktree", action="store_false", default=True)
@@ -2290,6 +3124,23 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="tooling, agents and configuration")
     executor_args(doctor)
     doctor.set_defaults(func=cmd_doctor)
+
+    rotate = sub.add_parser(
+        "holdout-rotate",
+        help="human-approved: move a lineage's holdout cutoff forward",
+    )
+    rotate.add_argument("--lineage", required=True)
+    rotate.add_argument("--holdout-start", required=True)
+    rotate.add_argument("--reason", required=True)
+    rotate.add_argument("--json", action="store_true")
+    rotate.set_defaults(func=cmd_holdout_rotate)
+
+    clear = sub.add_parser(
+        "harness-clear", help="human-approved: clear a harness_void marker"
+    )
+    clear.add_argument("--reason", required=True)
+    clear.add_argument("--json", action="store_true")
+    clear.set_defaults(func=cmd_harness_clear)
 
     return parser
 

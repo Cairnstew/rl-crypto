@@ -35,9 +35,42 @@ from typing import Any
 SCHEMA = "rl-crypto/experiments/1"
 HYPOTHESIS_STATUSES = frozenset({"open", "blocked", "done", "retired"})
 ENTRY_KINDS = frozenset(
-    {"preregister", "results", "holdout", "verdict", "blocked", "note"}
+    {
+        "preregister",
+        "results",
+        "holdout",
+        "holdout_freeze",
+        "holdout_rotate",
+        "verdict",
+        "blocked",
+        "note",
+        "harness_void",
+        "harness_clear",
+    }
 )
 CAPABILITY_NEEDS = frozenset({"code", "data", "approval", "tooling"})
+RUN_TYPES = frozenset({"experiment", "harness-change"})
+
+#: Criteria written before this hardening keep the old interpretation forever.
+CRITERIA_VERSION = 2
+
+#: Files whose content defines the measurement contract. A normal experiment run
+#: may not edit them: doing so would let an implementer move the goalposts it is
+#: being judged against. ``run_type: harness-change`` is the only escape hatch,
+#: and it cannot produce a scoreboard-eligible verdict.
+PROTECTED_FILES: tuple[str, ...] = (
+    "src/rl_crypto/experiments.py",
+    "src/rl_crypto/targets.py",
+    "src/rl_crypto/samples.py",
+    "src/rl_crypto/ml/tier1.py",
+    "tools/model_lab.py",
+    "tools/model_improve.py",
+    "tools/forward_score.py",
+    "tests/test_experiments.py",
+    "tests/test_model_lab.py",
+    "tests/test_ml_measurement.py",
+    "tests/test_model_improve.py",
+)
 
 DEFAULT_CRITERIA: dict[str, Any] = {
     "kind": "improvement",
@@ -53,6 +86,56 @@ DEFAULT_CRITERIA: dict[str, Any] = {
     },
     "requires_promote": False,
 }
+
+#: Criteria version 2 replaces ticker votes with one pooled paired improvement
+#: and a time-block bootstrap CI. ``fold_rule`` is explicit because the old
+#: combination of ``folds_beating_min=3`` and ``min_improvement_min=0`` was
+#: contradictory (the latter already required every fold to be positive).
+DEFAULT_CRITERIA_V2: dict[str, Any] = {
+    "kind": "improvement",
+    "criteria_version": CRITERIA_VERSION,
+    "target": "fwd_direction",
+    "primary": None,
+    "alpha": 0.05,
+    "fold_rule": "all_positive",
+    "require_controls": True,
+    "require_multiple_tickers": True,
+    "economic": {
+        "total_return_min": 0.0,
+        "sharpe_above_momentum": True,
+        "trades_min": 100,
+    },
+    "requires_promote": False,
+}
+
+
+def criteria_version(criteria: Mapping[str, Any] | None) -> int:
+    """The interpretation version of a criteria block.
+
+    Absent means version 1: every ledger entry written before the hardening is
+    judged by exactly the rules that produced it.
+    """
+    if not criteria:
+        return 1
+    try:
+        return int(criteria.get("criteria_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def protected_digest(root: Path) -> dict[str, Any]:
+    """Hash the measurement contract so a run can prove it was not edited."""
+    files: dict[str, str | None] = {}
+    for name in PROTECTED_FILES:
+        path = root / name
+        files[name] = sha256_file(path) if path.exists() else None
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((files[name] or "missing").encode("utf-8"))
+        digest.update(b"\n")
+    return {"hash": digest.hexdigest(), "files": files}
 
 
 # --------------------------------------------------------------------------- time / hashing
@@ -176,10 +259,18 @@ class Hypothesis:
     depends_on: tuple[str, ...] = ()
     evidence: str = ""
     notes: str = ""
+    run_type: str = "experiment"
+    lineage: str = ""
+    canary: bool = False
 
     @property
     def needs_code(self) -> bool:
         return "code" in self.needs
+
+    @property
+    def stable_lineage(self) -> str:
+        """The durable lineage id; a new candidate chain needs a new id."""
+        return self.lineage or self.id
 
     @property
     def needs_approval(self) -> bool:
@@ -203,6 +294,9 @@ class Hypothesis:
             "depends_on": list(self.depends_on),
             "evidence": self.evidence,
             "notes": self.notes,
+            "run_type": self.run_type,
+            "lineage": self.stable_lineage,
+            "canary": self.canary,
         }
 
     @classmethod
@@ -213,6 +307,12 @@ class Hypothesis:
         status = str(payload.get("status", "open"))
         if status not in HYPOTHESIS_STATUSES:
             raise ValueError(f"{payload.get('id')}: unknown status {status!r}")
+        run_type = str(payload.get("run_type", "experiment"))
+        if run_type not in RUN_TYPES:
+            raise ValueError(f"{payload.get('id')}: unknown run_type {run_type!r}")
+        raw_criteria = dict(payload.get("criteria") or {})
+        version = criteria_version(raw_criteria)
+        base = DEFAULT_CRITERIA_V2 if version >= 2 else DEFAULT_CRITERIA
         return cls(
             id=str(payload["id"]),
             title=str(payload["title"]),
@@ -222,10 +322,13 @@ class Hypothesis:
             needs=tuple(str(n) for n in payload.get("needs") or ()),
             mechanism=str(payload.get("mechanism", "")),
             experiment=dict(payload.get("experiment") or {}),
-            criteria={**DEFAULT_CRITERIA, **dict(payload.get("criteria") or {})},
+            criteria={**base, **raw_criteria, "criteria_version": version},
             depends_on=tuple(str(d) for d in payload.get("depends_on") or ()),
             evidence=str(payload.get("evidence", "")),
             notes=str(payload.get("notes", "")),
+            run_type=run_type,
+            lineage=str(payload.get("lineage") or ""),
+            canary=bool(payload.get("canary", False)),
         )
 
 
@@ -324,13 +427,53 @@ def trial_counts(entries: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, in
 
 
 def holdout_touches(entries: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
+    """Distinct holdout-touching runs per durable lineage.
+
+    Old entries used ``<H>-<run_id>`` as the lineage, so the count is one per
+    entry; new entries use a stable lineage and count each run once even when a
+    dry run and an apply are recorded for the same run.
+    """
+    seen: dict[str, set[str]] = {}
     for entry in entries:
         if not entry.get("holdout_touched"):
             continue
         lineage = str(entry.get("lineage") or entry.get("hypothesis_id") or "unknown")
-        counts[lineage] = counts.get(lineage, 0) + 1
-    return counts
+        run = str(entry.get("run_id") or entry.get("id") or "")
+        seen.setdefault(lineage, set()).add(run)
+    return {lineage: len(runs) for lineage, runs in seen.items()}
+
+
+def holdout_cutoffs(entries: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Latest frozen holdout cutoff per lineage.
+
+    ``holdout_rotate`` is a human-approved forward move; the newest entry wins.
+    """
+    cutoffs: dict[str, str] = {}
+    for entry in entries:
+        if entry.get("kind") not in {"holdout_freeze", "holdout_rotate"}:
+            continue
+        lineage = str(entry.get("lineage") or entry.get("hypothesis_id") or "")
+        start = entry.get("holdout_start")
+        if lineage and start:
+            cutoffs[lineage] = str(start)
+    return cutoffs
+
+
+def resolve_holdout_start(
+    entries: Sequence[Mapping[str, Any]], lineage: str
+) -> str | None:
+    return holdout_cutoffs(entries).get(lineage)
+
+
+def harness_void(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """An uncleared void marker, if the canary has failed the harness."""
+    void: dict[str, Any] | None = None
+    for entry in entries:
+        if entry.get("kind") == "harness_void":
+            void = entry
+        elif entry.get("kind") == "harness_clear":
+            void = None
+    return void
 
 
 def completed_hypotheses(entries: Sequence[Mapping[str, Any]]) -> set[str]:
@@ -342,6 +485,8 @@ def completed_hypotheses(entries: Sequence[Mapping[str, Any]]) -> set[str]:
             "confirmed",
             "refuted",
             "diagnostic",
+            "invalid",
+            "harness-change",
         }:
             out.add(str(entry.get("hypothesis_id")))
     return out
@@ -381,6 +526,11 @@ def build_preregistration(
     entries: Sequence[Mapping[str, Any]],
     trigger: str = "manual",
     seed: int = 0,
+    lineage: str | None = None,
+    holdout_start: str | None = None,
+    run_type: str | None = None,
+    feature_version: str | None = None,
+    protected: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze the experiment definition before anything is executed."""
     counts = trial_counts(entries)
@@ -392,11 +542,16 @@ def build_preregistration(
         "hypothesis_id": hypothesis.id,
         "title": hypothesis.title,
         "family": hypothesis.family,
-        "lineage": f"{hypothesis.id}-{run_id}",
+        "lineage": lineage or hypothesis.stable_lineage,
         "trial_index": counts["family"].get(hypothesis.family, 0) + 1,
         "hypothesis_trial_index": counts["hypothesis"].get(hypothesis.id, 0) + 1,
         "trigger": trigger,
         "seed": seed,
+        "run_type": run_type or hypothesis.run_type,
+        "criteria_version": criteria_version(hypothesis.criteria),
+        "holdout_start": holdout_start,
+        "feature_version": feature_version,
+        "protected": dict(protected or {}),
         "git": git,
         "data": data_fingerprint(root, tickers),
         "experiment": hypothesis.experiment,
@@ -436,7 +591,16 @@ def validate_preregistration(entry: Mapping[str, Any]) -> list[str]:
     if criteria.get("kind", "improvement") == "improvement":
         if "target" not in criteria:
             problems.append("criteria missing target")
-        if int(criteria.get("tickers_beating_min", 0)) < 1:
+        if criteria_version(criteria) >= 2:
+            if not criteria.get("primary"):
+                problems.append("criteria v2 missing primary config")
+            if not entry.get("holdout_start"):
+                problems.append("criteria v2 missing holdout_start")
+            if not 0.0 < float(criteria.get("alpha", 0.05)) < 1.0:
+                problems.append("criteria v2 alpha must be in (0, 1)")
+            if criteria.get("fold_rule") not in {"all_positive", "majority_positive", "none"}:
+                problems.append("criteria v2 has an unknown fold_rule")
+        elif int(criteria.get("tickers_beating_min", 0)) < 1:
             problems.append("criteria missing tickers_beating_min")
     return problems
 
@@ -512,6 +676,9 @@ def evaluate_criteria(
     metrics["rows"] = len(rows)
     metrics["candidates"] = len(lab_payload.get("candidates") or [])
     metrics["summary"] = lab_payload.get("summary") or {}
+
+    if criteria_version(criteria) >= 2:
+        return _evaluate_criteria_v2(prereg, lab_payload, promote_payload=promote_payload)
 
     if kind == "diagnostic":
         diagnostic_per_ticker: dict[str, Any] = {}
@@ -643,6 +810,273 @@ def evaluate_criteria(
     }
 
 
+def _paired_rule(
+    pooled: Mapping[str, Any] | None,
+    *,
+    alpha: float,
+    fold_rule: str,
+) -> tuple[bool, list[str]]:
+    """The v2 statistical rule, applied identically to the candidate and controls."""
+    reasons: list[str] = []
+    if not isinstance(pooled, Mapping):
+        return False, ["no pooled paired result"]
+    mean = _number(pooled.get("mean_improvement"))
+    ci_low = _number(pooled.get("ci_low"))
+    n = int(pooled.get("n") or 0)
+    if n < 2:
+        reasons.append("fewer than 2 paired observations")
+    if mean is None or mean <= 0.0:
+        reasons.append("pooled paired improvement is not positive")
+    if ci_low is None:
+        reasons.append("bootstrap CI is unavailable")
+    elif ci_low <= 0.0:
+        reasons.append(f"bootstrap CI lower bound {ci_low:.6f} is not above zero")
+    folds = pooled.get("fold_improvements") or []
+    positive = [
+        float(value)
+        for value in folds
+        if isinstance(value, (int, float)) and float(value) > 0.0
+    ]
+    if fold_rule == "all_positive" and folds and len(positive) != len(folds):
+        reasons.append(f"only {len(positive)}/{len(folds)} folds are positive")
+    if fold_rule == "majority_positive" and folds and len(positive) <= len(folds) / 2:
+        reasons.append(f"only {len(positive)}/{len(folds)} folds are positive")
+    if pooled.get("alpha") is not None and float(pooled["alpha"]) > alpha + 1e-12:
+        reasons.append("the lab CI was not computed at the pre-registered alpha")
+    return not reasons, reasons
+
+
+def _config_name(primary: Any) -> str | None:
+    if isinstance(primary, str) and primary:
+        return primary
+    if isinstance(primary, Mapping):
+        return (
+            f"{primary.get('featureSet') or 'all'}+"
+            f"{primary.get('modelSet') or 'reference'}+"
+            f"h{int(primary.get('horizon') or 1)}"
+        )
+    return None
+
+
+def _pooled_control(payload: Mapping[str, Any], name: str) -> Mapping[str, Any] | None:
+    controls = payload.get("controls") or {}
+    block = controls.get(name)
+    return block if isinstance(block, Mapping) else None
+
+
+def _evaluate_criteria_v2(
+    prereg: Mapping[str, Any],
+    lab_payload: Mapping[str, Any],
+    *,
+    promote_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Pooled paired improvement + time-block bootstrap + null controls.
+
+    Version 1 selected the best row per ticker and counted tickers as votes.
+    Version 2 judges one pre-registered config on the pooled paired
+    improvement; the per-ticker distribution is reported but never becomes a
+    vote. The shuffled/shifted-label controls are the leakage detector: if a
+    null also clears the same rule, the run is ``invalid``, not negative.
+    """
+    criteria = dict(prereg.get("criteria") or {})
+    kind = str(criteria.get("kind", "improvement"))
+    alpha = float(criteria.get("alpha", 0.05))
+    fold_rule = str(criteria.get("fold_rule", "all_positive"))
+    reasons: list[str] = []
+    metrics: dict[str, Any] = {
+        "criteria_version": 2,
+        "alpha": alpha,
+        "trials_in_family": int(prereg.get("trial_index") or 1),
+        "fold_rule": fold_rule,
+        "rows": len(lab_payload.get("results") or []),
+        "summary": lab_payload.get("summary") or {},
+    }
+
+    expected_primary = _config_name(criteria.get("primary"))
+    actual_primary = lab_payload.get("primary")
+    if expected_primary and actual_primary and str(actual_primary) != expected_primary:
+        return {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": [
+                f"lab evaluated {actual_primary!r}, not the pre-registered "
+                f"primary {expected_primary!r}"
+            ],
+            "metrics": metrics,
+        }
+
+    if lab_payload.get("diagnostic_full_archive") and kind != "diagnostic":
+        return {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": ["a full-archive diagnostic cannot feed a verdict"],
+            "metrics": metrics,
+        }
+
+    if kind == "diagnostic":
+        rows = list(lab_payload.get("results") or [])
+        metrics["per_ticker"] = {
+            str(row.get("ticker") or "unknown"): {
+                "targets": row.get("targets") or {},
+                "economic": (row.get("economic") or {}).get("model") or {},
+            }
+            for row in rows
+        }
+        metrics["targets"] = sorted(
+            {
+                name
+                for row in rows
+                for name in (row.get("targets") or {})
+            }
+        )
+        passed = bool(rows)
+        if not passed:
+            reasons.append("diagnostic produced no rows")
+        return {
+            "passed": passed,
+            "outcome": "diagnostic" if passed else "blocked",
+            "reasons": reasons,
+            "metrics": metrics,
+        }
+
+    if lab_payload.get("canary"):
+        # The canary is deliberately run with shuffled labels: it must fail.
+        pooled = lab_payload.get("pooled")
+        passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+        metrics["canary"] = True
+        metrics["pooled"] = pooled
+        if passed:
+            return {
+                "passed": True,
+                "outcome": "provisional",
+                "reasons": ["canary reached provisional: shuffled labels produced skill"],
+                "metrics": metrics,
+            }
+        return {
+            "passed": False,
+            "outcome": "negative",
+            "reasons": ["canary negative as required"],
+            "metrics": metrics,
+        }
+
+    pooled = lab_payload.get("pooled")
+    metrics["pooled"] = pooled
+    passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+    reasons.extend(rule_reasons)
+
+    # Controls are mandatory for an improvement claim. A passing null means the
+    # pipeline can manufacture skill from noise, so the run is void.
+    if criteria.get("require_controls", True):
+        missing = [
+            name for name in ("shuffle", "shift") if _pooled_control(lab_payload, name) is None
+        ]
+        if missing:
+            return {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": [f"missing control(s): {', '.join(missing)}"],
+                "metrics": metrics,
+            }
+        nulls: dict[str, Any] = {}
+        for name in ("shuffle", "shift"):
+            block = _pooled_control(lab_payload, name) or {}
+            control_pooled = block.get("pooled") or block
+            control_passed, _ = _paired_rule(
+                control_pooled, alpha=alpha, fold_rule=fold_rule
+            )
+            nulls[name] = {
+                "pooled": control_pooled,
+                "passed": control_passed,
+                "shift_bars": block.get("shift_bars"),
+            }
+            if control_passed:
+                return {
+                    "passed": False,
+                    "outcome": "invalid",
+                    "reasons": [
+                        f"{name} control beat the same rule: the measurement is leaking"
+                    ],
+                    "metrics": {**metrics, "controls": nulls},
+                }
+        metrics["controls"] = nulls
+
+    # Per-ticker distribution: reported, but not counted as independent votes.
+    per_ticker: dict[str, Any] = {}
+    for row in lab_payload.get("results") or []:
+        ticker = str(row.get("ticker") or "unknown")
+        paired = (row.get("paired") or {}) if isinstance(row, Mapping) else {}
+        per_ticker[ticker] = {
+            "n": paired.get("n"),
+            "mean_improvement": _number(paired.get("mean_improvement")),
+            "ci_low": _number(paired.get("ci_low")),
+            "ci_high": _number(paired.get("ci_high")),
+        }
+    metrics["per_ticker"] = per_ticker
+    positive_tickers = [
+        name
+        for name, stats in per_ticker.items()
+        if (stats.get("mean_improvement") or 0.0) > 0.0
+    ]
+    metrics["tickers_positive"] = sorted(positive_tickers)
+    single = len(per_ticker) > 1 and len(positive_tickers) < 2
+    metrics["carried_by_one_ticker"] = single
+    if single and criteria.get("require_multiple_tickers", True):
+        reasons.append(
+            "the result is carried by a single ticker (correlated assets are not votes)"
+        )
+
+    economic = criteria.get("economic")
+    if economic:
+        row = next(iter(lab_payload.get("results") or []), None) or {}
+        model = ((row.get("economic") or {}).get("model") or {}) if isinstance(row, Mapping) else {}
+        momentum = (
+            ((row.get("economic") or {}).get("momentum") or {})
+            if isinstance(row, Mapping)
+            else {}
+        )
+        total_return = _number(model.get("total_return"))
+        sharpe = _number(model.get("sharpe"))
+        momentum_sharpe = _number(momentum.get("sharpe"))
+        trades = _number(model.get("trades"))
+        metrics["economic"] = {
+            "total_return": total_return,
+            "sharpe": sharpe,
+            "momentum_sharpe": momentum_sharpe,
+            "trades": trades,
+            "ticker": (row or {}).get("ticker"),
+        }
+        if total_return is None or total_return <= float(economic.get("total_return_min", 0.0)):
+            reasons.append("after-cost total return is not positive")
+        if economic.get("sharpe_above_momentum") and (
+            sharpe is None or momentum_sharpe is None or sharpe <= momentum_sharpe
+        ):
+            reasons.append("Sharpe does not beat the momentum baseline")
+        if trades is None or trades < float(economic.get("trades_min", 100)):
+            reasons.append(
+                f"only {int(trades or 0)} trades (need {economic.get('trades_min', 100)})"
+            )
+
+    if criteria.get("requires_promote"):
+        if promote_payload is None:
+            reasons.append("promotion dry run was required but not run")
+        elif not promote_payload.get("passed"):
+            gate = promote_payload.get("reasons") or ["promotion gate failed"]
+            reasons.append("promotion gate failed: " + "; ".join(str(r) for r in gate))
+        else:
+            metrics["promotion"] = {
+                "passed": True,
+                "candidate": promote_payload.get("candidate"),
+            }
+
+    passed = not reasons
+    return {
+        "passed": passed,
+        "outcome": "provisional" if passed else "negative",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
 def _first_row(best: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return next(iter(best.values()), None)
 
@@ -705,6 +1139,12 @@ def render_hypotheses(
 def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
     verdicts = [e for e in entries if e.get("kind") == "verdict"]
     prereg = [e for e in entries if e.get("kind") == "preregister"]
+    outcomes = [str(entry.get("outcome") or "") for entry in verdicts]
+    provisional = outcomes.count("provisional")
+    confirmed = outcomes.count("confirmed")
+    refuted = outcomes.count("refuted")
+    invalid = outcomes.count("invalid")
+    void = harness_void(entries)
     lines = [
         "# Model-improvement scoreboard",
         "",
@@ -713,6 +1153,11 @@ def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
         f"- ledger entries: **{len(entries)}**",
         f"- preregistrations: **{len(prereg)}**",
         f"- verdicts: **{len(verdicts)}**",
+        f"- provisional: **{provisional}** | confirmed: **{confirmed}**"
+        f" | refuted: **{refuted}** | invalid: **{invalid}**",
+        f"- refuted-to-provisional: **"
+        f"{('n/a' if provisional == 0 else f'{refuted / provisional:.2f}')}**",
+        f"- harness: **{'VOID' if void else 'ok'}**",
         "",
         "A negative verdict is a completed experiment: it closes that hypothesis",
         "lineage. Re-running it needs new data, a new feature class, or a fixed",

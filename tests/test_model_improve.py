@@ -38,6 +38,8 @@ run_dir = os.environ.get("RL_MODEL_IMPROVE_RUN_DIR")
 if run_dir:
     with open(os.path.join(run_dir, "lab-argv.json"), "w", encoding="utf-8") as fh:
         json.dump(sys.argv, fh)
+    with open(os.path.join(run_dir, f"lab-argv-{action}.json"), "w", encoding="utf-8") as fh:
+        json.dump(sys.argv, fh)
 folds_beating = 4 if outcome == "pass" else 1
 mean = 0.02 if outcome == "pass" else -0.01
 minimum = 0.01 if outcome == "pass" else -0.02
@@ -72,8 +74,32 @@ def row(ticker="BTC/USD"):
 
 
 result = row()
+pooled = {
+    "mean_improvement": 0.02 if outcome == "pass" else -0.01,
+    "ci_low": 0.01 if outcome == "pass" else -0.02,
+    "ci_high": 0.03 if outcome == "pass" else 0.0,
+    "n": 100,
+    "alpha": float(sys.argv[sys.argv.index("--alpha") + 1]) if "--alpha" in sys.argv else 0.05,
+    "fold_improvements": [0.02, 0.02, 0.02, 0.02] if outcome == "pass" else [-0.01] * 4,
+}
+null = {
+    "mean_improvement": -0.01,
+    "ci_low": -0.02,
+    "ci_high": 0.0,
+    "n": 100,
+    "alpha": pooled["alpha"],
+    "fold_improvements": [-0.01] * 4,
+}
+controls = {"shuffle": {"pooled": null}, "shift": {"pooled": null}}
 if action == "evaluate":
-    payload = {"action": "evaluate", "results": [result], "summary": {"runs": 1}}
+    payload = {
+        "action": "evaluate",
+        "primary": "all+reference+h1",
+        "results": [result],
+        "pooled": pooled,
+        "controls": controls,
+        "summary": {"runs": 1},
+    }
 elif action in {"sweep", "promote"}:
     candidate = os.path.join(os.environ.get("RUN_DIR", "."), "candidate.json")
     payload = {
@@ -81,6 +107,9 @@ elif action in {"sweep", "promote"}:
         "results": [result],
         "top": [result],
         "candidates": [candidate],
+        "primary_candidates": [candidate],
+        "primary": "all+reference+h1",
+        "pooled": pooled,
         "passed": True,
         "reasons": [],
         "summary": {"runs": 1, "gated": 1},
@@ -361,15 +390,16 @@ def test_mechanical_diagnostic_run_records_prereg_results_and_verdict(
         if line.strip()
     ]
     assert [entry["kind"] for entry in entries] == [
+        "holdout_freeze",
         "preregister",
         "results",
         "verdict",
         "review",
     ]
-    assert entries[0]["status"] == "preregistered"
-    assert entries[2]["outcome"] == "diagnostic"
-    assert entries[2]["metrics"]["targets"] == ["fwd_direction", "fwd_volume_ratio"]
-    assert "BTC/USD" in entries[2]["metrics"]["per_ticker"]
+    assert entries[1]["status"] == "preregistered"
+    assert entries[3]["outcome"] == "diagnostic"
+    assert entries[3]["metrics"]["targets"] == ["fwd_direction", "fwd_volume_ratio"]
+    assert "BTC/USD" in entries[3]["metrics"]["per_ticker"]
     run_dir = Path(summary["run_dir"])
     assert (run_dir / "report.md").exists()
     assert (run_dir / "preregister.json").exists()
@@ -500,11 +530,12 @@ def test_researcher_stop_blocks_with_exit_code_2(tmp_path, monkeypatch, capsys):
         if line.strip()
     ]
     assert [entry["kind"] for entry in entries] == [
+        "holdout_freeze",
         "preregister",
         "blocked",
         "review",
     ]
-    assert "researcher" in entries[1]["reason"]
+    assert "researcher" in entries[2]["reason"]
 
 
 # --------------------------------------------------------------------------- git safety
@@ -630,7 +661,9 @@ def test_repo_config_has_one_model_knob():
     root = Path(__file__).resolve().parents[1]
     config = tool.load_config(root)
     assert config["model"] == "opencode/deepseek-v4.1-flash-free"
-    assert config["models"] == {}
+    assert config["models"] == {"auditor": "opencode/claude-haiku-4-5"}
+    assert tool.resolve_model(config, "auditor") == "opencode/claude-haiku-4-5"
+    assert tool.resolve_model(config, "researcher") == "opencode/deepseek-v4.1-flash-free"
     assert config["review"]["enabled"] is True
 
 
@@ -680,3 +713,633 @@ def test_team_lead_resumes_a_turn_that_ended_without_lead_json(
     assert lead_turns[0]["turn"] == 1
     assert lead_turns[1]["turn"] == 2
     assert lead_turns[1]["status"] == "done"
+
+
+# --------------------------------------------------------------------------- hardening
+
+
+def _ctx(tmp_path, hypothesis=None, **overrides):
+    root = _repo(tmp_path, hypothesis or _hypothesis())
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(exist_ok=True)
+    config = tool.load_config(root)
+    ctx = tool.Context(
+        root=root,
+        config=config,
+        executor="mechanical",
+        trigger="test",
+        run_id="20260101T000000Z-test",
+        run_dir=run_dir,
+        hypothesis=tool.Hypothesis.from_dict(hypothesis or _hypothesis()),
+    )
+    for key, value in overrides.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def test_mechanical_review_fails_a_run_that_edits_a_protected_file(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    ctx.prereg = {
+        "id": "e1",
+        "lineage": ctx.lineage,
+        "git": {"sha": "deadbeef"},
+        "criteria": {"kind": "diagnostic"},
+        "protected": {},
+    }
+    (ctx.run_dir / "preregister.json").write_text(json.dumps(ctx.prereg), encoding="utf-8")
+    tool.append_entry(
+        ctx.ledger,
+        {"kind": "preregister", "run_id": ctx.run_id, "hypothesis_id": "H0"},
+    )
+    tool.append_entry(
+        ctx.ledger,
+        {"kind": "verdict", "run_id": ctx.run_id, "outcome": "negative"},
+    )
+    monkeypatch.setattr(tool, "protected_changes", lambda _ctx: ["tools/model_lab.py"])
+    review = tool.mechanical_review(ctx, {"outcome": "negative", "passed": False})
+    assert review["status"] == "fail"
+    check = next(item for item in review["checks"] if item["name"] == "protected-files")
+    assert check["ok"] is False
+
+
+def test_harness_change_is_accepted_but_never_provisional(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path, run_type="harness-change")
+    ctx.prereg = {
+        "id": "e1",
+        "lineage": ctx.lineage,
+        "git": {"sha": "deadbeef"},
+        "criteria": {"kind": "diagnostic"},
+        "protected": {},
+    }
+    (ctx.run_dir / "preregister.json").write_text(json.dumps(ctx.prereg), encoding="utf-8")
+    tool.append_entry(
+        ctx.ledger,
+        {"kind": "preregister", "run_id": ctx.run_id, "hypothesis_id": "H0"},
+    )
+    tool.append_entry(
+        ctx.ledger,
+        {"kind": "verdict", "run_id": ctx.run_id, "outcome": "harness-change"},
+    )
+    monkeypatch.setattr(tool, "protected_changes", lambda _ctx: ["tools/model_lab.py"])
+    review = tool.mechanical_review(ctx, {"outcome": "harness-change", "passed": False})
+    assert review["status"] == "warn"
+    protected = next(item for item in review["checks"] if item["name"] == "protected-files")
+    assert protected["ok"] is True
+    approval = next(item for item in review["checks"] if item["name"] == "human-approval")
+    assert approval["ok"] is False
+
+    verdict = tool.evaluate_mechanical(ctx, ctx.prereg)
+    assert verdict["outcome"] == "harness-change"
+    assert verdict["passed"] is False
+
+
+def test_role_and_wall_clock_ceilings_block_cleanly(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx.executor = "passes"
+    ctx.config["budgets"]["maxRolesPerRun"] = 0
+    record = tool.run_role(ctx, "researcher")
+    assert record["status"] == "failed"
+    assert "role ceiling" in record["reason"]
+
+    ctx.config["budgets"]["maxWallClockSeconds"] = 1
+    ctx.started = 0.0
+    reason = tool.ceiling_reason(ctx)
+    assert reason is not None and "wall-clock" in reason
+
+
+def test_no_new_information_blocks_an_identical_family_rerun(tmp_path):
+    hypothesis = _hypothesis("H1", needs=["code"])
+    hypothesis["family"] = "features"
+    hypothesis["experiment"]["action"] = "sweep"
+    hypothesis["experiment"]["primary"] = {
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+    }
+    hypothesis["experiment"]["maxConfigs"] = 2
+    hypothesis["criteria"] = {"kind": "improvement", "criteria_version": 2, "target": "fwd_direction"}
+    ctx = _ctx(tmp_path, hypothesis)
+    prior = {
+        "kind": "preregister",
+        "family": "features",
+        "feature_version": tool.FEATURE_VERSION,
+        "config_hash": tool.sha_of(hypothesis["experiment"]),
+        "data": {"tickers": {"BTC/USD": {"rows": 150}}},
+    }
+    reason = tool.no_new_information_reason(
+        ctx.root, ctx.hypothesis, [prior], min_new_bars=24
+    )
+    assert reason is not None and "no-new-information" in reason
+
+    changed = dict(hypothesis)
+    changed_experiment = dict(hypothesis["experiment"])
+    changed_experiment["maxConfigs"] = 3
+    changed["experiment"] = changed_experiment
+    changed_hypothesis = tool.Hypothesis.from_dict(changed)
+    assert (
+        tool.no_new_information_reason(
+            ctx.root, changed_hypothesis, [prior], min_new_bars=24
+        )
+        is None
+    )
+
+
+def test_canary_provisional_is_converted_to_invalid_and_voids_the_harness(tmp_path, monkeypatch):
+    hypothesis = _hypothesis("H0-canary")
+    hypothesis["family"] = "canary"
+    hypothesis["canary"] = True
+    hypothesis["experiment"] = {
+        "action": "evaluate",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1,
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    ctx = _ctx(tmp_path, hypothesis, run_type="experiment")
+    ctx.holdout_start = "2026-06-01T00:00:00Z"
+    ctx.prereg = {
+        "id": "e1",
+        "kind": "preregister",
+        "run_id": ctx.run_id,
+        "hypothesis_id": "H0-canary",
+        "family": "canary",
+        "lineage": "H0-canary",
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": ctx.holdout_start,
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    pooled = {
+        "mean_improvement": 0.02,
+        "ci_low": 0.01,
+        "ci_high": 0.03,
+        "n": 100,
+        "alpha": 0.05,
+        "fold_improvements": [0.01, 0.02, 0.01, 0.02],
+    }
+    monkeypatch.setattr(
+        tool,
+        "run_primary_evaluate",
+        lambda *_args, **_kwargs: {
+            "action": "evaluate",
+            "controls": {"shuffle": {"pooled": pooled}},
+            "results": [{"ticker": "BTC/USD", "paired": pooled}],
+        },
+    )
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+    assert verdict["outcome"] == "invalid"
+    from rl_crypto.experiments import harness_void, read_ledger
+
+    assert harness_void(read_ledger(ctx.ledger)) is not None
+
+
+def test_scoreboard_renders_old_entries_and_adds_new_counts():
+    root = Path(__file__).resolve().parents[1]
+    from rl_crypto.experiments import read_ledger, render_scoreboard
+
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    rendered = render_scoreboard(entries)
+    vocabulary = {
+        "negative",
+        "provisional",
+        "confirmed",
+        "refuted",
+        "invalid",
+        "diagnostic",
+        "harness-change",
+    }
+    for entry in entries:
+        if entry.get("kind") != "verdict":
+            continue
+        assert str(entry.get("outcome")) in vocabulary
+        assert str(entry.get("id")) in rendered
+    assert "provisional:" in rendered
+    assert "refuted-to-provisional:" in rendered
+    assert "harness:" in rendered
+
+
+def test_v2_improvement_run_uses_one_primary_config_and_a_frozen_cutoff(tmp_path, monkeypatch, capsys):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["needs"] = []
+    hypothesis["experiment"] = {
+        "action": "sweep",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSets": ["all"],
+        "modelSets": ["reference"],
+        "horizons": [1],
+        "maxConfigs": 1,
+        "folds": 4,
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    root = _repo(tmp_path, hypothesis)
+    _env(monkeypatch, root, tmp_path, fake_opencode=False)
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["outcome"] == "provisional"
+    assert summary["holdout_start"]
+    assert summary["lineage"] == "H1"
+    entries = [
+        json.loads(line)
+        for line in (root / "experiments" / "ledger.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    kinds = [entry["kind"] for entry in entries]
+    assert kinds[0] == "holdout_freeze"
+    assert entries[0]["holdout_start"] == summary["holdout_start"]
+    assert "results" in kinds and "verdict" in kinds and "review" in kinds
+    prereg = json.loads((Path(summary["run_dir"]) / "preregister.json").read_text())
+    assert prereg["criteria_version"] == 2
+    assert prereg["holdout_start"] == summary["holdout_start"]
+    assert prereg["protected"]["hash"]
+    argv = json.loads((Path(summary["run_dir"]) / "lab-argv.json").read_text())
+    assert "--holdout-start" in argv
+    assert "--controls" in argv and argv[argv.index("--controls") + 1] == "both"
+    sweep_argv = json.loads((Path(summary["run_dir"]) / "lab-argv-sweep.json").read_text())
+    assert "--primary-config" in sweep_argv
+    assert sweep_argv[sweep_argv.index("--primary-config") + 1] == "all+reference+h1"
+
+
+def test_seed_is_passed_to_the_lab(tmp_path, monkeypatch, capsys):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["needs"] = []
+    hypothesis["experiment"]["primary"] = {
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    root = _repo(tmp_path, hypothesis)
+    _env(monkeypatch, root, tmp_path, fake_opencode=False)
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    argv = json.loads((Path(summary["run_dir"]) / "lab-argv.json").read_text())
+    assert "--seed" in argv and argv[argv.index("--seed") + 1] == "0"
+    assert summary["seed"] == 0
+
+
+def test_harness_void_blocks_new_runs_until_cleared(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path, _hypothesis())
+    _env(monkeypatch, root, tmp_path, fake_opencode=False)
+    tool.append_entry(
+        root / "experiments" / "ledger.jsonl",
+        {"kind": "harness_void", "reason": "canary produced skill"},
+    )
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "harness-void"
+
+
+def test_preflight_warns_when_the_schedule_is_armed_without_forward_score(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    monkeypatch.setenv("RL_MODEL_IMPROVE_ENABLED", "true")
+    result = tool.preflight(ctx.root, ctx.config, executor="mechanical")
+    assert "schedule-forward-score" in result["warnings"]
+
+
+def test_team_events_are_persisted_for_audit(tmp_path):
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "tool_use", "part": {"tool": "team_spawn"}}),
+            json.dumps({"type": "tool_use", "part": {"tool": "team_results"}}),
+            json.dumps({"type": "text", "part": {"text": "not an event"}}),
+        ]
+    )
+    path = tmp_path / "team-events.jsonl"
+    count = tool.extract_team_events(stdout, path)
+    assert count == 2
+    assert tool.team_spawn_count(stdout) == 1
+    assert "team_spawn" in path.read_text()
+
+
+def test_promote_retrains_the_champion_only_on_the_pre_cutoff_slice(tmp_path, monkeypatch):
+    import importlib.util
+    import types
+
+    spec = importlib.util.spec_from_file_location(
+        "model_lab_promote",
+        Path(__file__).resolve().parents[1] / "tools" / "model_lab.py",
+    )
+    assert spec is not None and spec.loader is not None
+    lab = importlib.util.module_from_spec(spec)
+    sys.modules["model_lab_promote"] = lab
+    spec.loader.exec_module(lab)
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    cutoff = (start + timedelta(hours=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    samples = [
+        type("S", (), {
+            "timestamp": (start + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "features": {},
+            "targets": {"fwd_direction": 1.0},
+        })()
+        for index in range(130)
+    ]
+    captured = {}
+
+    def fake_train(train, **kwargs):
+        captured["train"] = list(train)
+        return {"champion": True}
+
+    candidate = types.SimpleNamespace(
+        horizon=1,
+        feature_version="rl-crypto/features/2",
+        targets={
+            "fwd_direction": types.SimpleNamespace(
+                model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+            )
+        },
+        feature_names=["ret_1"],
+    )
+    current = types.SimpleNamespace(
+        horizon=1,
+        feature_names=["ret_1"],
+        targets={
+            "fwd_direction": types.SimpleNamespace(
+                model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+            )
+        },
+    )
+    monkeypatch.setattr(lab, "load_ticker_rows", lambda ticker: samples)
+    monkeypatch.setattr(lab, "build_samples", lambda rows, **kwargs: tuple(samples))
+    monkeypatch.setattr(
+        lab,
+        "load_bundle",
+        lambda path: candidate if "candidate" in str(path) else current,
+    )
+    monkeypatch.setattr(lab, "default_bundle_path", lambda ticker, directory: Path("current.json"))
+    monkeypatch.setattr(lab, "train_tier1", fake_train)
+    monkeypatch.setattr(
+        lab,
+        "_bundle_view",
+        lambda bundle, samples, targets, **kwargs: {
+            "targets": {"fwd_direction": {"beats": True, "model": 0.5}},
+            "economic": {"model": {"trades": 20, "sharpe": 0.5, "max_drawdown": -0.1}},
+        },
+    )
+    monkeypatch.setattr(lab, "promotion_gate", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lab, "_save", lambda action, payload: Path("artifact.json"))
+    monkeypatch.setattr(lab, "LAB_DIR", tmp_path / "lab")
+
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("{}", encoding="utf-8")
+    args = types.SimpleNamespace(
+        candidate=str(candidate_path),
+        tickers=["BTC/USD"],
+        ticker="BTC/USD",
+        targets=["fwd_direction"],
+        holdout_start=cutoff,
+        champion_retrain=True,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        apply=False,
+        json=True,
+    )
+    assert lab.promote_action(args) == 0
+    assert captured["train"]
+    # sample_split finds the first post-cutoff sample; champion training is
+    # strictly before it.
+    assert all(sample.timestamp < cutoff for sample in captured["train"])
+
+
+def test_second_run_of_a_lineage_cannot_touch_the_holdout(tmp_path, monkeypatch):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["experiment"] = {
+        "action": "sweep",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSets": ["all"],
+        "modelSets": ["reference"],
+        "horizons": [1],
+        "maxConfigs": 1,
+        "folds": 4,
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": True,
+    }
+    ctx = _ctx(tmp_path, hypothesis)
+    ctx.prereg = {
+        "id": "e2",
+        "run_id": ctx.run_id,
+        "hypothesis_id": "H1",
+        "family": "features",
+        "lineage": "H1",
+        "trial_index": 2,
+        "criteria_version": 2,
+        "holdout_start": "2026-06-01T00:00:00Z",
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    tool.append_entry(
+        ctx.ledger,
+        {
+            "kind": "holdout",
+            "run_id": "previous",
+            "hypothesis_id": "H1",
+            "lineage": "H1",
+            "holdout_touched": True,
+        },
+    )
+    pooled = {
+        "mean_improvement": 0.02,
+        "ci_low": 0.01,
+        "ci_high": 0.03,
+        "n": 100,
+        "alpha": 0.05,
+        "fold_improvements": [0.01, 0.02, 0.01, 0.02],
+    }
+    monkeypatch.setattr(
+        tool,
+        "run_primary_evaluate",
+        lambda *_args, **_kwargs: {
+            "action": "evaluate",
+            "primary": "all+reference+h1",
+            "pooled": pooled,
+            "controls": {
+                "shuffle": {"pooled": {**pooled, "mean_improvement": -0.01, "ci_low": -0.02}},
+                "shift": {"pooled": {**pooled, "mean_improvement": -0.01, "ci_low": -0.02}},
+            },
+            "results": [{"ticker": "BTC/USD", "paired": pooled}],
+        },
+    )
+    monkeypatch.setattr(
+        tool,
+        "run_sweep",
+        lambda *_args, **_kwargs: {
+            "primary_candidates": ["candidate.json"],
+            "top": [{"candidate": "candidate.json", "ticker": "BTC/USD"}],
+        },
+    )
+    monkeypatch.setattr(
+        tool,
+        "run_promote",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not promote")),
+    )
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+    assert verdict["outcome"] == "blocked"
+    assert any("holdout already touched" in reason for reason in verdict["reasons"])
+
+
+def test_promotion_is_only_attempted_after_the_statistical_rule_passes(tmp_path, monkeypatch):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["experiment"] = {
+        "action": "sweep",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSets": ["all"],
+        "modelSets": ["reference"],
+        "horizons": [1],
+        "maxConfigs": 1,
+        "folds": 4,
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": True,
+    }
+    ctx = _ctx(tmp_path, hypothesis)
+    ctx.prereg = {
+        "id": "e2",
+        "run_id": ctx.run_id,
+        "hypothesis_id": "H1",
+        "family": "features",
+        "lineage": "H1",
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": "2026-06-01T00:00:00Z",
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    pooled = {
+        "mean_improvement": 0.02,
+        "ci_low": 0.01,
+        "ci_high": 0.03,
+        "n": 100,
+        "alpha": 0.05,
+        "fold_improvements": [0.01, 0.02, 0.01, 0.02],
+    }
+    null = {**pooled, "mean_improvement": -0.01, "ci_low": -0.02, "fold_improvements": [-0.01] * 4}
+    monkeypatch.setattr(
+        tool,
+        "run_primary_evaluate",
+        lambda *_args, **_kwargs: {
+            "action": "evaluate",
+            "primary": "all+reference+h1",
+            "pooled": pooled,
+            "controls": {"shuffle": {"pooled": null}, "shift": {"pooled": null}},
+            "results": [{"ticker": "BTC/USD", "paired": pooled}],
+        },
+    )
+    monkeypatch.setattr(
+        tool,
+        "run_sweep",
+        lambda *_args, **_kwargs: {
+            "primary_candidates": ["candidate.json"],
+            "top": [{"candidate": "candidate.json", "ticker": "BTC/USD"}],
+        },
+    )
+    calls = []
+
+    def fake_promote(*_args, **_kwargs):
+        calls.append(True)
+        return {"passed": True, "reasons": []}
+
+    monkeypatch.setattr(tool, "run_promote", fake_promote)
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+    assert calls == [True]
+    assert verdict["outcome"] == "provisional"

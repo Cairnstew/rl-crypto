@@ -9,6 +9,16 @@ permission:
     "src/*": allow
     "tests/*": allow
     "tools/*": allow
+    "src/rl_crypto/experiments.py": deny
+    "src/rl_crypto/targets.py": deny
+    "src/rl_crypto/samples.py": deny
+    "src/rl_crypto/ml/tier1.py": deny
+    "tools/model_lab.py": deny
+    "tools/model_improve.py": deny
+    "tests/test_experiments.py": deny
+    "tests/test_model_lab.py": deny
+    "tests/test_ml_measurement.py": deny
+    "tests/test_model_improve.py": deny
     "config/*": allow
     "config/model-improvement.json": deny
     "notebooks/*": allow
@@ -47,6 +57,9 @@ Work only inside `WORKTREE`.
 - **No questions.** No approval requests. If blocked, write it down and stop.
 - **Smallest change.** No drive-by refactors, no unrelated formatting, no
   dependency bumps.
+- **Never edit the measurement contract.** The verdict logic, walk-forward,
+  metrics/PnL, promotion gate, holdout accounting and their tests are denied.
+  Only a human-approved `harness-change` run may touch them.
 - **No leakage.** Every new feature at row `i` may use data up to `i` only.
   Exact-spacing guards return `None` on gaps; never fabricate a value.
 - **Feature contract.** A new or changed feature requires a `FEATURE_VERSION`

@@ -9,6 +9,16 @@ permission:
     "src/*": allow
     "tests/*": allow
     "tools/*": allow
+    "src/rl_crypto/experiments.py": deny
+    "src/rl_crypto/targets.py": deny
+    "src/rl_crypto/samples.py": deny
+    "src/rl_crypto/ml/tier1.py": deny
+    "tools/model_lab.py": deny
+    "tools/model_improve.py": deny
+    "tests/test_experiments.py": deny
+    "tests/test_model_lab.py": deny
+    "tests/test_ml_measurement.py": deny
+    "tests/test_model_improve.py": deny
     "config/*": allow
     "config/model-improvement.json": deny
     "notebooks/*": allow
@@ -84,6 +94,10 @@ The task prompt gives you `RUN_DIR`, `WORKTREE`, `PREREG` and the hypothesis.
 - Never touch `data/`, `models/`, `experiments/ledger.jsonl`,
   `experiments/SCOREBOARD.md`, `experiments/hypotheses.md`, the role agents, or
   the workflows.
+- Never edit the protected measurement contract (`experiments.py`,
+  `targets.py`, `samples.py`, `ml/tier1.py`, `model_lab.py`,
+  `model_improve.py`, and the measurement tests). Only a human-approved
+  `harness-change` run may touch them.
 - Never push, never merge to `main`, never touch another worktree.
 - The final 20% is reserved for `promote`; no tuning on it.
 - If a teammate cannot proceed, record the blocker in `lead.json` and stop.
