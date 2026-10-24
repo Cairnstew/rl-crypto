@@ -66,6 +66,20 @@ TARGET_DESCRIPTIONS: dict[str, str] = {
 MIN_VOL_SPAN = 2
 
 
+def label_purge(target: str, horizon: int) -> int:
+    """Rows to drop before a split boundary so no training label reads forward into it.
+
+    A label anchored at row ``i`` reads up to ``i + horizon``. ``fwd_volatility``
+    is the exception: its realised span is ``max(horizon, MIN_VOL_SPAN)``, so a
+    flat ``horizon`` purge leaves the last training label one bar inside the
+    test window at ``horizon=1``. Purging the target's true reach is the only
+    split that cannot leak.
+    """
+    if target == "fwd_volatility":
+        return max(horizon, MIN_VOL_SPAN)
+    return max(0, horizon)
+
+
 def _ahead_by(
     rows: Sequence[DatasetRow], index: int, span: int, interval_seconds: int
 ) -> bool:
@@ -230,4 +244,5 @@ __all__ = [
     "forward_return",
     "forward_volatility",
     "forward_volume_ratio",
+    "label_purge",
 ]

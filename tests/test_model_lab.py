@@ -117,3 +117,38 @@ def test_help_lists_actions_and_flags(capsys):
         assert action in out
     assert "--candidate" in out
     assert "final 20%" in out
+
+
+def _stamped_samples(n: int) -> list[Sample]:
+    """Ordered samples with distinct timestamps so split boundaries are indexable."""
+    return [
+        Sample(timestamp=f"2026-01-01T{i:06d}:00:00Z", features={}, targets={})
+        for i in range(n)
+    ]
+
+
+def test_walk_forward_purges_a_single_bar_for_a_one_bar_target():
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(samples, folds=2, horizon=1, targets=("fwd_return",))
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 1 <= samples.index(test[0])
+
+
+def test_walk_forward_purges_the_volatility_span_not_just_the_horizon():
+    """``fwd_volatility`` reads two bars at horizon 1; one-bar purge would leak."""
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(samples, folds=2, horizon=1, targets=("fwd_volatility",))
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 2 <= samples.index(test[0])
+
+
+def test_walk_forward_uses_the_widest_target_reach():
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(
+        samples, folds=2, horizon=1, targets=("fwd_return", "fwd_volatility")
+    )
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 2 <= samples.index(test[0])

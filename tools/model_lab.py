@@ -52,7 +52,7 @@ from rl_crypto.ml.tier1 import (
 )
 from rl_crypto.models import to_iso, utcnow
 from rl_crypto.samples import Sample, build_samples
-from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES
+from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES, label_purge
 
 ROOT = Path(os.environ.get("RL_CRYPTO_ROOT") or Path.cwd()).resolve()
 LAB_DIR = Path(
@@ -172,18 +172,24 @@ def walk_forward(
     *,
     folds: int = 4,
     horizon: int = 1,
+    targets: Sequence[str] = (),
+    purge: int | None = None,
     min_train_fraction: float = 0.34,
     min_test: int = 20,
 ) -> list[tuple[tuple[Sample, ...], tuple[Sample, ...]]]:
-    """Expanding-window walk-forward splits with a horizon purge.
+    """Expanding-window walk-forward splits with a label-reach purge.
 
-    The last ``horizon`` training rows are purged because their forward labels
-    overlap the test window. This is the smallest honest split for this repo; a
-    longer horizon needs a larger purge/embargo.
+    A training label anchored at row ``i`` reads up to ``i + horizon``, and
+    ``fwd_volatility`` reads ``max(horizon, MIN_VOL_SPAN)``. The purge therefore
+    defaults to the largest reach among ``targets`` so the last training label
+    never reads a test bar; passing ``horizon`` alone leaks one bar for
+    ``fwd_volatility`` at the default horizon.
     """
     n = len(samples)
     if n < min_test * 2:
         return []
+    reach = max((label_purge(target, horizon) for target in targets), default=max(0, horizon))
+    effective_purge = max(0, purge if purge is not None else reach)
     min_train = max(min_test, int(n * min_train_fraction))
     available = n - min_train
     folds = max(1, min(folds, available // min_test))
@@ -192,7 +198,7 @@ def walk_forward(
     for i in range(folds):
         train_end = min_train + i * test_size
         test_end = min(n, train_end + test_size)
-        train = tuple(samples[: max(0, train_end - max(0, horizon))])
+        train = tuple(samples[: max(0, train_end - effective_purge)])
         test = tuple(samples[train_end:test_end])
         if len(train) >= min_test and test:
             split.append((train, test))
@@ -387,7 +393,7 @@ def evaluate_ticker(
     if reserve_final > 0.0:
         keep = int(len(samples) * (1.0 - reserve_final))
         samples = samples[:keep]
-    splits = walk_forward(samples, folds=folds, horizon=config.horizon)
+    splits = walk_forward(samples, folds=folds, horizon=config.horizon, targets=targets)
     if not splits:
         return {"ticker": ticker, "error": "not enough samples for walk-forward"}
     target_records: dict[str, list[dict[str, Any]]] = {t: [] for t in targets}

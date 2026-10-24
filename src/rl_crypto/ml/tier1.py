@@ -40,7 +40,7 @@ import numpy as np
 from ..features import FEATURE_NAMES, FEATURE_VERSION
 from ..models import to_iso, utcnow
 from ..samples import Sample
-from ..targets import HORIZON_DEFAULT, TARGET_KINDS, TARGET_NAMES
+from ..targets import HORIZON_DEFAULT, TARGET_KINDS, TARGET_NAMES, label_purge
 from .base import Model, make_model, model_from_dict
 from .types import ML_SCHEMA
 
@@ -405,6 +405,34 @@ def _complete(sample: Sample, feature_names: Sequence[str]) -> bool:
     return all(sample.features.get(name) is not None for name in feature_names)
 
 
+def chronological_split(
+    usable: Sequence[Sample],
+    *,
+    target: str,
+    horizon: int,
+    holdout_fraction: float = HOLDOUT_FRACTION,
+) -> tuple[tuple[Sample, ...], tuple[Sample, ...], int]:
+    """Split time-ordered rows into ``(train, holdout)``, purging the boundary.
+
+    The newest ``holdout_fraction`` rows are reserved; the rows immediately
+    before them are dropped from training for ``label_purge(target, horizon)``
+    rows, because their forward labels reach into the holdout. Without the purge
+    the last training label is scored during fitting against a bar the holdout
+    also describes — a leak that inflates every holdout verdict, and is worst
+    for ``fwd_volatility`` whose label spans two bars even at ``horizon=1``.
+
+    Returns ``(train, holdout, n_holdout)``; ``holdout`` is empty when the
+    target cannot spare the minimum number of held-out rows, and the caller
+    reports it as unmeasured rather than inventing a verdict.
+    """
+    n_holdout = int(len(usable) * holdout_fraction)
+    if n_holdout < MIN_HOLDOUT_SAMPLES:
+        return tuple(usable), (), 0
+    split = len(usable) - n_holdout
+    purge = label_purge(target, horizon)
+    return tuple(usable[: max(0, split - purge)]), tuple(usable[split:]), n_holdout
+
+
 def train_tier1(
     samples: Sequence[Sample],
     *,
@@ -467,19 +495,25 @@ def train_tier1(
 
         # Chronological split: samples arrive in time order, so the tail is the
         # most recent data — the same "predict forward from here" question the
-        # live path asks.
-        n_holdout = int(len(usable) * holdout_fraction)
-        if n_holdout < MIN_HOLDOUT_SAMPLES:
+        # live path asks. The purge keeps the last training labels out of the
+        # holdout window; see `chronological_split`.
+        train_rows, test_rows, n_holdout = chronological_split(
+            usable,
+            target=target,
+            horizon=horizon,
+            holdout_fraction=holdout_fraction,
+        )
+        if not test_rows:
             notes.append(
                 f"{target}: no holdout ({len(usable)} usable rows cannot spare "
                 f"{MIN_HOLDOUT_SAMPLES}); reported as unmeasured"
             )
-            split = len(usable)
         else:
-            split = len(usable) - n_holdout
             holdout_n = max(holdout_n, n_holdout)
+        if not train_rows:
+            notes.append(f"{target}: no training rows after the holdout purge")
+            continue
 
-        train_rows, test_rows = usable[:split], usable[split:]
         matrix = _vectors(train_rows)
         labels = np.asarray([s.targets[target] for s in train_rows], dtype=float)
         chosen = overrides.get(target) or DEFAULT_MODEL_BY_TARGET.get(target)
@@ -561,6 +595,7 @@ __all__ = [
     "Tier1Model",
     "baseline_for",
     "beats_baseline",
+    "chronological_split",
     "classification_metrics",
     "regression_metrics",
     "train_tier1",
