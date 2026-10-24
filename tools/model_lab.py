@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from typing import Any
 
 import numpy as np
 
+from rl_crypto.backtest import pnl_metrics
 from rl_crypto.cache import candles_path, load_candles, slug_for, summary_path
 from rl_crypto.experiments import (
     check_promote_allowed,
@@ -337,41 +337,14 @@ def _pnl_metrics(
     fee_bps: float,
     slippage_bps: float,
 ) -> dict[str, Any]:
-    if not positions:
-        return {
-            "bars": 0,
-            "trades": 0,
-            "turnover": 0.0,
-            "total_return": None,
-            "sharpe": None,
-            "max_drawdown": None,
-            "hit_rate": None,
-        }
-    cost = (fee_bps + slippage_bps) / 10_000.0
-    pnl: list[float] = []
-    previous = 0.0
-    trades = 0
-    turnover = 0.0
-    for pos, realised in zip(positions, returns, strict=True):
-        delta = abs(pos - previous)
-        trades += 1 if delta > 0 else 0
-        turnover += delta
-        pnl.append(pos * realised - cost * delta)
-        previous = pos
-    pnl[-1] -= cost * abs(previous)
-    arr = np.asarray(pnl, dtype=float)
-    equity = np.exp(np.cumsum(arr))
-    peak = np.maximum.accumulate(equity)
-    std = float(np.std(arr))
-    return {
-        "bars": len(arr),
-        "trades": trades,
-        "turnover": float(turnover),
-        "total_return": float(equity[-1] - 1.0),
-        "sharpe": float(np.mean(arr) / std * math.sqrt(BARS_PER_YEAR)) if std > 0 else None,
-        "max_drawdown": float(np.min(equity / peak - 1.0)),
-        "hit_rate": float(np.mean(arr[arr != 0] > 0)) if np.any(arr != 0) else None,
-    }
+    """Per-side-cost economics, from the shared backtest implementation."""
+    return pnl_metrics(
+        positions,
+        returns,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        bars_per_year=BARS_PER_YEAR,
+    )
 
 
 def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None:

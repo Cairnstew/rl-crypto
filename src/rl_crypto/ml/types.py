@@ -54,6 +54,11 @@ class Outlook:
     confidence: float | None = None
     features: dict[str, float | None] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    #: Which bundle produced this outlook. Recorded so a forward test can
+    #: attribute realised skill to a specific deployed version instead of
+    #: pooling every prediction the ticker ever made.
+    bundle_trained_at: str | None = None
+    feature_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +67,8 @@ class Outlook:
             "generated_at": self.generated_at,
             "horizon": self.horizon,
             "feature_timestamp": self.feature_timestamp,
+            "bundle_trained_at": self.bundle_trained_at,
+            "feature_version": self.feature_version,
             "predictions": dict(self.predictions),
             "probabilities": dict(self.probabilities),
             "signal": self.signal,
