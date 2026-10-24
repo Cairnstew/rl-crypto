@@ -67,6 +67,35 @@ SPENDING_SCHEDULE = "alpha/(i*(i+1))"
 #: alpha, which in turn bounds the bootstrap resolution required below.
 FAMILY_TRIAL_CAP_DEFAULT = 10
 
+#: Stages whose failure is infrastructure, not a measurement. A run that only
+#: produced a pre-registration and one of these blocks never evaluated the
+#: hypothesis, so it must not spend alpha or a family trial.
+INFRA_BLOCK_STAGES = frozenset(
+    {
+        "preflight",
+        "lead",
+        "researcher",
+        "implementer",
+        "auditor",
+        "budget",
+        "staleness",
+        "timeout",
+    }
+)
+
+#: Reason fragments that identify an infrastructure block in older ledger
+#: entries, which predate the explicit ``infra`` flag.
+INFRA_REASON_MARKERS = (
+    "no lab result was produced",
+    "insufficient-resolution",
+    "timeout",
+    "timed out",
+    "credential",
+    "opencode refused",
+    "harness-void",
+    "role ",
+)
+
 #: Minimum number of time blocks for a percentile CI. Eight blocks made the
 #: interval anti-conservative: the effective sample size of a block bootstrap is
 #: the number of blocks, and eight is too few for a 2.5% tail. Twenty-four is
@@ -502,12 +531,90 @@ def append_entry(path: Path, entry: Mapping[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- accounting
 
 
+def infra_kind(entry: Mapping[str, Any] | str | None, stage: str | None = None) -> str | None:
+    """Classify an infrastructure block by its reason, or ``None``.
+
+    The distinction matters for accounting: a credential failure, a role
+    timeout, a stale archive and an unresolvable bootstrap CI all leave the
+    hypothesis untested. Only a run that reached a lab ``results`` entry spends a
+    trial. New entries carry ``infra: true`` and ``infra_kind`` explicitly;
+    older entries are classified from their stage and reason so the historical
+    ledger is interpreted consistently without being rewritten.
+    """
+    if isinstance(entry, Mapping):
+        if entry.get("kind") != "blocked":
+            return None
+        if "infra_kind" in entry:
+            return str(entry["infra_kind"] or "infra")
+        if "infra" in entry:
+            return "infra" if entry.get("infra") else None
+        stage = str(entry.get("stage") or "") or stage
+        reason = str(entry.get("reason") or "")
+    else:
+        reason = str(entry or "")
+    text = reason.lower()
+    if "insufficient-resolution" in text:
+        return "insufficient-resolution"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "stale" in text or "no-new-information" in text:
+        return "staleness"
+    if (
+        "credential" in text
+        or "opencode refused" in text
+        or "harness-void" in text
+    ):
+        return "role-error"
+    if stage and str(stage) in INFRA_BLOCK_STAGES:
+        roles = {"lead", "researcher", "implementer", "auditor"}
+        return "role-error" if str(stage) in roles else str(stage)
+    if any(marker in text for marker in INFRA_REASON_MARKERS):
+        return "infra"
+    return None
+
+
+def is_infra_block(entry: Mapping[str, Any]) -> bool:
+    """Whether a ledger entry records an infrastructure failure, not a result."""
+    return infra_kind(entry) is not None
+
+
+def _consumed_runs(entries: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Runs that reached a lab result or a scored verdict."""
+    runs: set[str] = set()
+    for entry in entries:
+        kind = entry.get("kind")
+        run_id = str(entry.get("run_id") or "")
+        if not run_id:
+            continue
+        if (kind == "results" and entry.get("lab", True) is not False) or kind == "verdict":
+            runs.add(run_id)
+    return runs
+
+
 def trial_counts(entries: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
-    """Cumulative preregistrations per family and per hypothesis."""
+    """Trials actually consumed per family and per hypothesis.
+
+    A pre-registration is a promise, not a trial. It consumes one only when the
+    run reached a lab ``results`` entry (or a scored verdict). A run stopped by
+    an infrastructure failure — a role/credential error, a timeout, a stale or
+    unchanged archive, or an unresolvable CI — is recorded as a blocked entry
+    with ``infra: true`` and does not consume the family's alpha budget.
+    """
+    consumed = _consumed_runs(entries)
+    infra_runs = {
+        str(entry.get("run_id"))
+        for entry in entries
+        if entry.get("run_id") and is_infra_block(entry)
+    }
     by_family: dict[str, int] = {}
     by_hypothesis: dict[str, int] = {}
     for entry in entries:
         if entry.get("kind") != "preregister":
+            continue
+        run_id = str(entry.get("run_id") or "")
+        # Very old entries predate ``run_id``. Without a run to match, the safe
+        # assumption is that the pre-registration did consume a trial.
+        if run_id and (run_id not in consumed or run_id in infra_runs):
             continue
         family = str(entry.get("family") or entry.get("hypothesis_id") or "unknown")
         hid = str(entry.get("hypothesis_id") or "unknown")
@@ -560,7 +667,7 @@ def harness_void(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     void: dict[str, Any] | None = None
     for entry in entries:
         if entry.get("kind") == "harness_void":
-            void = entry
+            void = dict(entry)
         elif entry.get("kind") == "harness_clear":
             void = None
     return void

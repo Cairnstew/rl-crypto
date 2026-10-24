@@ -547,6 +547,9 @@ def test_researcher_stop_blocks_with_exit_code_2(tmp_path, monkeypatch, capsys):
         "review",
     ]
     assert "researcher" in entries[2]["reason"]
+    assert entries[2]["infra"] is True
+    assert entries[2]["infra_kind"] == "role-error"
+    assert tool.trial_counts(entries)["family"] == {}
 
 
 # --------------------------------------------------------------------------- git safety
@@ -1479,6 +1482,7 @@ def test_v2_run_is_blocked_when_bootstrap_resolution_is_insufficient(tmp_path, m
     ctx.config["budgets"]["bootstrapSamples"] = 1000
     ctx.prereg = {
         "id": "e1",
+        "kind": "preregister",
         "run_id": ctx.run_id,
         "hypothesis_id": "H1",
         "family": "features",
@@ -1496,11 +1500,61 @@ def test_v2_run_is_blocked_when_bootstrap_resolution_is_insufficient(tmp_path, m
             AssertionError("must not run the lab before resolution is checked")
         ),
     )
+    tool.append_entry(ctx.ledger, ctx.prereg)
     verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
     assert verdict["outcome"] == "blocked"
     assert any("insufficient-resolution" in reason for reason in verdict["reasons"])
     blocked = [entry for entry in tool.read_ledger(ctx.ledger) if entry["kind"] == "blocked"]
     assert blocked and "insufficient-resolution" in blocked[-1]["reason"]
+    assert blocked[-1]["infra"] is True
+    assert tool.trial_counts(tool.read_ledger(ctx.ledger))["family"] == {}
+
+
+def test_lab_timeout_is_an_infra_block_and_does_not_consume_a_trial(tmp_path, monkeypatch):
+    """A timeout produces no lab result, so it must not append ``results``."""
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    ctx = _ctx(tmp_path, hypothesis)
+    ctx.config["budgets"]["labTimeoutSeconds"] = 0.05
+    slow_lab = tmp_path / "slow_lab.py"
+    slow_lab.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
+    monkeypatch.setenv("RL_MODEL_IMPROVE_LAB", f"{sys.executable} {slow_lab}")
+    ctx.prereg = {
+        "id": "e1",
+        "kind": "preregister",
+        "run_id": ctx.run_id,
+        "hypothesis_id": "H1",
+        "family": "features",
+        "lineage": "H1",
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": "2026-06-01T00:00:00Z",
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    tool.append_entry(ctx.ledger, ctx.prereg)
+
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+
+    assert verdict["outcome"] == "blocked"
+    assert verdict["infra"] is True
+    entries = tool.read_ledger(ctx.ledger)
+    assert not [entry for entry in entries if entry["kind"] == "results"]
+    blocked = [entry for entry in entries if entry["kind"] == "blocked"]
+    assert blocked[-1]["infra"] is True
+    assert blocked[-1]["infra_kind"] == "timeout"
+    assert tool.trial_counts(entries)["family"] == {}
 
 
 def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path, monkeypatch):

@@ -98,6 +98,74 @@ def test_trial_counts_are_cumulative_per_family_and_hypothesis(tmp_path):
     assert counts["hypothesis"] == {"H1": 2, "H4": 1}
 
 
+def test_infrastructure_blocks_do_not_consume_a_trial(tmp_path):
+    """Only a run that reached a lab result (or verdict) spends a trial.
+
+    A credential/role error, a timeout, a stale archive and an unresolvable
+    bootstrap CI all leave the hypothesis untested. They must not burn alpha or
+    the family cap.
+    """
+    ledger = tmp_path / "ledger.jsonl"
+    cases = [
+        ("role", "lead", "role-error"),
+        ("timeout", "evaluation", "timeout"),
+        ("stale", "staleness", "staleness"),
+        ("resolution", "evaluation", "insufficient-resolution"),
+    ]
+    for run_id, stage, kind in cases:
+        append_entry(
+            ledger,
+            {
+                "kind": "preregister",
+                "run_id": run_id,
+                "hypothesis_id": "H1",
+                "family": "features",
+            },
+        )
+        append_entry(
+            ledger,
+            {
+                "kind": "blocked",
+                "run_id": run_id,
+                "hypothesis_id": "H1",
+                "stage": stage,
+                "reason": f"{kind}: synthetic",
+                "infra": True,
+                "infra_kind": kind,
+            },
+        )
+    append_entry(
+        ledger,
+        {"kind": "preregister", "run_id": "result", "hypothesis_id": "H1", "family": "features"},
+    )
+    append_entry(
+        ledger,
+        {"kind": "results", "run_id": "result", "hypothesis_id": "H1", "family": "features"},
+    )
+    counts = trial_counts(read_ledger(ledger))
+    assert counts["family"] == {"features": 1}
+    assert counts["hypothesis"] == {"H1": 1}
+
+
+def test_legacy_infrastructure_blocks_are_classified_from_stage_and_reason():
+    from rl_crypto.experiments import is_infra_block
+
+    assert is_infra_block({"kind": "blocked", "stage": "lead", "reason": "x"})
+    assert is_infra_block(
+        {"kind": "blocked", "stage": "evaluation", "reason": "no lab result was produced"}
+    )
+    assert is_infra_block(
+        {
+            "kind": "blocked",
+            "stage": "evaluation",
+            "reason": "insufficient-resolution: only 8 blocks",
+        }
+    )
+    assert not is_infra_block(
+        {"kind": "blocked", "stage": "evaluation", "reason": "bootstrap CI lower bound <= 0"}
+    )
+
+
 def test_holdout_touches_are_counted_per_lineage(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     append_entry(ledger, {"kind": "holdout", "lineage": "H1/t1", "holdout_touched": True})

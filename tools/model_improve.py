@@ -60,6 +60,7 @@ from rl_crypto.experiments import (
     harness_void,
     holdout_cutoffs,
     holdout_touches,
+    infra_kind,
     iso,
     load_json,
     load_queue,
@@ -749,6 +750,10 @@ class Context:
     prereg: dict[str, Any] | None = None
     roles: list[dict[str, Any]] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
+    #: Lab invocations that produced no usable payload, keyed by artifact
+    #: label. A timeout is client-side and returns no output at all, so the
+    #: caller needs the distinction to avoid treating a log file as a result.
+    lab_failures: dict[str, str] = field(default_factory=dict)
     review: dict[str, Any] | None = None
     run_type: str = "experiment"
     lineage: str = ""
@@ -1344,6 +1349,7 @@ def run_lab(
         log = ctx.artifact(f"{label}.log")
         log.write_text(f"timeout after {_lab_timeout(ctx)}s\n{exc}\n", encoding="utf-8")
         ctx.artifacts[label] = str(log)
+        ctx.lab_failures[label] = "timeout"
         return None
 
     stderr_path = ctx.artifact(f"{label}.stderr.log")
@@ -1363,9 +1369,11 @@ def run_lab(
             encoding="utf-8",
         )
     ctx.artifacts[label] = str(artifact)
-    if proc.returncode != 0:
+    if proc.returncode != 0 or not isinstance(payload, dict):
+        ctx.lab_failures[label] = "timeout" if proc.returncode == 0 else "nonzero"
         return None
-    return payload if isinstance(payload, dict) else None
+    ctx.lab_failures.pop(label, None)
+    return payload
 
 
 def _record_holdout(
@@ -1441,6 +1449,8 @@ def _evaluate_mechanical_v2(
                     "hypothesis_id": prereg.get("hypothesis_id"),
                     "stage": "evaluation",
                     "reason": reason,
+                    "infra": True,
+                    "infra_kind": "insufficient-resolution",
                 },
             )
             return {
@@ -1448,6 +1458,8 @@ def _evaluate_mechanical_v2(
                 "outcome": "blocked",
                 "reasons": [reason],
                 "metrics": {"resolution": resolution},
+                "infra": True,
+                "infra_kind": "insufficient-resolution",
             }
     # The statistical rule is judged before the holdout is read; a dry run is
     # only attempted once the candidate has cleared it.
@@ -1468,12 +1480,21 @@ def _evaluate_mechanical_v2(
         full_archive=bool(experiment.get("fullArchive"))
         and criteria.get("kind") == "diagnostic",
     )
+    produced_result = primary is not None
     if primary is None:
+        failure = ctx.lab_failures.get("lab-evaluate", "no-payload")
+        reason = (
+            f"{failure}: no lab result was produced"
+            if failure != "nonzero"
+            else "lab exited nonzero: no lab result was produced"
+        )
         verdict = {
             "passed": False,
             "outcome": "blocked",
-            "reasons": ["no lab result was produced"],
+            "reasons": [reason],
             "metrics": {},
+            "infra": True,
+            "infra_kind": "timeout" if failure == "timeout" else "evaluation",
         }
         primary = {}
     elif null_canary:
@@ -1561,8 +1582,12 @@ def _evaluate_mechanical_v2(
             "metrics": verdict.get("metrics") or {},
         }
 
-    artifact = ctx.artifacts.get("lab-evaluate") or ctx.artifacts.get("lab-sweep")
-    if artifact:
+    artifact = (
+        ctx.artifacts.get("lab-evaluate") or ctx.artifacts.get("lab-sweep")
+        if produced_result
+        else None
+    )
+    if produced_result and artifact:
         append_entry(
             ctx.ledger,
             {
@@ -1574,21 +1599,23 @@ def _evaluate_mechanical_v2(
                 "metrics": verdict.get("metrics") or {},
                 "artifact": artifact,
                 "promote_artifact": ctx.artifacts.get("lab-promote"),
+                "protected_hash": (prereg.get("protected") or {}).get("hash"),
             },
         )
 
     if verdict.get("outcome") == "blocked":
-        append_entry(
-            ctx.ledger,
-            {
-                "kind": "blocked",
-                "run_id": ctx.run_id,
-                "hypothesis_id": prereg.get("hypothesis_id"),
-                "stage": "evaluation",
-                "reason": "; ".join(verdict.get("reasons") or []),
-                "artifact": artifact,
-            },
-        )
+        blocked = {
+            "kind": "blocked",
+            "run_id": ctx.run_id,
+            "hypothesis_id": prereg.get("hypothesis_id"),
+            "stage": "evaluation",
+            "reason": "; ".join(verdict.get("reasons") or []),
+            "artifact": artifact,
+        }
+        if verdict.get("infra"):
+            blocked["infra"] = True
+            blocked["infra_kind"] = verdict.get("infra_kind") or "evaluation"
+        append_entry(ctx.ledger, blocked)
     else:
         append_entry(
             ctx.ledger,
@@ -1608,6 +1635,7 @@ def _evaluate_mechanical_v2(
                 "reasons": verdict.get("reasons") or [],
                 "metrics": verdict.get("metrics") or {},
                 "prereg_id": prereg.get("id"),
+                "protected_hash": (prereg.get("protected") or {}).get("hash"),
                 "artifact": artifact,
             },
         )
@@ -1710,18 +1738,20 @@ def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, An
                 detail = " | ".join(Path(artifact).read_text(encoding="utf-8").splitlines()[-6:])
             except OSError:
                 detail = ""
-        append_entry(
-            ctx.ledger,
-            {
-                "kind": "blocked",
-                "run_id": ctx.run_id,
-                "hypothesis_id": prereg.get("hypothesis_id"),
-                "stage": "evaluation",
-                "reason": "; ".join(verdict.get("reasons") or []),
-                "artifact": artifact,
-                "detail": detail,
-            },
-        )
+        blocked = {
+            "kind": "blocked",
+            "run_id": ctx.run_id,
+            "hypothesis_id": prereg.get("hypothesis_id"),
+            "stage": "evaluation",
+            "reason": "; ".join(verdict.get("reasons") or []),
+            "artifact": artifact,
+            "detail": detail,
+        }
+        kind = infra_kind(" ".join(verdict.get("reasons") or []), "evaluation")
+        if kind:
+            blocked["infra"] = True
+            blocked["infra_kind"] = kind
+        append_entry(ctx.ledger, blocked)
     else:
         append_entry(
             ctx.ledger,
@@ -1741,6 +1771,7 @@ def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, An
                 "reasons": verdict.get("reasons") or [],
                 "metrics": verdict.get("metrics") or {},
                 "prereg_id": prereg.get("id"),
+                "protected_hash": (prereg.get("protected") or {}).get("hash"),
                 "artifact": ctx.artifacts.get("lab-sweep")
                 or ctx.artifacts.get("lab-evaluate"),
             },
@@ -2788,10 +2819,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         seed=int(config.get("seed") or 0),
     )
     ctx.run_dir.mkdir(parents=True, exist_ok=True)
+
+    def record_infra(stage: str, reason: str, kind: str | None = None) -> None:
+        """Record an infrastructure block that never earned a pre-registration."""
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "blocked",
+                "run_id": run_id,
+                "hypothesis_id": hypothesis.id,
+                "stage": stage,
+                "reason": reason,
+                "infra": True,
+                "infra_kind": kind or infra_kind(reason, stage) or "infra",
+            },
+        )
+
     pf = preflight(root, config, executor=executor, worktree=not args.no_worktree)
     _write_json(ctx.artifact("preflight.json"), pf)
     if not pf["ok"] and not args.force:
         _emit(pf, as_json=args.json)
+        record_infra("preflight", "preflight failed: " + ", ".join(pf.get("blocking") or []))
         print("\npreflight failed; pass --force to run anyway", file=sys.stderr)
         return 2
 
@@ -2801,6 +2849,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "harness-void: the canary produced shuffled-label skill; a human must "
             "run `harness-clear` before further runs"
         )
+        record_infra("harness", message, "harness-void")
         if args.json:
             print(json.dumps({"outcome": "harness-void", "reason": message}, indent=2))
         else:
@@ -2809,11 +2858,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     ctx.holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
     if criteria_version(hypothesis.criteria) >= 2 and not ctx.holdout_start:
-        print(
+        message = (
             "cannot freeze a holdout cutoff: no archive timestamps for the scoped "
-            "tickers; fix the data or pass RL_MODEL_IMPROVE_HOLDOUT_START",
-            file=sys.stderr,
+            "tickers; fix the data or pass RL_MODEL_IMPROVE_HOLDOUT_START"
         )
+        record_infra("staleness", message, "staleness")
+        print(message, file=sys.stderr)
         return 2
     new_info_reason = no_new_information_reason(
         root,
@@ -2822,6 +2872,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         min_new_bars=int((config.get("noNewInformation") or {}).get("minNewBars", 168)),
     )
     if new_info_reason and not args.force:
+        record_infra("staleness", new_info_reason, "staleness")
         if args.json:
             print(json.dumps({"outcome": "blocked", "reason": new_info_reason}, indent=2))
         else:
@@ -2852,6 +2903,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "hypothesis_id": hypothesis.id,
                 "stage": "preregister",
                 "reason": reason,
+                "infra": True,
+                "infra_kind": "family-cap",
             },
         )
         if args.json:
@@ -2942,6 +2995,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.commit = created
 
     def stop(reason: str, stage: str) -> int:
+        kind = infra_kind(reason, stage) or "infra"
         append_entry(
             ctx.ledger,
             {
@@ -2950,9 +3004,18 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "hypothesis_id": hypothesis.id,
                 "stage": stage,
                 "reason": reason,
+                "infra": True,
+                "infra_kind": kind,
             },
         )
-        verdict = {"outcome": "blocked", "passed": False, "reasons": [reason], "metrics": {}}
+        verdict = {
+            "outcome": "blocked",
+            "passed": False,
+            "reasons": [reason],
+            "metrics": {},
+            "infra": True,
+            "infra_kind": kind,
+        }
         pre_review_next = select_hypothesis(
             load_queue(ctx.queue_path),
             read_ledger(ctx.ledger),
