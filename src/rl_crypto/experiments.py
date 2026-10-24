@@ -852,6 +852,8 @@ def build_preregistration(
         "trigger": trigger,
         "seed": seed,
         "run_type": run_type or hypothesis.run_type,
+        "canary": bool(hypothesis.canary),
+        "canary_kind": hypothesis.canary_kind,
         "criteria_version": criteria_version(hypothesis.criteria),
         "holdout_start": holdout_start,
         "feature_version": feature_version,

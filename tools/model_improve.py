@@ -1635,6 +1635,10 @@ def _evaluate_mechanical_v2(
                 "trial_index": prereg.get("trial_index"),
                 "criteria_version": criteria_version(prereg.get("criteria")),
                 "run_type": ctx.run_type,
+                "canary": bool(ctx.hypothesis and ctx.hypothesis.canary),
+                "canary_kind": (
+                    ctx.hypothesis.canary_kind if ctx.hypothesis else "null"
+                ),
                 "holdout_start": ctx.holdout_start,
                 "outcome": verdict.get("outcome"),
                 "passed": verdict.get("passed"),
@@ -1771,6 +1775,10 @@ def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, An
                 "trial_index": prereg.get("trial_index"),
                 "criteria_version": criteria_version(prereg.get("criteria")),
                 "run_type": ctx.run_type,
+                "canary": bool(ctx.hypothesis and ctx.hypothesis.canary),
+                "canary_kind": (
+                    ctx.hypothesis.canary_kind if ctx.hypothesis else "null"
+                ),
                 "holdout_start": ctx.holdout_start,
                 "outcome": verdict.get("outcome"),
                 "passed": verdict.get("passed"),

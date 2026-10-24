@@ -995,7 +995,11 @@ def test_canary_provisional_is_converted_to_invalid_and_voids_the_harness(tmp_pa
     assert verdict["outcome"] == "invalid"
     from rl_crypto.experiments import harness_void, read_ledger
 
-    assert harness_void(read_ledger(ctx.ledger)) is not None
+    entries = read_ledger(ctx.ledger)
+    assert harness_void(entries) is not None
+    recorded = [entry for entry in entries if entry["kind"] == "verdict"][-1]
+    assert recorded["canary"] is True
+    assert recorded["canary_kind"] == "null"
 
 
 def test_scoreboard_renders_old_entries_and_adds_new_counts():
@@ -1993,7 +1997,11 @@ def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path,
     assert any("leak" in reason for reason in verdict["reasons"])
     from rl_crypto.experiments import harness_void, read_ledger
 
-    assert harness_void(read_ledger(ctx.ledger)) is None
+    entries = read_ledger(ctx.ledger)
+    assert harness_void(entries) is None
+    recorded = [entry for entry in entries if entry["kind"] == "verdict"][-1]
+    assert recorded["canary"] is True
+    assert recorded["canary_kind"] == "positive"
 
 
 def test_auditor_fixtures_have_the_required_shape():
