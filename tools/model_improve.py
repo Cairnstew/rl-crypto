@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shlex
@@ -3020,6 +3021,467 @@ def cmd_calibrate_null(args: argparse.Namespace) -> int:
     return 0 if not payload["calibration_failure"] else 1
 
 
+def target_metric_space(lab: Any, target: str) -> str:
+    """Metric space the reference model minimises for ``target``."""
+    name = str((lab.MODEL_SETS.get("reference") or {}).get(target) or "ridge")
+    return "log" if name == "log_ridge" else "raw"
+
+
+def label_variance(
+    lab: Any,
+    root: Path,
+    tickers: Sequence[str],
+    target: str,
+    *,
+    cutoff: str | None,
+    horizon: int,
+    space: str,
+) -> float:
+    """Variance of the label in the metric space, across the scoped archive."""
+    import numpy as np
+
+    values: list[float] = []
+    for ticker in tickers:
+        rows, _ = lab.filter_rows_before(lab.load_ticker_rows(ticker), cutoff)
+        samples = lab.build_samples(
+            rows, horizon=horizon, interval_seconds=lab.INTERVAL_SECONDS
+        )
+        for sample in samples:
+            value = sample.targets.get(target)
+            if value is None:
+                continue
+            number = float(value)
+            if space == "log":
+                if number <= 0.0:
+                    continue
+                values.append(math.log(number))
+            else:
+                values.append(number)
+    return float(np.var(values)) if len(values) > 1 else 0.0
+
+
+def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """One planted-signal repetition: candidate plus optional null controls."""
+    root = Path(str(payload["root"]))
+    lab = load_model_lab(root)
+    experiment = payload["experiment"]
+    plant_feature = str(payload["plant_feature"])
+    feature_names = tuple(
+        dict.fromkeys(
+            (
+                *lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
+                plant_feature,
+            )
+        )
+    )
+    config = lab.Config(
+        name=payload["config_name"],
+        feature_names=feature_names,
+        model_names=lab.resolve_model_set(str(experiment.get("modelSet") or "reference")),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    seed = int(payload["seed"])
+    target = str(payload["target"])
+    folds = int(payload["folds"])
+    strength = float(payload["strength"])
+    space = str(payload["space"])
+    alphas = {str(trial): float(alpha) for trial, alpha in payload["alphas"].items()}
+    fold_rule = str(payload["fold_rule"])
+
+    def run(mode: str | None) -> dict[str, Any]:
+        per_ticker = {
+            ticker: lab.evaluate_control_ticker(
+                ticker,
+                config,
+                target,
+                mode,
+                folds=folds,
+                holdout_start=payload.get("holdout_start"),
+                seed=seed,
+                shift_bars=int(payload.get("shift_bars") or 24),
+                plant_strength=strength,
+                plant_space=space,
+                plant_feature=plant_feature,
+            )
+            for ticker in payload["tickers"]
+        }
+        rows_by_ticker = {
+            ticker: list(row.get("paired_rows") or [])
+            for ticker, row in per_ticker.items()
+        }
+        folds_by_ticker = {
+            ticker: list(row.get("fold_improvements") or [])
+            for ticker, row in per_ticker.items()
+        }
+        pooled_by_trial: dict[str, Any] = {}
+        for trial, alpha in alphas.items():
+            pooled = lab.bootstrap_pooled(
+                rows_by_ticker,
+                alpha=alpha,
+                seed=seed,
+                block_bars=int(payload["block_bars"]),
+                bootstrap_samples=int(payload["bootstrap_samples"]),
+            )
+            pooled["fold_improvements"] = lab.pool_fold_improvements(
+                folds_by_ticker, folds
+            )
+            pooled["target"] = target
+            pooled_by_trial[trial] = pooled
+        means = {
+            str(ticker): float(
+                sum(float(item["improvement"]) for item in row["paired_rows"])
+                / len(row["paired_rows"])
+            )
+            if row.get("paired_rows")
+            else 0.0
+            for ticker, row in per_ticker.items()
+        }
+        return {"pooled_by_trial": pooled_by_trial, "per_ticker_means": means}
+
+    candidate = run(None)
+    control_runs = {str(mode): run(str(mode)) for mode in payload.get("controls") or []}
+    trials: dict[str, Any] = {}
+    for trial, alpha in alphas.items():
+        pooled = candidate["pooled_by_trial"][trial]
+        resolved = pooled.get("resolution_ok") is True
+        passed, reasons = paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+        positive = [
+            name for name, mean in candidate["per_ticker_means"].items() if mean > 0.0
+        ]
+        if payload.get("require_multiple_tickers", True) and len(
+            candidate["per_ticker_means"]
+        ) > 1 and len(positive) < 2:
+            passed = False
+            reasons.append("the planted result is carried by fewer than two tickers")
+        control_detail: dict[str, Any] = {}
+        for mode, control in control_runs.items():
+            control_pooled = control["pooled_by_trial"][trial]
+            control_passed, _ = paired_rule(
+                control_pooled, alpha=alpha, fold_rule=fold_rule
+            )
+            control_detail[mode] = {
+                "passed": control_passed,
+                "mean_improvement": control_pooled.get("mean_improvement"),
+            }
+            if control_passed:
+                passed = False
+                reasons.append(f"{mode} control also passed")
+        trials[trial] = {
+            "passed": bool(passed and resolved),
+            "resolution_ok": resolved,
+            "mean_improvement": pooled.get("mean_improvement"),
+            "ci_low": pooled.get("ci_low"),
+            "reasons": reasons,
+            "per_ticker_positive": len(positive),
+            "controls": control_detail,
+        }
+    return {
+        "seed": seed,
+        "strength": strength,
+        "effect": float(payload["effect"]),
+        "trials": trials,
+    }
+
+
+def _ledger_relative_improvement(
+    entries: Sequence[Mapping[str, Any]], target: str
+) -> float | None:
+    values: list[float] = []
+    for entry in entries:
+        if entry.get("kind") != "results":
+            continue
+        metrics = entry.get("metrics") or {}
+        for ticker_stats in (metrics.get("per_ticker") or {}).values():
+            stats = (ticker_stats.get("targets") or {}).get(target)
+            if isinstance(stats, Mapping) and isinstance(
+                stats.get("mean_improvement"), int | float
+            ):
+                values.append(float(stats["mean_improvement"]))
+    return sum(values) / len(values) if values else None
+
+
+def calibrate_power(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    entries: Sequence[Mapping[str, Any]],
+    targets: Sequence[str],
+    reps: int = 20,
+    effect_fractions: Sequence[float] = (0.001, 0.003, 0.01, 0.03, 0.1),
+    trials: Sequence[int] = (1, 5, 10),
+    alpha_family: float = 0.05,
+    power: float = 0.8,
+    jobs: int = 1,
+    cutoff: str | None = None,
+    controls: Sequence[str] = ("shuffle", "shift"),
+) -> dict[str, Any]:
+    """Minimum planted improvement that clears the v2 rule with the target power.
+
+    The signal is planted into the labels in the metric space the reference
+    model minimises (raw for ``fwd_volume_ratio``, log for ``fwd_volatility``)
+    and exposed as an independent feature. Its oracle paired improvement is
+    ``effect``, so the reported MDE is directly comparable with the pooled
+    paired improvements the lab reports.
+    """
+    lab = load_model_lab(root)
+    hypothesis = calibration_hypothesis(queue)
+    if hypothesis is None:
+        raise SystemExit("no canary hypothesis in experiments/hypotheses.json")
+    experiment = dict(hypothesis.experiment or {})
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    computed_cutoff, cutoff_source = calibration_cutoff(
+        root, config, hypothesis, entries
+    )
+    cutoff = cutoff or computed_cutoff
+    if cutoff and cutoff != computed_cutoff:
+        cutoff_source = "cli"
+    budgets = config.get("budgets") or {}
+    alphas = {
+        int(trial): alpha_for_trial(alpha_family, int(trial))
+        for trial in sorted({int(t) for t in trials})
+    }
+    fold_rule = str((hypothesis.criteria or {}).get("fold_rule", "all_positive"))
+    report: dict[str, Any] = {}
+    for target in targets:
+        space = target_metric_space(lab, target)
+        variance = label_variance(
+            lab,
+            root,
+            tickers,
+            target,
+            cutoff=cutoff,
+            horizon=int(experiment.get("horizon") or 1),
+            space=space,
+        )
+        if variance <= 0.0:
+            report[target] = {"error": "no usable labels / zero variance"}
+            continue
+        effects = sorted(
+            max(0.0, float(fraction) * variance) for fraction in effect_fractions
+        )
+        base = {
+            "root": str(root),
+            "experiment": experiment,
+            "config_name": primary_config_name(experiment),
+            "plant_feature": lab.PLANTED_FEATURE,
+            "target": target,
+            "space": space,
+            "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
+            "tickers": tickers,
+            "holdout_start": cutoff,
+            "shift_bars": int(experiment.get("shiftBars") or 24),
+            "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
+            "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
+            "fold_rule": fold_rule,
+            "require_multiple_tickers": bool(
+                (hypothesis.criteria or {}).get("require_multiple_tickers", True)
+            ),
+            "controls": list(controls),
+        }
+        alpha_payload = {str(trial): alpha for trial, alpha in alphas.items()}
+        # The observed comparison is the unplanted pooled paired improvement on
+        # the same archive and cutoff, in the same metric units as the MDE.
+        observed_runs = [
+            _power_job(
+                {
+                    **base,
+                    "seed": seed,
+                    "strength": 0.0,
+                    "effect": 0.0,
+                    "alphas": alpha_payload,
+                }
+            )
+            for seed in range(max(1, min(3, reps)))
+        ]
+        observed = [
+            float(run["trials"][str(min(alphas))]["mean_improvement"])
+            for run in observed_runs
+            if isinstance(
+                (run.get("trials") or {}).get(str(min(alphas)), {}).get(
+                    "mean_improvement"
+                ),
+                int | float,
+            )
+        ]
+        observed_mean = sum(observed) / len(observed) if observed else None
+        rows: list[dict[str, Any]] = []
+        for effect in effects:
+            strength = math.sqrt(effect)
+            jobs_list = [
+                {
+                    **base,
+                    "seed": seed,
+                    "strength": strength,
+                    "effect": effect,
+                    "alphas": alpha_payload,
+                }
+                for seed in range(int(reps))
+            ]
+            if jobs > 1:  # pragma: no cover - real calibration path
+                import concurrent.futures
+                import multiprocessing
+
+                context = multiprocessing.get_context("fork")
+                with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=max(1, min(int(jobs), len(jobs_list))),
+                    mp_context=context,
+                ) as pool:
+                    draws = list(pool.map(_power_job, jobs_list))
+            else:
+                draws = [_power_job(job) for job in jobs_list]
+            row: dict[str, Any] = {
+                "effect": effect,
+                "strength": strength,
+                "passes": {
+                    str(trial): sum(
+                        1 for draw in draws if draw["trials"][str(trial)]["passed"]
+                    )
+                    for trial in alphas
+                },
+                "achieved_mean": None,
+                "resolution_failures": {
+                    str(trial): sum(
+                        1
+                        for draw in draws
+                        if not draw["trials"][str(trial)]["resolution_ok"]
+                    )
+                    for trial in alphas
+                },
+            }
+            achieved = [
+                float(draw["trials"][str(min(alphas))]["mean_improvement"])
+                for draw in draws
+                if isinstance(
+                    draw["trials"][str(min(alphas))].get("mean_improvement"),
+                    int | float,
+                )
+            ]
+            row["achieved_mean"] = sum(achieved) / len(achieved) if achieved else None
+            rows.append(row)
+        mde: dict[str, Any] = {}
+        for trial in alphas:
+            key = str(trial)
+            hit = next(
+                (
+                    row
+                    for row in rows
+                    if int(reps) and row["passes"][key] / int(reps) >= power
+                ),
+                None,
+            )
+            mde[key] = {
+                "effect": None if hit is None else hit["effect"],
+                "strength": None if hit is None else hit["strength"],
+                "pass_rate": None if hit is None else hit["passes"][key] / int(reps),
+                "achieved_mean": None if hit is None else hit["achieved_mean"],
+                "detected": hit is not None,
+            }
+        report[target] = {
+            "space": space,
+            "label_variance": variance,
+            "observed_mean_improvement": observed_mean,
+            "observed_ledger_relative": _ledger_relative_improvement(entries, target),
+            "effect_fractions": list(effect_fractions),
+            "rows": rows,
+            "mde": mde,
+        }
+    protected = protected_digest(root)
+    return {
+        "action": "calibrate-power",
+        "targets": list(targets),
+        "reps": int(reps),
+        "power": float(power),
+        "trials": {str(trial): alpha for trial, alpha in alphas.items()},
+        "frozen_cutoff": cutoff,
+        "cutoff_source": cutoff_source,
+        "alpha_family": float(alpha_family),
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "results": report,
+    }
+
+
+def cmd_calibrate_power(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    targets = [
+        part for part in str(args.targets).replace(",", " ").split() if part.strip()
+    ]
+    fractions = [
+        float(part)
+        for part in str(args.effect_fractions).replace(",", " ").split()
+        if part.strip()
+    ]
+    payload = calibrate_power(
+        root,
+        config=config,
+        queue=queue,
+        entries=entries,
+        targets=targets,
+        reps=int(args.reps),
+        effect_fractions=fractions,
+        trials=[int(t) for t in str(args.trials).replace(",", " ").split() if t.strip()],
+        alpha_family=float(args.alpha),
+        power=float(args.power),
+        jobs=int(args.jobs),
+        cutoff=args.cutoff,
+        controls=[part for part in str(args.controls).split(",") if part and part != "none"],
+    )
+    run_dir = _calibration_dir(args, "calibrate-power")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-power.json", payload)
+    lines = [
+        "# Power calibration",
+        "",
+        f"- reps: {payload['reps']} | target power: {payload['power']:.2f}",
+        f"- frozen cutoff: {payload['frozen_cutoff']} ({payload['cutoff_source']})",
+        f"- protected hash: {payload['protected_hash']}",
+        f"- date: {payload['date']}",
+        "",
+        "| target | trial | nominal alpha | MDE (metric units) | pass rate |"
+        " observed (metric units) | ledger relative |",
+        "| ------ | ----- | ------------- | ------------------ | --------- |"
+        " ----------------------- | --------------- |",
+    ]
+    for target, block in payload["results"].items():
+        if "error" in block:
+            lines.append(f"| {target} | — | — | — | — | — | — |")
+            continue
+        for trial, row in block["mde"].items():
+            effect = "none" if row["effect"] is None else f"{row['effect']:.6g}"
+            rate = "—" if row["pass_rate"] is None else f"{row['pass_rate']:.2f}"
+            observed = (
+                "—"
+                if block["observed_mean_improvement"] is None
+                else f"{block['observed_mean_improvement']:.6g}"
+            )
+            ledger = (
+                "—"
+                if block["observed_ledger_relative"] is None
+                else f"{block['observed_ledger_relative']:.3f}"
+            )
+            lines.append(
+                f"| {target} | {trial} | {payload['trials'][trial]:.6f} | "
+                f"{effect} | {rate} | {observed} | {ledger} |"
+            )
+    lines.append("")
+    lines.append(
+        "MDE uses the same planted-signal grid for every trial; a smaller "
+        "alpha needs a larger effect."
+    )
+    (run_dir / "calibrate-power.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-power.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = repo_root()
     config = load_config(root)
@@ -3868,6 +4330,33 @@ def build_parser() -> argparse.ArgumentParser:
     cal_null.add_argument("--run-dir", default=None)
     cal_null.add_argument("--json", action="store_true")
     cal_null.set_defaults(func=cmd_calibrate_null)
+
+    cal_power = sub.add_parser(
+        "calibrate-power",
+        help="offline: minimum detectable planted improvement at a target power",
+    )
+    cal_power.add_argument(
+        "--targets", default="fwd_volume_ratio fwd_volatility", help="regression targets"
+    )
+    cal_power.add_argument("--reps", type=int, default=20)
+    cal_power.add_argument(
+        "--effect-fractions",
+        default="0.001,0.003,0.01,0.03,0.1",
+        help="planted effect as a fraction of label variance per grid point",
+    )
+    cal_power.add_argument("--trials", default="1,5,10")
+    cal_power.add_argument("--alpha", type=float, default=0.05)
+    cal_power.add_argument("--power", type=float, default=0.8)
+    cal_power.add_argument("--jobs", type=int, default=1)
+    cal_power.add_argument(
+        "--controls", default="shuffle,shift", help="control modes, or 'none'"
+    )
+    cal_power.add_argument(
+        "--cutoff", default=None, help="pin the holdout cutoff instead of computing it"
+    )
+    cal_power.add_argument("--run-dir", default=None)
+    cal_power.add_argument("--json", action="store_true")
+    cal_power.set_defaults(func=cmd_calibrate_power)
 
     verify = sub.add_parser("verify", help="forward-test status and bundle freshness")
     verify.add_argument("--run-dir", default=None)

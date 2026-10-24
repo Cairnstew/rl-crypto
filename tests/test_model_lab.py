@@ -45,6 +45,36 @@ def test_walk_forward_is_chronological_and_purges_the_horizon():
         assert len(train) >= 20
 
 
+def test_plant_signal_adds_a_learnable_feature_and_reports_its_effect():
+    samples = _samples(200)
+    planted, meta = lab.plant_signal(
+        samples, "fwd_return", strength=0.02, seed=3, space="raw"
+    )
+    assert meta["effect"] > 0.0
+    assert all(lab.PLANTED_FEATURE in sample.features for sample in planted)
+    changed = [
+        abs(a.targets["fwd_return"] - b.targets["fwd_return"])
+        for a, b in zip(planted, samples, strict=True)
+    ]
+    assert max(changed) > 0.0
+
+
+def test_plant_signal_in_log_space_keeps_the_target_positive():
+    samples = [
+        Sample(
+            timestamp=f"2026-01-01T{i % 24:02d}:00:00Z",
+            features={"ret_1": 0.0},
+            targets={"fwd_volatility": 0.02},
+        )
+        for i in range(50)
+    ]
+    planted, meta = lab.plant_signal(
+        samples, "fwd_volatility", strength=0.1, seed=4, space="log"
+    )
+    assert meta["space"] == "log"
+    assert all((sample.targets["fwd_volatility"] or 0.0) > 0.0 for sample in planted)
+
+
 def test_walk_forward_refuses_too_few_samples():
     assert lab.walk_forward(_samples(20), folds=3) == []
 

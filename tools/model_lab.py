@@ -644,6 +644,62 @@ def transform_targets(
     )
 
 
+#: Feature name used by the power calibration to plant a learnable signal.
+PLANTED_FEATURE = "planted_signal"
+
+
+def plant_signal(
+    samples: Sequence[Sample],
+    target: str,
+    *,
+    strength: float,
+    seed: int,
+    space: str = "raw",
+    feature: str = PLANTED_FEATURE,
+) -> tuple[tuple[Sample, ...], dict[str, Any]]:
+    """Plant a known linear signal into ``target`` and expose it as a feature.
+
+    The synthetic feature is an independent standard-normal draw, so the model
+    can learn it only from the planted component; the original target remains
+    as noise. The *oracle* paired improvement is ``strength**2 * var(z)`` in the
+    metric space of the target (raw squared error, or log-space squared error
+    for a ``log_ridge`` volatility model). ``space="log"`` plants
+    multiplicatively so the target stays positive:
+    ``log(y') = log(y) + strength * z``.
+    """
+    width = len(samples)
+    rng = np.random.default_rng(int(seed))
+    noise = rng.standard_normal(width)
+    planted: list[Sample] = []
+    for index, sample in enumerate(samples):
+        value = sample.targets.get(target)
+        new_targets: dict[str, float | None] = dict(sample.targets)
+        if value is not None and float(value) > 0.0:
+            if space == "log":
+                new_targets[target] = float(value) * math.exp(
+                    float(strength) * float(noise[index])
+                )
+            else:
+                new_targets[target] = float(value) + float(strength) * float(noise[index])
+        elif value is not None and space != "log":
+            new_targets[target] = float(value) + float(strength) * float(noise[index])
+        planted.append(
+            Sample(
+                timestamp=sample.timestamp,
+                features={**sample.features, feature: float(noise[index])},
+                targets=new_targets,
+            )
+        )
+    effect = float(strength) ** 2 * float(np.var(noise))
+    return tuple(planted), {
+        "feature": feature,
+        "strength": float(strength),
+        "space": space,
+        "effect": effect,
+        "n": width,
+    }
+
+
 def inject_leaky_feature(
     samples: Sequence[Sample], feature: str, target: str = "fwd_return"
 ) -> tuple[Sample, ...]:
@@ -710,21 +766,40 @@ def evaluate_control_ticker(
     ticker: str,
     config: Config,
     target: str,
-    mode: str,
+    mode: str | None,
     *,
     folds: int,
     holdout_start: str | None,
     seed: int,
     shift_bars: int,
     leak_feature: str | None = None,
+    plant_strength: float = 0.0,
+    plant_space: str = "raw",
+    plant_feature: str | None = None,
 ) -> dict[str, Any]:
+    """One walk-forward pass with an optional planted signal and control.
+
+    ``mode=None`` is the planted candidate; ``"shuffle"``/``"shift"`` transform
+    the (possibly planted) labels so the same signal can no longer be read.
+    """
     rows, _ = filter_rows_before(load_ticker_rows(ticker), holdout_start)
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    planted: dict[str, Any] | None = None
+    if plant_strength:
+        samples, planted = plant_signal(
+            samples,
+            target,
+            strength=plant_strength,
+            seed=seed,
+            space=plant_space,
+            feature=plant_feature or PLANTED_FEATURE,
+        )
     if leak_feature:
         samples = inject_leaky_feature(samples, leak_feature)
-    samples = transform_targets(
-        samples, target, mode, seed=seed, shift_bars=shift_bars
-    )
+    if mode is not None:
+        samples = transform_targets(
+            samples, target, mode, seed=seed, shift_bars=shift_bars
+        )
     splits = walk_forward(samples, folds=folds, horizon=config.horizon, targets=[target])
     paired: list[dict[str, Any]] = []
     fold_improvements: list[float | None] = []
@@ -745,6 +820,7 @@ def evaluate_control_ticker(
         "ticker": ticker,
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
+        "planted": planted,
     }
 
 

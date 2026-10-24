@@ -1678,6 +1678,90 @@ def pool_fold_improvements(folds_by_ticker, folds):
 '''
 
 
+FAKE_POWER_LAB = '''\
+"""Minimal model_lab surface for the power-calibration test (no numpy)."""
+
+INTERVAL_SECONDS = 3600
+PLANTED_FEATURE = "planted_signal"
+MODEL_SETS = {
+    "reference": {
+        "fwd_volume_ratio": "ridge",
+        "fwd_volatility": "log_ridge",
+    }
+}
+
+
+class Config:
+    def __init__(self, name, feature_names, model_names, horizon):
+        self.name = name
+        self.feature_names = feature_names
+        self.model_names = model_names
+        self.horizon = horizon
+
+
+class Sample:
+    def __init__(self, index):
+        self.timestamp = "2026-01-01T00:00:00Z"
+        self.features = {"ret_1": 0.0}
+        self.targets = {
+            "fwd_volume_ratio": 1.0 + (index % 10) * 0.01,
+            "fwd_volatility": 0.02 + (index % 10) * 0.001,
+        }
+
+
+def resolve_feature_names(spec):
+    return ("ret_1",)
+
+
+def resolve_model_set(spec):
+    return dict(MODEL_SETS["reference"])
+
+
+def load_ticker_rows(ticker):
+    return list(range(120))
+
+
+def filter_rows_before(rows, cutoff):
+    return tuple(rows), None
+
+
+def build_samples(rows, horizon, interval_seconds):
+    return [Sample(i) for i in range(100)]
+
+
+def evaluate_control_ticker(
+    ticker, config, target, mode, *, folds, holdout_start, seed, shift_bars,
+    leak_feature=None, plant_strength=0.0, plant_space="raw", plant_feature=None,
+):
+    control = mode is not None
+    value = -0.001 if control or plant_strength == 0.0 else plant_strength
+    return {
+        "ticker": ticker,
+        "paired_rows": [{"timestamp": "t", "improvement": value} for _ in range(100)],
+        "fold_improvements": [value] * folds,
+        "planted": {"strength": plant_strength, "effect": plant_strength ** 2},
+    }
+
+
+def bootstrap_pooled(rows_by_ticker, *, alpha, seed, block_bars, bootstrap_samples):
+    values = [row["improvement"] for rows in rows_by_ticker.values() for row in rows]
+    mean = sum(values) / len(values) if values else None
+    return {
+        "n": len(values),
+        "blocks": 30,
+        "alpha": alpha,
+        "mean_improvement": mean,
+        "ci_low": None if mean is None else mean - 0.001,
+        "ci_high": None if mean is None else mean + 0.001,
+        "resolution_ok": True,
+    }
+
+
+def pool_fold_improvements(folds_by_ticker, folds):
+    return [0.01] * folds
+'''
+
+
 def _null_hypothesis() -> dict:
     hypothesis = _hypothesis("H0-canary")
     hypothesis["family"] = "canary"
@@ -1719,6 +1803,67 @@ def test_null_calibration_measures_the_empirical_rate_without_touching_the_ledge
     assert payload["trials"]["1"]["rate"] == pytest.approx(0.5)
     assert payload["calibration_failure"] is True
     assert (root / "experiments" / "ledger.jsonl").read_text() == ledger_before
+
+
+def test_power_calibration_finds_the_minimum_planted_effect(tmp_path, monkeypatch):
+    root = _repo(tmp_path, _null_hypothesis())
+    (root / "tools" / "model_lab.py").write_text(FAKE_POWER_LAB, encoding="utf-8")
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    ledger_before = (root / "experiments" / "ledger.jsonl").read_text()
+    payload = tool.calibrate_power(
+        root,
+        config=tool.load_config(root),
+        queue=tool.load_queue(root / "experiments" / "hypotheses.json"),
+        entries=tool.read_ledger(root / "experiments" / "ledger.jsonl"),
+        targets=["fwd_volume_ratio"],
+        reps=4,
+        effect_fractions=[0.02, 0.0, 0.01],  # deliberately unsorted
+        trials=(1, 5),
+        controls=(),
+        power=0.8,
+    )
+    block = payload["results"]["fwd_volume_ratio"]
+    assert block["space"] == "raw"
+    # The fake passes once the planted strength clears the 0.001 CI width, so
+    # the first grid point that does is the 0.01-of-variance effect.
+    assert block["mde"]["1"]["effect"] == pytest.approx(0.01 * block["label_variance"])
+    assert block["mde"]["1"]["detected"] is True
+    assert block["mde"]["1"]["pass_rate"] == pytest.approx(1.0)
+    assert block["observed_mean_improvement"] == pytest.approx(-0.001)
+    assert (root / "experiments" / "ledger.jsonl").read_text() == ledger_before
+
+
+def test_calibrate_power_cli_writes_a_table(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path, _null_hypothesis())
+    (root / "tools" / "model_lab.py").write_text(FAKE_POWER_LAB, encoding="utf-8")
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    run_dir = tmp_path / "power"
+    rc = tool.main(
+        [
+            "calibrate-power",
+            "--targets",
+            "fwd_volume_ratio",
+            "--reps",
+            "3",
+            "--effect-fractions",
+            "0.0,0.01",
+            "--trials",
+            "1,5",
+            "--controls",
+            "none",
+            "--run-dir",
+            str(run_dir),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action"] == "calibrate-power"
+    artifact = Path(payload["run_dir"])
+    assert (artifact / "calibrate-power.json").exists()
+    markdown = (artifact / "calibrate-power.md").read_text()
+    assert "Power calibration" in markdown
+    assert "fwd_volume_ratio" in markdown
 
 
 def test_calibrate_null_cli_writes_under_the_run_dir(tmp_path, monkeypatch, capsys):
