@@ -455,12 +455,19 @@ def paired_target_rows(
     if model is None:
         return []
     kind = TARGET_KINDS[target]
+    space = str(getattr(model, "metric_space", "raw"))
     train_labels = [sample.targets.get(target) for sample in train]
-    baseline = (
-        float(np.mean([float(v) for v in train_labels if v is not None]))
-        if kind == "regression"
-        else _baseline_probability(train_labels)
-    )
+    if kind == "regression" and space == "log":
+        # The estimator minimises squared error on log(y); the constant must be
+        # fitted on the same scale, and non-positive rows carry no log.
+        positive = [float(v) for v in train_labels if v is not None and float(v) > 0.0]
+        baseline = float(np.mean(np.log(positive))) if positive else 0.0
+    else:
+        baseline = (
+            float(np.mean([float(v) for v in train_labels if v is not None]))
+            if kind == "regression"
+            else _baseline_probability(train_labels)
+        )
     if kind == "regression" and not any(v is not None for v in train_labels):
         baseline = 0.0
     out: list[dict[str, Any]] = []
@@ -471,7 +478,12 @@ def paired_target_rows(
         prediction = model.predict_row(sample.features)
         if prediction is None:
             continue
-        if kind == "regression":
+        if kind == "regression" and space == "log":
+            if float(truth) <= 0.0 or float(prediction) <= 0.0:
+                continue
+            model_loss = (math.log(float(truth)) - math.log(float(prediction))) ** 2
+            baseline_loss = (math.log(float(truth)) - baseline) ** 2
+        elif kind == "regression":
             model_loss = (float(truth) - float(prediction)) ** 2
             baseline_loss = (float(truth) - baseline) ** 2
         else:

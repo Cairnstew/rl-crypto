@@ -15,7 +15,7 @@ Branch `integration/2026-10-24`, based on `harness-hardening/2026-10-24`
 | promote gating | `experiments.check_promote_allowed` (one holdout per lineage, dry run before apply) + `model_lab.promotion_gate` | `promote_action` requires `--holdout-start` for apply; champion-retrain comparison; driver holdout-touch gate | **hardening**; apply now also writes `config/training.json` |
 | lab arguments | `--thresholds`, `--cost-levels`, `preregister`/`scoreboard` actions | `--alpha`, `--bootstrap-*`, `--holdout-start`, `--controls`, `--primary-config`, `--champion-retrain` | **hardening parser** + ported cost-grid flags; duplicate preregister/scoreboard actions deleted |
 | `_pnl_metrics` | thin wrapper over `rl_crypto.backtest.pnl_metrics` | inline copy | **one definition**: `rl_crypto.backtest.pnl_metrics` |
-| `evaluate_target` | raw-scale metrics | raw-scale metrics | **hardening** + bundle `metric_space` (log for `fwd_volatility`) |
+| `evaluate_target` / `paired_target_rows` | raw-scale metrics | raw-scale metrics | **hardening** + bundle `metric_space` (log for `fwd_volatility`) in both |
 | `walk_forward` | label-reach purge | horizon-only purge | **hardening signature + foundation reach** |
 
 Files changed by both branches: 19 (11 `.opencode` docs/tools, `experiments/SCOREBOARD.md`,
@@ -35,9 +35,10 @@ lab wrapper was migrated to the reconciled Python CLI.
 | `5dfd993` | 4 — auditor fixtures + `auditor-check` |
 | `0c879f8` | 5 — protected-list pin |
 | `8b2dad6` | docs / TS caller migration |
+| this commit | 1d — pair `fwd_volatility` improvements in log space |
 
 Every commit was checked with `ruff check` (clean) and the full offline suite:
-273, 302, 303, 310, 317, 319, 321, 321 passed at the successive tips.
+273, 302, 303, 310, 317, 319, 321, 321, 322 passed at the successive tips.
 
 ## Canary outcomes (mechanical, real archive)
 

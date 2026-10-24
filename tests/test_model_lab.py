@@ -530,3 +530,36 @@ def test_positive_canary_leak_is_detected_mechanically():
     assert leaks[0]["feature"] == "leak_next_bar_return"
     assert leaks[0]["target"] == "fwd_return"
     assert leaks[0]["correlation"] == pytest.approx(1.0)
+
+
+def test_paired_target_rows_honour_log_space_for_volatility():
+    """A log-space volatility model is paired against a log-space constant."""
+
+    class _Model:
+        def __init__(self, space):
+            self.metric_space = space
+
+        def predict_row(self, features):
+            return features["pred"]
+
+    class _Bundle:
+        def __init__(self, space):
+            self.targets = {"fwd_volatility": _Model(space)}
+
+    def _sample(value, pred):
+        return Sample(
+            timestamp=str(value),
+            features={"pred": pred},
+            targets={"fwd_volatility": value},
+        )
+
+    # Train constant is 0.01 on both scales. Prediction 0.03 against truth
+    # 0.02 is exactly as far from the constant as the truth is on the raw
+    # scale (improvement 0) but closer on the log scale (improvement > 0).
+    train = [_sample(0.01, 0.01), _sample(0.01, 0.01)]
+    test = [_sample(0.02, 0.03), _sample(0.02, 0.03)]
+    raw = lab.paired_target_rows(_Bundle("raw"), "fwd_volatility", train, test)
+    logged = lab.paired_target_rows(_Bundle("log"), "fwd_volatility", train, test)
+    assert raw and logged
+    assert all(abs(row["improvement"]) < 1e-12 for row in raw)
+    assert all(row["improvement"] > 0 for row in logged)
