@@ -417,3 +417,98 @@ def test_evaluate_grid_fits_each_fold_once(tmp_path, monkeypatch):
     low = by_key[(0.5, 10.0, 5.0)]["model"]["trades"]
     high = by_key[(0.9, 10.0, 5.0)]["model"]["trades"]
     assert high <= low
+
+
+def test_promote_apply_records_the_durable_training_config(tmp_path, monkeypatch):
+    """A promoted bundle only survives if the committed config names it too."""
+    import importlib.util
+    import json
+    import types
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location(
+        "model_lab_promote_apply",
+        Path(__file__).resolve().parents[1] / "tools" / "model_lab.py",
+    )
+    assert spec is not None and spec.loader is not None
+    lab = importlib.util.module_from_spec(spec)
+    sys.modules["model_lab_promote_apply"] = lab
+    spec.loader.exec_module(lab)
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    cutoff = (start + timedelta(hours=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    samples = [
+        type(
+            "S",
+            (),
+            {
+                "timestamp": (start + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "features": {},
+                "targets": {"fwd_direction": 1.0},
+            },
+        )()
+        for index in range(130)
+    ]
+    candidate = types.SimpleNamespace(
+        horizon=1,
+        feature_version="rl-crypto/features/2",
+        feature_names=["ret_1"],
+        targets={
+            "fwd_direction": types.SimpleNamespace(
+                model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+            )
+        },
+    )
+    current = types.SimpleNamespace(
+        horizon=1,
+        feature_names=["ret_1"],
+        targets={
+            "fwd_direction": types.SimpleNamespace(
+                model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+            )
+        },
+    )
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    monkeypatch.setattr(lab, "load_ticker_rows", lambda ticker: samples)
+    monkeypatch.setattr(lab, "build_samples", lambda rows, **kwargs: tuple(samples))
+    monkeypatch.setattr(
+        lab, "load_bundle", lambda path: candidate if "candidate" in str(path) else current
+    )
+    monkeypatch.setattr(lab, "default_bundle_path", lambda ticker, directory: Path("current.json"))
+    monkeypatch.setattr(lab, "train_tier1", lambda train, **kwargs: types.SimpleNamespace())
+    monkeypatch.setattr(
+        lab,
+        "_bundle_view",
+        lambda bundle, samples, targets, **kwargs: {
+            "targets": {"fwd_direction": {"beats": True, "model": 0.5}},
+            "economic": {"model": {"trades": 20, "sharpe": 0.5, "max_drawdown": -0.1}},
+        },
+    )
+    monkeypatch.setattr(lab, "promotion_gate", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lab, "_save", lambda action, payload: Path("artifact.json"))
+    monkeypatch.setattr(lab, "save_bundle", lambda bundle, path: None)
+    monkeypatch.setattr(lab, "LAB_DIR", tmp_path / "lab")
+
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("{}", encoding="utf-8")
+    args = types.SimpleNamespace(
+        candidate=str(candidate_path),
+        tickers=["BTC/USD"],
+        ticker="BTC/USD",
+        targets=["fwd_direction"],
+        holdout_start=cutoff,
+        champion_retrain=True,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        apply=True,
+        json=True,
+    )
+    assert lab.promote_action(args) == 0
+    config = json.loads((tmp_path / "config" / "training.json").read_text())
+    assert config["tickers"]["BTC/USD"] == {
+        "feature_names": ["ret_1"],
+        "model_names": {"fwd_direction": "logistic"},
+        "horizon": 1,
+    }

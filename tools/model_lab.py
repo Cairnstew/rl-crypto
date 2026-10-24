@@ -51,6 +51,7 @@ from rl_crypto.ml.tier1 import (
     classification_metrics,
     train_tier1,
 )
+from rl_crypto.ml.training_config import apply_promotion
 from rl_crypto.models import to_iso, utcnow
 from rl_crypto.samples import Sample, build_samples
 from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES, label_purge
@@ -1404,6 +1405,11 @@ def _infer_ticker(candidate: Path, tickers: Sequence[str]) -> str | None:
     return None
 
 
+def boundary_purge(targets: Sequence[str], horizon: int) -> int:
+    """Rows to drop before a holdout boundary so no training label reads into it."""
+    return max((label_purge(target, horizon) for target in targets), default=max(0, horizon))
+
+
 def promotion_gate(
     candidate: dict[str, Any], current: dict[str, Any] | None, primary: str
 ) -> list[str]:
@@ -1492,8 +1498,11 @@ def promote_action(args: argparse.Namespace) -> int:
             for target in targets
             if target in current.targets
         }
+        # The last training label must not read the first holdout bar: purge the
+        # widest target reach at the frozen cutoff, exactly as walk_forward does.
+        train_slice = samples[: max(0, split - boundary_purge(targets, current.horizon))]
         champion_bundle = train_tier1(
-            samples[:split],
+            train_slice,
             horizon=current.horizon,
             feature_names=current.feature_names,
             targets=list(targets),
@@ -1566,10 +1575,24 @@ def promote_action(args: argparse.Namespace) -> int:
             backup.write_text(current_path.read_text(encoding="utf-8"), encoding="utf-8")
             payload["backup"] = str(backup)
         save_bundle(candidate, current_path)
+        # The bundle alone is overwritten by the next scheduled retrain. Record
+        # the decision in the committed training config too, so `pipeline/run.py`
+        # rebuilds the same feature/model/horizon set from git.
+        apply_promotion(
+            ROOT,
+            ticker=ticker,
+            feature_names=candidate.feature_names,
+            model_names={
+                name: str(model.model.to_dict().get("kind"))
+                for name, model in candidate.targets.items()
+            },
+            horizon=candidate.horizon,
+        )
         payload["written"] = str(current_path)
+        payload["training_config"] = str(ROOT / "config" / "training.json")
         payload["warning"] = (
-            "The scheduled train run will overwrite this bundle unless the default "
-            "training config in pipeline/run.py is updated to the same feature/model set."
+            "The promoted feature/model/horizon set is recorded in "
+            "config/training.json, so the next scheduled retrain rebuilds it."
         )
     path = _save("promote", payload)
     if args.json:
