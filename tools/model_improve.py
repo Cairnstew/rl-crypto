@@ -2379,6 +2379,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
         return 0
     run_id = make_run_id(hypothesis)
     holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
+    if criteria_version(hypothesis.criteria) >= 2 and not holdout_start:
+        print(
+            "cannot freeze a holdout cutoff: no archive timestamps for the scoped tickers",
+            file=sys.stderr,
+        )
+        return 2
     prereg = build_preregistration(
         hypothesis,
         run_id=run_id,
@@ -2718,6 +2724,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     ctx.holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
+    if criteria_version(hypothesis.criteria) >= 2 and not ctx.holdout_start:
+        print(
+            "cannot freeze a holdout cutoff: no archive timestamps for the scoped "
+            "tickers; fix the data or pass RL_MODEL_IMPROVE_HOLDOUT_START",
+            file=sys.stderr,
+        )
+        return 2
     new_info_reason = no_new_information_reason(
         root,
         hypothesis,
