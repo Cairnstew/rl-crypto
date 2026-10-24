@@ -38,7 +38,7 @@ lab wrapper was migrated to the reconciled Python CLI.
 | this commit | 1d — pair `fwd_volatility` improvements in log space |
 
 Every commit was checked with `ruff check` (clean) and the full offline suite:
-273, 302, 303, 310, 317, 319, 321, 321, 322 passed at the successive tips.
+273, 302, 303, 310, 317, 319, 321, 321, 321, 322 passed at the successive tips.
 
 ## Canary outcomes (mechanical, real archive)
 
