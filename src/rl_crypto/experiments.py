@@ -1518,8 +1518,9 @@ def _evaluate_criteria_v2(
     passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
     reasons.extend(rule_reasons)
 
-    # Controls are mandatory for an improvement claim. A passing null means the
-    # pipeline can manufacture skill from noise, so the run is void.
+    # Controls are mandatory for an improvement claim. A passing *shuffle* is
+    # the one result that can only mean the pipeline manufactures skill from
+    # noise; shift/permute controls define the null distribution below.
     if criteria.get("require_controls", True):
         missing = [
             name for name in ("shuffle", "shift") if _pooled_control(lab_payload, name) is None
