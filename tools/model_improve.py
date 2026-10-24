@@ -1245,6 +1245,14 @@ def run_primary_evaluate(
     experiment = dict(prereg.get("experiment") or {})
     primary = primary_config_name(experiment)
     feature_set, model_set, horizon = primary.split("+")
+    criteria = (ctx.prereg or {}).get("criteria") or {}
+    control_shifts = criteria.get("control_shifts") or [
+        169,
+        173,
+        181,
+        191,
+        337,
+    ]
     args = [
         *_common_lab_args(ctx, experiment),
         "--feature-set",
@@ -1255,8 +1263,14 @@ def run_primary_evaluate(
         horizon.removeprefix("h"),
         "--controls",
         controls,
-        "--shift-bars",
-        str(int(experiment.get("shiftBars") or 24)),
+        "--control-shifts",
+        ",".join(str(int(value)) for value in control_shifts),
+        "--control-replicates",
+        str(int(criteria.get("control_replicates") or 6)),
+        "--control-quantile",
+        str(float(criteria.get("control_quantile") or 0.95)),
+        "--baseline",
+        str(criteria.get("baseline") or "strongest"),
     ]
     extra = [str(item) for item in experiment.get("extraLabArgs") or []]
     args.extend(extra)
@@ -1267,6 +1281,7 @@ def run_primary_evaluate(
 
 def run_sweep(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any] | None:
     experiment = dict(prereg.get("experiment") or {})
+    prereg_criteria = prereg.get("criteria") or {}
     budgets = ctx.config.get("budgets") or {}
     max_configs = min(
         int(experiment.get("maxConfigs") or budgets.get("maxConfigs", 8)),
@@ -1303,6 +1318,8 @@ def run_sweep(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any] | None:
         str(max_configs),
         "--primary-config",
         primary_config_name(experiment),
+        "--baseline",
+        str((prereg_criteria or {}).get("baseline") or "strongest"),
     ]
     return run_lab(ctx, "sweep", args, label="lab-sweep")
 
@@ -2831,7 +2848,7 @@ def _null_seed_job(payload: Mapping[str, Any]) -> dict[str, Any]:
             folds=folds,
             holdout_start=payload.get("holdout_start"),
             seed=seed,
-            shift_bars=int(payload.get("shift_bars") or 24),
+            shift_bars=int(payload.get("shift_bars") or 169),
         )
         for ticker in payload["tickers"]
     }
@@ -2921,7 +2938,7 @@ def calibrate_null(
         "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
         "tickers": tickers,
         "holdout_start": cutoff,
-        "shift_bars": int(experiment.get("shiftBars") or 24),
+        "shift_bars": int(experiment.get("shiftBars") or 169),
         "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
         "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
         "fold_rule": str((hypothesis.criteria or {}).get("fold_rule", "all_positive")),
@@ -3125,7 +3142,7 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                 folds=folds,
                 holdout_start=payload.get("holdout_start"),
                 seed=seed,
-                shift_bars=int(payload.get("shift_bars") or 24),
+                shift_bars=int(payload.get("shift_bars") or 169),
                 plant_strength=strength,
                 plant_space=space,
                 plant_feature=plant_feature,
@@ -3297,7 +3314,7 @@ def calibrate_power(
             "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
             "tickers": tickers,
             "holdout_start": cutoff,
-            "shift_bars": int(experiment.get("shiftBars") or 24),
+            "shift_bars": int(experiment.get("shiftBars") or 169),
             "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
             "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
             "fold_rule": fold_rule,
@@ -3550,7 +3567,7 @@ def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                 folds=folds,
                 holdout_start=payload.get("holdout_start"),
                 seed=seed,
-                shift_bars=int(payload.get("shift_bars") or 24),
+                shift_bars=int(payload.get("shift_bars") or 169),
                 inject_correlation=(
                     None
                     if payload.get("correlation") is None or lookahead
@@ -3811,7 +3828,7 @@ def calibrate_leaks(
                 "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
                 "tickers": tickers,
                 "holdout_start": cutoff,
-                "shift_bars": int(experiment.get("shiftBars") or 24),
+                "shift_bars": int(experiment.get("shiftBars") or 169),
                 "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
                 "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
                 "alpha": alpha,
@@ -3915,7 +3932,7 @@ def calibrate_leaks(
             "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
             "tickers": tickers,
             "holdout_start": cutoff,
-            "shift_bars": int(experiment.get("shiftBars") or 24),
+            "shift_bars": int(experiment.get("shiftBars") or 169),
             "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
             "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
             "alpha": alpha,
@@ -3937,9 +3954,73 @@ def calibrate_leaks(
         }
         for mode, block in baseline_job["controls"].items()
     }
-    baseline_flagged = any(row["passed"] for row in baseline_controls.values())
+    # Full control distribution on the unplanted archive: several >=1-week
+    # shifts plus block permutations. The old single 24-bar shift lived inside
+    # the target's own daily seasonality, so it could pass and make an honest
+    # fwd_volume_ratio run automatically invalid.
+    baseline_config = lab.Config(
+        name=primary_config_name(experiment),
+        feature_names=lab.resolve_feature_names(
+            str(experiment.get("featureSet") or "all")
+        ),
+        model_names=lab.resolve_model_set(
+            str(experiment.get("modelSet") or "reference")
+        ),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    baseline_distribution = lab._controls_for(
+        tickers,
+        baseline_config,
+        target,
+        folds=int(experiment.get("folds") or budgets.get("folds", 4)),
+        holdout_start=cutoff,
+        seed=int(config.get("seed") or 0),
+        shift_bars=169,
+        alpha=alpha,
+        block_bars=int(budgets.get("bootstrapBlockBars", 24)),
+        bootstrap_samples=1000,
+        modes=["shuffle", "shift", "block"],
+        control_shifts=lab.DEFAULT_CONTROL_SHIFTS,
+        control_replicates=4,
+        control_quantile=0.95,
+    )
+    for name, block in baseline_distribution.items():
+        if name == "distribution":
+            baseline_controls["distribution"] = {
+                "median": block.get("median"),
+                "quantile": block.get("quantile"),
+                "quantile_value": block.get("quantile_value"),
+                "n": block.get("n"),
+            }
+            continue
+        for variant in block.get("by_shift") or block.get("by_seed") or [block]:
+            pooled = variant.get("pooled") or variant
+            label = (
+                f"{name}:{variant.get('shift_bars') or variant.get('seed')}"
+                if variant is not block
+                else name
+            )
+            baseline_controls[label] = {
+                "passed": bool(
+                    pooled.get("resolution_ok") is True
+                    and paired_rule(
+                        pooled, alpha=alpha, fold_rule="all_positive"
+                    )[0]
+                ),
+                "mean_improvement": pooled.get("mean_improvement"),
+                "ci_low": pooled.get("ci_low"),
+            }
+    baseline_flagged = any(
+        row.get("passed") for row in baseline_controls.values() if isinstance(row, dict)
+    )
+    baseline_invalidating = bool(
+        (baseline_controls.get("shuffle") or {}).get("passed")
+    )
     baseline_structural = baseline_job.get("structural") or {}
     baseline_structural_ok = bool(baseline_structural.get("ok"))
+    clean_payload = _leak_payload(baseline_job, target)
+    clean_payload["controls"] = baseline_distribution
+    clean = evaluate_criteria(prereg, clean_payload)
     for row in graded:
         row["controls_specific"] = bool(row["controls_flagged"] and not baseline_flagged)
 
@@ -3983,7 +4064,7 @@ def calibrate_leaks(
 
     base, scenarios = leak_contract_payloads(target, alpha)
     canaries: list[dict[str, Any]] = []
-    clean = evaluate_criteria(prereg, base)
+    contract_clean = evaluate_criteria(prereg, base)
     for name, payload, layer in scenarios:
         verdict = evaluate_criteria(prereg, payload)
         canaries.append(
@@ -4005,10 +4086,12 @@ def calibrate_leaks(
         "protected_hash": protected["hash"],
         "date": iso(),
         "clean_baseline_outcome": clean.get("outcome"),
+        "contract_clean_outcome": contract_clean.get("outcome"),
         "baseline_structural": baseline_structural,
         "baseline_structural_ok": baseline_structural_ok,
         "control_baseline": {
             "any_passed": baseline_flagged,
+            "shuffle_passed": baseline_invalidating,
             "controls": baseline_controls,
         },
         "scaler_canary": {
@@ -4101,6 +4184,324 @@ def cmd_calibrate_leaks(args: argparse.Namespace) -> int:
     )
     (run_dir / "calibrate-leaks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     payload["markdown"] = str(run_dir / "calibrate-leaks.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0
+
+
+def calibrate_baselines(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    entries: Sequence[Mapping[str, Any]],
+    targets: Sequence[str] = ("fwd_volume_ratio", "fwd_volatility"),
+    cutoff: str | None = None,
+    folds: int | None = None,
+) -> dict[str, Any]:
+    """Diagnostic table: model skill against constant, seasonal, persistence.
+
+    No ledger write and no verdict. The v2 criterion uses the strongest of the
+    three; this shows the individual bars so a weak constant baseline cannot
+    make a persistent target look skilful.
+    """
+    lab = load_model_lab(root)
+    hypothesis = calibration_hypothesis(queue)
+    if hypothesis is None:
+        raise SystemExit("no canary hypothesis in experiments/hypotheses.json")
+    experiment = dict(hypothesis.experiment or {})
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    computed_cutoff, cutoff_source = calibration_cutoff(
+        root, config, hypothesis, entries
+    )
+    cutoff = cutoff or computed_cutoff
+    if cutoff and cutoff != computed_cutoff:
+        cutoff_source = "cli"
+    budgets = config.get("budgets") or {}
+    scope = config.get("scope") or {}
+    config_obj = lab.Config(
+        name=primary_config_name(experiment),
+        feature_names=lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
+        model_names=lab.resolve_model_set(str(experiment.get("modelSet") or "reference")),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    fold_count = int(folds or experiment.get("folds") or budgets.get("folds", 4))
+    rows: list[dict[str, Any]] = []
+    for ticker in tickers:
+        result = lab.evaluate_ticker(
+            ticker,
+            config_obj,
+            list(targets),
+            folds=fold_count,
+            threshold=float(scope.get("threshold", 0.55)),
+            position=str(scope.get("position", "long-only")),
+            fee_bps=float(scope.get("feeBps", 10.0)),
+            slippage_bps=float(scope.get("slippageBps", 5.0)),
+            holdout_start=cutoff,
+            primary_target=str(targets[0]),
+            baseline="strongest",
+            seed=int(config.get("seed") or 0),
+        )
+        if "error" in result:
+            rows.append({"ticker": ticker, "error": result["error"]})
+            continue
+        for target, block in (result.get("targets") or {}).items():
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "target": target,
+                    "metric": block.get("metric"),
+                    "model": block.get("model"),
+                    "baseline_mode": block.get("baseline_mode"),
+                    "baselines": block.get("baselines"),
+                    "skill_vs": block.get("skill_vs"),
+                    "improvement_vs_strongest": block.get("improvement"),
+                    "beats": block.get("beats"),
+                }
+            )
+    protected = protected_digest(root)
+    return {
+        "action": "calibrate-baselines",
+        "targets": list(targets),
+        "tickers": tickers,
+        "folds": fold_count,
+        "frozen_cutoff": cutoff,
+        "cutoff_source": cutoff_source,
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "rows": rows,
+    }
+
+
+def cmd_calibrate_baselines(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    targets = [
+        part for part in str(args.targets).replace(",", " ").split() if part.strip()
+    ]
+    payload = calibrate_baselines(
+        root,
+        config=config,
+        queue=queue,
+        entries=entries,
+        targets=targets,
+        cutoff=args.cutoff,
+        folds=args.folds,
+    )
+    run_dir = _calibration_dir(args, "calibrate-baselines")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-baselines.json", payload)
+    lines = [
+        "# Baseline diagnostic",
+        "",
+        f"- tickers: {', '.join(payload['tickers'])}",
+        f"- folds: {payload['folds']}",
+        f"- frozen cutoff: {payload['frozen_cutoff']} ({payload['cutoff_source']})",
+        f"- protected hash: {payload['protected_hash']}",
+        "",
+        "| target | ticker | metric | model | constant | seasonal | persistence |"
+        " strongest | skill vs constant | skill vs seasonal | skill vs persistence |",
+        "| ------ | ------ | ------ | ----- | -------- | -------- | ----------- |"
+        " --------- | ----------------- | ----------------- | -------------------- |",
+    ]
+    for row in payload["rows"]:
+        if "error" in row:
+            lines.append(f"| — | {row['ticker']} | — | error: {row['error']} | | | | | | | |")
+            continue
+        baselines = row.get("baselines") or {}
+        skill = row.get("skill_vs") or {}
+
+        def fmt(value):
+            return "—" if value is None else f"{value:+.4f}"
+
+        def fmt_metric(value):
+            return "—" if value is None else f"{value:.5f}"
+
+        lines.append(
+            f"| {row['target']} | {row['ticker']} | {row['metric']} | "
+            f"{fmt_metric(row.get('model'))} | "
+            f"{fmt_metric(baselines.get('constant'))} | "
+            f"{fmt_metric(baselines.get('seasonal'))} | "
+            f"{fmt_metric(baselines.get('persistence'))} | "
+            f"{row.get('baseline_mode')} | "
+            f"{fmt(skill.get('constant'))} | "
+            f"{fmt(skill.get('seasonal'))} | "
+            f"{fmt(skill.get('persistence'))} |"
+        )
+    lines.append("")
+    lines.append(
+        "Skill is relative improvement; a positive value means the model beat that "
+        "baseline. The strongest column is the one the v2 verdict uses."
+    )
+    (run_dir / "calibrate-baselines.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-baselines.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0
+
+
+def calibrate_controls(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    entries: Sequence[Mapping[str, Any]],
+    targets: Sequence[str] = ("fwd_volume_ratio", "fwd_volatility"),
+    shifts: Sequence[int] | None = None,
+    folds: int | None = None,
+    cutoff: str | None = None,
+    block_bars: int = 24,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Control improvement as a function of shift length (a diagnosis).
+
+    The old control shifted labels by 24 bars, a multiple of both a day and a
+    week. For a target with daily/weekly seasonality or strong persistence that
+    shift preserves the very structure the control is supposed to destroy, so
+    the "control" can look like skill. This table shows where the effect lives;
+    it never writes the ledger.
+    """
+    lab = load_model_lab(root)
+    hypothesis = calibration_hypothesis(queue)
+    if hypothesis is None:
+        raise SystemExit("no canary hypothesis in experiments/hypotheses.json")
+    experiment = dict(hypothesis.experiment or {})
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    computed_cutoff, cutoff_source = calibration_cutoff(
+        root, config, hypothesis, entries
+    )
+    cutoff = cutoff or computed_cutoff
+    if cutoff and cutoff != computed_cutoff:
+        cutoff_source = "cli"
+    budgets = config.get("budgets") or {}
+    fold_count = int(folds or experiment.get("folds") or budgets.get("folds", 4))
+    shift_list = list(shifts or (1, 6, 12, 24, 48, 72, 96, 120, 144, 168, 192,
+                                 216, 240, 264, 288, 312, 336, 169, 173, 181, 191))
+    config_obj = lab.Config(
+        name=primary_config_name(experiment),
+        feature_names=lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
+        model_names=lab.resolve_model_set(str(experiment.get("modelSet") or "reference")),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    report: dict[str, Any] = {}
+    for target in targets:
+        rows: list[dict[str, Any]] = []
+        for shift in shift_list:
+            per_ticker = {
+                ticker: lab.evaluate_control_ticker(
+                    ticker,
+                    config_obj,
+                    target,
+                    "shift",
+                    folds=fold_count,
+                    holdout_start=cutoff,
+                    seed=int(seed),
+                    shift_bars=int(shift),
+                    block_bars=int(block_bars),
+                )
+                for ticker in tickers
+            }
+            pooled = lab.bootstrap_pooled(
+                {ticker: row["paired_rows"] for ticker, row in per_ticker.items()},
+                alpha=float((hypothesis.criteria or {}).get("alpha", 0.05)),
+                seed=int(seed),
+                block_bars=int((config.get("budgets") or {}).get("bootstrapBlockBars", 24)),
+                bootstrap_samples=1000,
+            )
+            rows.append(
+                {
+                    "shift_bars": int(shift),
+                    "multiple_of_24": int(shift) % 24 == 0,
+                    "multiple_of_168": int(shift) % 168 == 0,
+                    "mean_improvement": pooled.get("mean_improvement"),
+                    "ci_low": pooled.get("ci_low"),
+                    "ci_high": pooled.get("ci_high"),
+                }
+            )
+        report[target] = rows
+    protected = protected_digest(root)
+    return {
+        "action": "calibrate-controls",
+        "targets": list(targets),
+        "tickers": tickers,
+        "folds": fold_count,
+        "block_bars": int(block_bars),
+        "frozen_cutoff": cutoff,
+        "cutoff_source": cutoff_source,
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "results": report,
+    }
+
+
+def cmd_calibrate_controls(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    targets = [
+        part for part in str(args.targets).replace(",", " ").split() if part.strip()
+    ]
+    shifts = [
+        int(part)
+        for part in str(args.shifts).replace(",", " ").split()
+        if part.strip()
+    ] or None
+    payload = calibrate_controls(
+        root,
+        config=config,
+        queue=queue,
+        entries=entries,
+        targets=targets,
+        shifts=shifts,
+        folds=args.folds,
+        cutoff=args.cutoff,
+        block_bars=int(args.block_bars),
+        seed=int(config.get("seed") or 0),
+    )
+    run_dir = _calibration_dir(args, "calibrate-controls")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-controls.json", payload)
+    lines = [
+        "# Control diagnosis: improvement vs shift length",
+        "",
+        f"- tickers: {', '.join(payload['tickers'])}",
+        f"- folds: {payload['folds']}",
+        f"- frozen cutoff: {payload['frozen_cutoff']} ({payload['cutoff_source']})",
+        f"- protected hash: {payload['protected_hash']}",
+        "",
+        "| target | shift | x24 | x168 | control improvement | CI low | CI high |",
+        "| ------ | ----- | --- | ---- | ------------------- | ------ | ------- |",
+    ]
+    for target, rows in payload["results"].items():
+        for row in rows:
+            mean = (
+                "—"
+                if row["mean_improvement"] is None
+                else f"{row['mean_improvement']:+.6f}"
+            )
+            low = "—" if row["ci_low"] is None else f"{row['ci_low']:+.6f}"
+            high = "—" if row["ci_high"] is None else f"{row['ci_high']:+.6f}"
+            lines.append(
+                f"| {target} | {row['shift_bars']} | "
+                f"{'yes' if row['multiple_of_24'] else ''} | "
+                f"{'yes' if row['multiple_of_168'] else ''} | {mean} | {low} | {high} |"
+            )
+    lines.append("")
+    lines.append(
+        "A control improvement that rises at multiples of 24 or 168 supports the "
+        "seasonality/persistence explanation for the old 24-bar control."
+    )
+    (run_dir / "calibrate-controls.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-controls.md")
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
         return 0
@@ -4984,6 +5385,34 @@ def build_parser() -> argparse.ArgumentParser:
     cal_power.add_argument("--run-dir", default=None)
     cal_power.add_argument("--json", action="store_true")
     cal_power.set_defaults(func=cmd_calibrate_power)
+
+    cal_baselines = sub.add_parser(
+        "calibrate-baselines",
+        help="offline: skill vs constant/seasonal/persistence (diagnostic only)",
+    )
+    cal_baselines.add_argument(
+        "--targets", default="fwd_volume_ratio,fwd_volatility"
+    )
+    cal_baselines.add_argument("--folds", type=int, default=None)
+    cal_baselines.add_argument("--cutoff", default=None)
+    cal_baselines.add_argument("--run-dir", default=None)
+    cal_baselines.add_argument("--json", action="store_true")
+    cal_baselines.set_defaults(func=cmd_calibrate_baselines)
+
+    cal_controls = sub.add_parser(
+        "calibrate-controls",
+        help="offline: control improvement vs shift length (diagnosis only)",
+    )
+    cal_controls.add_argument(
+        "--targets", default="fwd_volume_ratio,fwd_volatility"
+    )
+    cal_controls.add_argument("--shifts", default="")
+    cal_controls.add_argument("--folds", type=int, default=None)
+    cal_controls.add_argument("--block-bars", type=int, default=24)
+    cal_controls.add_argument("--cutoff", default=None)
+    cal_controls.add_argument("--run-dir", default=None)
+    cal_controls.add_argument("--json", action="store_true")
+    cal_controls.set_defaults(func=cmd_calibrate_controls)
 
     cal_leaks = sub.add_parser(
         "calibrate-leaks",

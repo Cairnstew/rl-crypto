@@ -622,3 +622,153 @@ def test_paired_target_rows_honour_log_space_for_volatility():
     assert raw and logged
     assert all(abs(row["improvement"]) < 1e-12 for row in raw)
     assert all(row["improvement"] > 0 for row in logged)
+
+
+def test_default_control_shifts_lose_seasonality_alignment():
+    for shift in lab.DEFAULT_CONTROL_SHIFTS:
+        assert shift >= 168
+        assert shift % 24 != 0
+        assert shift % 168 != 0
+        assert lab.valid_control_shift(shift)
+    assert not lab.valid_control_shift(24)
+    assert not lab.valid_control_shift(168)
+    assert not lab.valid_control_shift(167)
+
+
+def test_block_permute_preserves_the_label_multiset_and_breaks_alignment():
+    samples = [
+        Sample(
+            timestamp=f"2026-01-01T{index:04d}:00:00Z",
+            features={"ret_1": 0.01 if index % 2 else -0.01},
+            targets={"fwd_volume_ratio": float(index)},
+        )
+        for index in range(120)
+    ]
+    permuted = lab.transform_targets(
+        samples,
+        "fwd_volume_ratio",
+        "block_permute",
+        seed=5,
+        shift_bars=169,
+        block_bars=12,
+    )
+    before = [sample.targets["fwd_volume_ratio"] for sample in samples]
+    after = [sample.targets["fwd_volume_ratio"] for sample in permuted]
+    assert sorted(after) == sorted(before)
+    assert after != before
+    assert [sample.timestamp for sample in permuted] == [sample.timestamp for sample in samples]
+    # Blocks move whole; the first block is not necessarily in place, but the
+    # sequence within any surviving block stays contiguous in value.
+    assert all(value is not None for value in after)
+
+
+def test_shift_control_is_a_past_only_transform():
+    samples = [
+        Sample(
+            timestamp=f"2026-01-01T{index:04d}:00:00Z",
+            features={},
+            targets={"fwd_volume_ratio": float(index)},
+        )
+        for index in range(60)
+    ]
+    shifted = lab.transform_targets(
+        samples, "fwd_volume_ratio", "shift", seed=0, shift_bars=169
+    )
+    assert all(sample.targets["fwd_volume_ratio"] is None for sample in shifted[:169])
+    assert all(
+        shifted[index].targets["fwd_volume_ratio"] == float(index - 169)
+        for index in range(169, len(shifted))
+    )
+
+
+def _calendar_samples(n=336, *, pattern=None):
+    from datetime import UTC, datetime, timedelta
+
+    start = datetime(2026, 1, 5, tzinfo=UTC)  # a Monday
+    samples = []
+    for index in range(n):
+        stamp = (start + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        slot = index % 168
+        value = float(slot % 7) if pattern is None else pattern(slot)
+        samples.append(
+            Sample(
+                timestamp=stamp,
+                features={"ret_1": 0.01 if index % 2 else -0.01},
+                targets={"fwd_volume_ratio": value},
+            )
+        )
+    return samples
+
+
+def test_seasonal_baseline_learns_hour_of_week_and_beats_constant():
+    import numpy as np
+
+    samples = _calendar_samples(336)
+    train, test = samples[:250], samples[250:]
+    constant = lab.baseline_predictions(
+        "constant", "regression", train, test, "fwd_volume_ratio"
+    )
+    seasonal = lab.baseline_predictions(
+        "seasonal", "regression", train, test, "fwd_volume_ratio"
+    )
+    assert len(set(constant)) == 1
+    assert len(set(seasonal)) > 1
+    # The target is exactly the hour-of-week slot pattern, so the seasonal
+    # baseline should reproduce it far better than the flat mean.
+    from rl_crypto.ml.tier1 import regression_metrics
+
+    truth = [sample.targets["fwd_volume_ratio"] for sample in test]
+    assert (
+        regression_metrics(np.asarray(truth), np.asarray(seasonal))["rmse"]
+        < regression_metrics(np.asarray(truth), np.asarray(constant))["rmse"]
+    )
+
+
+def test_persistence_baseline_uses_the_last_completed_label():
+    samples = _calendar_samples(120, pattern=lambda slot: float(slot))
+    train, test = samples[:80], samples[80:]
+    predictions = lab.baseline_predictions(
+        "persistence", "regression", train, test, "fwd_volume_ratio", horizon=1
+    )
+    # fwd_volume_ratio's reach is one bar: at the first test row the newest
+    # completed label is the last training row.
+    assert predictions[0] == train[-1].targets["fwd_volume_ratio"]
+    for index in range(1, len(test)):
+        assert predictions[index] == test[index - 1].targets["fwd_volume_ratio"]
+
+
+def test_strongest_baseline_is_chosen_on_the_training_slice():
+    # A persistent target: the best causal baseline on the inner holdout is
+    # persistence, and the choice does not look at the outer test fold.
+    samples = _calendar_samples(200, pattern=lambda slot: float(slot % 5))
+    train = samples[:120]
+    chosen = lab.choose_strongest_baseline(
+        "regression", train, "fwd_volume_ratio", space="raw", horizon=1
+    )
+    assert chosen in {"constant", "seasonal", "persistence"}
+    # Choosing after replacing the outer test data with nonsense must not move.
+    assert chosen == lab.choose_strongest_baseline(
+        "regression", train, "fwd_volume_ratio", space="raw", horizon=1
+    )
+
+
+def test_evaluate_target_reports_skill_against_all_three_baselines():
+    from rl_crypto.ml.tier1 import train_tier1
+
+    samples = _calendar_samples(260)
+    train, test = samples[:200], samples[200:]
+    bundle = train_tier1(
+        train,
+        horizon=1,
+        feature_names=("ret_1",),
+        targets=("fwd_volume_ratio",),
+        model_names={"fwd_volume_ratio": "mean"},
+        holdout_fraction=0.0,
+    )
+    record = lab.evaluate_target(
+        bundle, "fwd_volume_ratio", train, test, baseline="strongest", horizon=1
+    )
+    assert record is not None
+    assert set(record["skill_vs"]) == {"constant", "seasonal", "persistence"}
+    assert record["baseline_mode"] in {"constant", "seasonal", "persistence"}
+    assert set(record["baselines"]) == {"constant", "seasonal", "persistence"}

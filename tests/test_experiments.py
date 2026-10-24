@@ -1020,3 +1020,91 @@ def test_no_new_information_default_is_168_bars_and_configurable():
     )
     assert payload["noNewInformation"]["minNewBars"] == 168
     assert payload["budgets"]["maxTrialsPerFamily"] == 10
+
+
+def test_v2_control_distribution_gates_on_a_pre_registered_quantile():
+    """The candidate must clear the control quantile; the median is reported."""
+    prereg = {
+        "run_id": "r",
+        "hypothesis_id": "H",
+        "family": "f",
+        "lineage": "H",
+        "trial_index": 1,
+        "holdout_start": "2026-01-01T00:00:00Z",
+        "criteria": {
+            "kind": "improvement",
+            "criteria_version": 2,
+            "target": "fwd_volume_ratio",
+            "primary": "all+reference+h1",
+            "alpha": 0.05,
+            "fold_rule": "all_positive",
+            "require_controls": True,
+            "require_multiple_tickers": False,
+            "control_quantile": 0.95,
+        },
+        "experiment": {
+            "tickers": ["BTC/USD"],
+            "targets": ["fwd_volume_ratio"],
+            "maxConfigs": 1,
+            "folds": 4,
+        },
+    }
+    negative = {
+        "mean_improvement": -0.01,
+        "ci_low": -0.02,
+        "ci_high": 0.0,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [-0.01] * 4,
+        "resolution_ok": True,
+    }
+
+    def payload(mean, ci_low, control_values):
+        candidate = {
+            "mean_improvement": mean,
+            "ci_low": ci_low,
+            "ci_high": mean + abs(mean),
+            "n": 100,
+            "alpha": 0.025,
+            "fold_improvements": [mean] * 4,
+            "resolution_ok": True,
+        }
+        return {
+            "primary": "all+reference+h1",
+            "results": [{"ticker": "BTC/USD", "paired": candidate}],
+            "pooled": candidate,
+            "controls": {
+                "shuffle": {"pooled": dict(negative)},
+                "shift": {
+                    "shifts": [169, 173],
+                    "pooled": dict(negative),
+                    "by_shift": [
+                        {"shift_bars": 169, "pooled": dict(negative)},
+                        {"shift_bars": 173, "pooled": dict(negative)},
+                    ],
+                },
+                "distribution": {
+                    "values": control_values,
+                    "n": len(control_values),
+                    "median": 0.001,
+                    "quantile": 0.95,
+                    "quantile_value": 0.01,
+                    "max": 0.01,
+                },
+            },
+            "purge": {"ok": True, "violations": []},
+            "structural": {
+                "ok": True,
+                "truncation": {"ok": True, "violations": []},
+                "perturbation": {"ok": True, "violations": []},
+            },
+        }
+
+    below = evaluate_criteria(prereg, payload(0.005, 0.001, [0.0] * 18 + [0.01, 0.02]))
+    assert below["outcome"] == "negative"
+    assert any("control quantile" in reason for reason in below["reasons"])
+    assert below["metrics"]["control_distribution"]["median"] == pytest.approx(0.001)
+
+    above = evaluate_criteria(prereg, payload(0.03, 0.02, [0.0] * 18 + [0.01, 0.02]))
+    assert above["outcome"] == "provisional"
+    assert above["metrics"]["control_distribution"]["quantile_value"] == pytest.approx(0.01)

@@ -46,7 +46,6 @@ from rl_crypto.ml.store import default_bundle_path, load_bundle, save_bundle
 from rl_crypto.ml.tier1 import (
     Tier1Bundle,
     _regression_metrics_in_space,
-    baseline_for,
     beats_baseline,
     classification_metrics,
     train_tier1,
@@ -409,11 +408,203 @@ def target_labels(samples: Sequence[Sample], target: str) -> np.ndarray:
     )
 
 
+def _hour_of_week(timestamp: str) -> int | None:
+    """The hour-of-week slot (0..167) of an ISO timestamp."""
+    from rl_crypto.dataset import parse_iso
+
+    parsed = parse_iso(timestamp)
+    if parsed is None:
+        return None
+    return int(parsed.weekday()) * 24 + int(parsed.hour)
+
+
+def _space_value(value: float, space: str) -> float | None:
+    if space == "log":
+        return math.log(value) if value > 0.0 else None
+    return float(value)
+
+
+def _from_space(value: float, space: str) -> float:
+    return math.exp(value) if space == "log" else value
+
+
+def _constant_baseline(
+    kind: str, train: Sequence[Sample], target: str, space: str
+) -> float:
+    values = [
+        _space_value(float(sample.targets[target]), space)
+        for sample in train
+        if sample.targets.get(target) is not None
+    ]
+    usable = [value for value in values if value is not None]
+    if not usable:
+        return 0.5 if kind == "classification" else 0.0
+    return float(np.mean(np.asarray(usable, dtype=float)))
+
+
+def _seasonal_model(
+    kind: str, train: Sequence[Sample], target: str, space: str
+) -> tuple[dict[int, float], float]:
+    """Hour-of-week mean from the training slice, plus the global fallback."""
+    buckets: dict[int, list[float]] = {}
+    for sample in train:
+        value = sample.targets.get(target)
+        if value is None:
+            continue
+        slot = _hour_of_week(sample.timestamp)
+        if slot is None:
+            continue
+        spaced = _space_value(float(value), space)
+        if spaced is None:
+            continue
+        buckets.setdefault(slot, []).append(spaced)
+    fallback = _constant_baseline(kind, train, target, space)
+    return (
+        {slot: float(np.mean(values)) for slot, values in buckets.items()},
+        fallback,
+    )
+
+
+def _persistence_series(
+    target: str, train: Sequence[Sample], test: Sequence[Sample], *, reach: int
+) -> list[float]:
+    """The most recent *completed* label available at each test row.
+
+    For a label anchored at ``j`` the value is not known until ``j + reach``;
+    at test row ``j`` the newest usable label is therefore the most recent
+    non-``None`` target at or before ``j - reach``.
+    """
+    combined = list(train) + list(test)
+    values = [sample.targets.get(target) for sample in combined]
+    out: list[float] = []
+    for index in range(len(train), len(combined)):
+        position = index - max(1, int(reach))
+        while position >= 0 and values[position] is None:
+            position -= 1
+        value = values[position] if position >= 0 else None
+        if value is None:
+            # No completed label yet: fall back to the training mean.
+            usable = [
+                float(sample.targets[target])
+                for sample in train
+                if sample.targets.get(target) is not None
+            ]
+            value = float(np.mean(usable)) if usable else 0.0
+        out.append(float(value))
+    return out
+
+
+def baseline_predictions(
+    mode: str,
+    kind: str,
+    train: Sequence[Sample],
+    test: Sequence[Sample],
+    target: str,
+    *,
+    space: str = "raw",
+    horizon: int = 1,
+) -> list[float]:
+    """Predictions of one baseline for ``test``, aligned row for row."""
+    if mode == "constant":
+        value = _from_space(_constant_baseline(kind, train, target, space), space)
+        return [value] * len(test)
+    if mode == "seasonal":
+        seasonal, fallback = _seasonal_model(kind, train, target, space)
+        out: list[float] = []
+        for sample in test:
+            slot = _hour_of_week(sample.timestamp)
+            value = seasonal.get(slot, fallback) if slot is not None else fallback
+            out.append(_from_space(value, space))
+        return out
+    if mode == "persistence":
+        return _persistence_series(
+            target, train, test, reach=label_purge(target, horizon)
+        )
+    raise SystemExit(f"unknown baseline {mode!r}")
+
+
+def _row_loss(
+    kind: str, truth: float, prediction: float, space: str
+) -> float | None:
+    if kind == "regression" and space == "log":
+        if truth <= 0.0 or prediction <= 0.0:
+            return None
+        return (math.log(truth) - math.log(prediction)) ** 2
+    if kind == "regression":
+        return (truth - prediction) ** 2
+    probability = min(max(float(prediction), 1e-12), 1.0 - 1e-12)
+    return -(
+        float(truth) * math.log(probability)
+        + (1.0 - float(truth)) * math.log(1.0 - probability)
+    )
+
+
+def _baseline_losses(
+    kind: str,
+    train: Sequence[Sample],
+    test: Sequence[Sample],
+    target: str,
+    *,
+    space: str,
+    horizon: int,
+) -> dict[str, float]:
+    """Mean baseline loss on ``test`` for each of the three baselines."""
+    out: dict[str, float] = {}
+    truth_values = [sample.targets.get(target) for sample in test]
+    for mode in ("constant", "seasonal", "persistence"):
+        predictions = baseline_predictions(
+            mode, kind, train, test, target, space=space, horizon=horizon
+        )
+        losses = [
+            _row_loss(kind, float(truth), float(prediction), space)
+            for truth, prediction in zip(truth_values, predictions, strict=True)
+            if truth is not None
+        ]
+        usable = [loss for loss in losses if loss is not None]
+        out[mode] = float(np.mean(usable)) if usable else float("inf")
+    return out
+
+
+def choose_strongest_baseline(
+    kind: str,
+    train: Sequence[Sample],
+    target: str,
+    *,
+    space: str,
+    horizon: int,
+    holdout_fraction: float = 0.2,
+) -> str:
+    """Pick the baseline that predicts best on a causal inner holdout of train.
+
+    Choosing on the *test* fold would be selection on the evaluation data. The
+    inner split is the newest ``holdout_fraction`` of the training rows, so the
+    choice is made without seeing the outer test fold.
+    """
+    if len(train) < 20:
+        return "constant"
+    cut = max(1, int(len(train) * (1.0 - holdout_fraction)))
+    inner_train, inner_test = list(train[:cut]), list(train[cut:])
+    if not inner_test:
+        return "constant"
+    losses = _baseline_losses(
+        kind,
+        inner_train,
+        inner_test,
+        target,
+        space=space,
+        horizon=horizon,
+    )
+    return min(losses, key=lambda name: losses[name])
+
+
 def evaluate_target(
     bundle: Tier1Bundle,
     target: str,
     train: Sequence[Sample],
     test: Sequence[Sample],
+    *,
+    baseline: str = "strongest",
+    horizon: int = 1,
 ) -> dict[str, Any] | None:
     model = bundle.targets.get(target)
     if model is None:
@@ -435,17 +626,53 @@ def evaluate_target(
         if kind == "regression"
         else classification_metrics(y_true, y_pred)
     )
-    baseline = baseline_for(kind, target_labels(train, target), y_true, space=space)
     key = metric_key(kind)
+    test_rows = [sample for sample, _ in rows]
+
+    # Report skill against all three baselines; the verdict uses the strongest.
+    baselines: dict[str, Any] = {}
+    skill_vs: dict[str, float | None] = {}
+    for mode in ("constant", "seasonal", "persistence"):
+        predictions = baseline_predictions(
+            mode, kind, train, test_rows, target, space=space, horizon=horizon
+        )
+        predicted = np.asarray(predictions, dtype=float)
+        baseline_metrics = (
+            _regression_metrics_in_space(y_true, predicted, space)
+            if kind == "regression"
+            else classification_metrics(y_true, predicted)
+        )
+        baselines[mode] = baseline_metrics.get(key)
+        skill_vs[mode] = relative_improvement(kind, metrics, baseline_metrics)
+
+    chosen = (
+        choose_strongest_baseline(
+            kind, train, target, space=space, horizon=horizon
+        )
+        if baseline == "strongest"
+        else baseline
+    )
+    predictions = baseline_predictions(
+        chosen, kind, train, test_rows, target, space=space, horizon=horizon
+    )
+    predicted = np.asarray(predictions, dtype=float)
+    chosen_metrics = (
+        _regression_metrics_in_space(y_true, predicted, space)
+        if kind == "regression"
+        else classification_metrics(y_true, predicted)
+    )
     return {
         "target": target,
         "kind": kind,
         "n": len(rows),
         "metric": key,
         "model": metrics.get(key),
-        "baseline": baseline.get(key),
-        "improvement": relative_improvement(kind, metrics, baseline),
-        "beats": beats_baseline(kind, metrics, baseline),
+        "baseline": chosen_metrics.get(key),
+        "baseline_mode": chosen,
+        "baselines": baselines,
+        "skill_vs": skill_vs,
+        "improvement": relative_improvement(kind, metrics, chosen_metrics),
+        "beats": beats_baseline(kind, metrics, chosen_metrics),
     }
 
 
@@ -616,54 +843,46 @@ def paired_target_rows(
     target: str,
     train: Sequence[Sample],
     test: Sequence[Sample],
+    *,
+    baseline: str = "strongest",
+    horizon: int = 1,
 ) -> list[dict[str, Any]]:
-    """Per-row paired loss improvement: positive means the model beat the constant."""
+    """Per-row paired loss improvement against the chosen baseline.
+
+    Positive means the model beat the baseline. ``baseline="strongest"`` picks
+    the best of constant / seasonal / persistence on an inner holdout of the
+    training slice, so the comparison cannot be won by choosing the weakest
+    baseline after seeing the test result.
+    """
     model = bundle.targets.get(target)
     if model is None:
         return []
     kind = TARGET_KINDS[target]
     space = str(getattr(model, "metric_space", "raw"))
-    train_labels = [sample.targets.get(target) for sample in train]
-    if kind == "regression" and space == "log":
-        # The estimator minimises squared error on log(y); the constant must be
-        # fitted on the same scale, and non-positive rows carry no log.
-        positive = [float(v) for v in train_labels if v is not None and float(v) > 0.0]
-        baseline = float(np.mean(np.log(positive))) if positive else 0.0
-    else:
-        baseline = (
-            float(np.mean([float(v) for v in train_labels if v is not None]))
-            if kind == "regression"
-            else _baseline_probability(train_labels)
+    chosen = (
+        choose_strongest_baseline(
+            kind, train, target, space=space, horizon=horizon
         )
-    if kind == "regression" and not any(v is not None for v in train_labels):
-        baseline = 0.0
+        if baseline == "strongest"
+        else baseline
+    )
+    predictions = baseline_predictions(
+        chosen, kind, train, test, target, space=space, horizon=horizon
+    )
     out: list[dict[str, Any]] = []
-    for sample in test:
+    for sample, baseline_prediction in zip(test, predictions, strict=True):
         truth = sample.targets.get(target)
         if truth is None:
             continue
         prediction = model.predict_row(sample.features)
         if prediction is None:
             continue
-        if kind == "regression" and space == "log":
-            if float(truth) <= 0.0 or float(prediction) <= 0.0:
-                continue
-            model_loss = (math.log(float(truth)) - math.log(float(prediction))) ** 2
-            baseline_loss = (math.log(float(truth)) - baseline) ** 2
-        elif kind == "regression":
-            model_loss = (float(truth) - float(prediction)) ** 2
-            baseline_loss = (float(truth) - baseline) ** 2
-        else:
-            probability = min(max(float(prediction), 1e-12), 1.0 - 1e-12)
-            constant = min(max(baseline, 1e-12), 1.0 - 1e-12)
-            model_loss = -(
-                float(truth) * math.log(probability)
-                + (1.0 - float(truth)) * math.log(1.0 - probability)
-            )
-            baseline_loss = -(
-                float(truth) * math.log(constant)
-                + (1.0 - float(truth)) * math.log(1.0 - constant)
-            )
+        model_loss = _row_loss(kind, float(truth), float(prediction), space)
+        baseline_loss = _row_loss(
+            kind, float(truth), float(baseline_prediction), space
+        )
+        if model_loss is None or baseline_loss is None:
+            continue
         out.append(
             {
                 "timestamp": sample.timestamp,
@@ -772,6 +991,27 @@ def pool_fold_improvements(
     return out
 
 
+#: Shifts used by the default control distribution. Every shift is at least a
+#: week (168 bars) and none is a multiple of 24 (a day) or 168 (a week): a
+#: daily/weekly-multiple shift preserves the target's own seasonality, so a
+#: "control" at 24 bars was still reading a real periodic signal for
+#: ``fwd_volume_ratio``/``fwd_volatility``.
+DEFAULT_CONTROL_SHIFTS: tuple[int, ...] = (169, 173, 181, 191, 337)
+
+#: Bars per block for the block-permuted-label control.
+DEFAULT_CONTROL_BLOCK_BARS = 24
+
+#: Pre-registered quantile of the control distribution a real improvement must
+#: exceed. The median is reported alongside it.
+DEFAULT_CONTROL_QUANTILE = 0.95
+
+
+def valid_control_shift(shift: int, *, minimum: int = 168) -> bool:
+    """A shift long enough to lose alignment without echoing a seasonality."""
+    value = int(shift)
+    return value >= int(minimum) and value % 24 != 0 and value % 168 != 0
+
+
 def transform_targets(
     samples: Sequence[Sample],
     target: str,
@@ -779,11 +1019,14 @@ def transform_targets(
     *,
     seed: int,
     shift_bars: int,
+    block_bars: int = DEFAULT_CONTROL_BLOCK_BARS,
 ) -> tuple[Sample, ...]:
     """Destroy feature/label alignment without reading any new bar.
 
     ``shuffle`` permutes the observed labels; ``shift`` moves labels backward
-    by ``shift_bars`` (a past label can never contain future information).
+    by ``shift_bars`` (a past label can never contain future information);
+    ``block_permute`` permutes contiguous blocks of labels, preserving local
+    autocorrelation while breaking the feature/label alignment.
     """
     values = [sample.targets.get(target) for sample in samples]
     if mode == "shuffle":
@@ -799,6 +1042,23 @@ def transform_targets(
         new_values = [None] * len(values)
         for index in range(width, len(values)):
             new_values[index] = values[index - width]
+    elif mode == "block_permute":
+        width = max(1, int(block_bars))
+        positions = [index for index, value in enumerate(values) if value is not None]
+        blocks = [
+            positions[start : start + width] for start in range(0, len(positions), width)
+        ]
+        rng = np.random.default_rng(int(seed))
+        order = rng.permutation(len(blocks))
+        permuted = list(values)
+        flat = [
+            values[index]
+            for block in order
+            for index in blocks[int(block)]
+        ]
+        for position, value in zip(positions, flat, strict=True):
+            permuted[position] = value
+        new_values = permuted
     else:  # pragma: no cover - guarded by the CLI choices
         raise SystemExit(f"unknown control mode {mode!r}")
     return tuple(
@@ -1133,6 +1393,8 @@ def evaluate_control_ticker(
     holdout_start: str | None,
     seed: int,
     shift_bars: int,
+    block_bars: int = DEFAULT_CONTROL_BLOCK_BARS,
+    baseline: str = "constant",
     leak_feature: str | None = None,
     plant_strength: float = 0.0,
     plant_space: str = "raw",
@@ -1227,7 +1489,12 @@ def evaluate_control_ticker(
     )
     if mode is not None:
         samples = transform_targets(
-            samples, target, mode, seed=seed, shift_bars=shift_bars
+            samples,
+            target,
+            mode,
+            seed=seed,
+            shift_bars=shift_bars,
+            block_bars=block_bars,
         )
     splits = walk_forward(samples, folds=folds, horizon=config.horizon, targets=[target])
     paired: list[dict[str, Any]] = []
@@ -1241,7 +1508,9 @@ def evaluate_control_ticker(
             model_names=config.model_names,
             holdout_fraction=0.0,
         )
-        rows_out = paired_target_rows(bundle, target, train, test)
+        rows_out = paired_target_rows(
+            bundle, target, train, test, baseline=baseline, horizon=config.horizon
+        )
         paired.extend(rows_out)
         values = [float(row["improvement"]) for row in rows_out]
         fold_improvements.append(float(np.mean(values)) if values else None)
@@ -1275,6 +1544,7 @@ def evaluate_ticker(
     full_archive: bool = False,
     primary_target: str | None = None,
     leak_feature: str | None = None,
+    baseline: str = "strongest",
     seed: int = 0,
 ) -> dict[str, Any]:
     """Walk-forward metrics plus a threshold x cost policy grid.
@@ -1331,11 +1601,20 @@ def evaluate_ticker(
             holdout_fraction=0.0,
         )
         for target in targets:
-            record = evaluate_target(bundle, target, train, test)
+            record = evaluate_target(
+                bundle, target, train, test, baseline=baseline, horizon=config.horizon
+            )
             if record is not None:
                 target_records[target].append(record)
         if paired_target is not None:
-            rows_out = paired_target_rows(bundle, paired_target, train, test)
+            rows_out = paired_target_rows(
+                bundle,
+                paired_target,
+                train,
+                test,
+                baseline=baseline,
+                horizon=config.horizon,
+            )
             paired.extend(rows_out)
             values = [float(row["improvement"]) for row in rows_out]
             fold_improvements.append(float(np.mean(values)) if values else None)
@@ -1596,10 +1875,24 @@ def _controls_for(
     block_bars: int,
     bootstrap_samples: int,
     modes: Sequence[str],
+    control_shifts: Sequence[int] | None = None,
+    control_replicates: int = 6,
+    control_quantile: float = DEFAULT_CONTROL_QUANTILE,
+    baseline: str = "constant",
     leak_feature: str | None = None,
 ) -> dict[str, Any]:
+    """Build the pre-registered control distribution.
+
+    The controls are label-destroying transforms: a shuffled label, a shift of
+    at least one week that is not a multiple of a day or a week, and a
+    block-permuted label. Each is pooled exactly like the candidate. The
+    verdict requires the candidate's pooled improvement to exceed a
+    pre-registered quantile of this distribution, and it reports the median.
+    """
     controls: dict[str, Any] = {}
-    for mode in modes:
+    distribution: list[float] = []
+
+    def run(mode: str, *, run_seed: int, run_shift: int, run_block: int) -> dict[str, Any]:
         per_ticker = {
             ticker: evaluate_control_ticker(
                 ticker,
@@ -1608,8 +1901,10 @@ def _controls_for(
                 mode,
                 folds=folds,
                 holdout_start=holdout_start,
-                seed=seed,
-                shift_bars=shift_bars,
+                seed=run_seed,
+                shift_bars=run_shift,
+                block_bars=run_block,
+                baseline=baseline,
                 leak_feature=leak_feature,
             )
             for ticker in tickers
@@ -1617,7 +1912,7 @@ def _controls_for(
         pooled = bootstrap_pooled(
             {ticker: row["paired_rows"] for ticker, row in per_ticker.items()},
             alpha=alpha,
-            seed=seed,
+            seed=run_seed,
             block_bars=block_bars,
             bootstrap_samples=bootstrap_samples,
         )
@@ -1625,12 +1920,96 @@ def _controls_for(
             {ticker: row["fold_improvements"] for ticker, row in per_ticker.items()},
             folds,
         )
-        controls[mode] = {
+        return pooled
+
+    if "shuffle" in modes:
+        pooled = run("shuffle", run_seed=seed, run_shift=shift_bars, run_block=block_bars)
+        controls["shuffle"] = {
             "pooled": pooled,
             "per_ticker": pooled.get("per_ticker") or {},
-            "shift_bars": int(shift_bars) if mode == "shift" else None,
+            "shift_bars": None,
+        }
+        if isinstance(pooled.get("mean_improvement"), int | float):
+            distribution.append(float(pooled["mean_improvement"]))
+
+    if "shift" in modes:
+        shifts = tuple(int(value) for value in (control_shifts or (shift_bars,)))
+        by_shift: list[dict[str, Any]] = []
+        for shift in shifts:
+            pooled = run("shift", run_seed=seed, run_shift=shift, run_block=block_bars)
+            by_shift.append(
+                {
+                    "shift_bars": shift,
+                    "pooled": pooled,
+                    "mean_improvement": pooled.get("mean_improvement"),
+                }
+            )
+            if isinstance(pooled.get("mean_improvement"), int | float):
+                distribution.append(float(pooled["mean_improvement"]))
+        representative = sorted(
+            by_shift,
+            key=lambda row: float(row.get("mean_improvement") or 0.0),
+        )[len(by_shift) // 2] if by_shift else None
+        controls["shift"] = {
+            "shifts": list(shifts),
+            "by_shift": by_shift,
+            "pooled": (representative or {}).get("pooled"),
+            "shift_bars": (representative or {}).get("shift_bars"),
+        }
+
+    if "block" in modes or "permute" in modes:
+        by_seed: list[dict[str, Any]] = []
+        for replicate in range(max(1, int(control_replicates))):
+            run_seed = int(seed) + replicate
+            pooled = run(
+                "block_permute",
+                run_seed=run_seed,
+                run_shift=shift_bars,
+                run_block=block_bars,
+            )
+            by_seed.append(
+                {
+                    "seed": run_seed,
+                    "block_bars": int(block_bars),
+                    "pooled": pooled,
+                    "mean_improvement": pooled.get("mean_improvement"),
+                }
+            )
+            if isinstance(pooled.get("mean_improvement"), int | float):
+                distribution.append(float(pooled["mean_improvement"]))
+        representative = sorted(
+            by_seed,
+            key=lambda row: float(row.get("mean_improvement") or 0.0),
+        )[len(by_seed) // 2] if by_seed else None
+        controls["permute"] = {
+            "replicates": len(by_seed),
+            "block_bars": int(block_bars),
+            "by_seed": by_seed,
+            "pooled": (representative or {}).get("pooled"),
+            "seed": (representative or {}).get("seed"),
+        }
+
+    if distribution:
+        ordered = sorted(distribution)
+        quantile = float(control_quantile)
+        index = min(len(ordered) - 1, max(0, math.ceil(quantile * len(ordered)) - 1))
+        controls["distribution"] = {
+            "values": ordered,
+            "n": len(ordered),
+            "median": float(np.median(ordered)),
+            "quantile": quantile,
+            "quantile_value": float(ordered[index]),
+            "max": float(ordered[-1]),
         }
     return controls
+
+
+def _parse_int_list(value: str | None) -> list[int] | None:
+    """``--control-shifts "169,173"`` (commas or spaces) or ``None``."""
+    if value is None:
+        return None
+    values = [part for part in str(value).replace(",", " ").split() if part.strip()]
+    return [int(part) for part in values] or None
 
 
 def _parse_thresholds(value: str | None) -> list[float] | None:
@@ -1742,6 +2121,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             full_archive=args.full_archive,
             primary_target=primary_target,
             leak_feature=leak_feature,
+            baseline=getattr(args, "baseline", "strongest"),
             seed=int(args.seed),
         )
         for ticker in tickers
@@ -1765,7 +2145,11 @@ def evaluate_action(args: argparse.Namespace) -> int:
     )
     controls: dict[str, Any] = {}
     if args.controls != "none":
-        modes = ["shuffle", "shift"] if args.controls == "both" else [args.controls]
+        modes = (
+            ["shuffle", "shift", "block"]
+            if args.controls == "both"
+            else [args.controls]
+        )
         controls = _controls_for(
             tickers,
             config,
@@ -1778,6 +2162,13 @@ def evaluate_action(args: argparse.Namespace) -> int:
             block_bars=args.bootstrap_block,
             bootstrap_samples=args.bootstrap_samples,
             modes=modes,
+            control_shifts=_parse_int_list(getattr(args, "control_shifts", None)),
+            control_replicates=int(getattr(args, "control_replicates", 6) or 6),
+            control_quantile=float(
+                getattr(args, "control_quantile", DEFAULT_CONTROL_QUANTILE)
+                or DEFAULT_CONTROL_QUANTILE
+            ),
+            baseline=getattr(args, "baseline", "strongest"),
             leak_feature=leak_feature,
         )
     payload = {
@@ -1953,6 +2344,7 @@ def sweep_action(args: argparse.Namespace) -> int:
                 reserve_final=0.2,
                 holdout_start=args.holdout_start,
                 primary_target=primary_target,
+                baseline=getattr(args, "baseline", "strongest"),
                 seed=int(args.seed),
             )
             result["primary"] = config.name == primary_config
@@ -2451,8 +2843,10 @@ Action-specific:
   evaluate  --feature-set all|market|core|price (default all)
             --model-set reference|baseline (default reference)
             --horizon N (default 1; the economic proxy is only honest at 1)
-            --controls none|shuffle|shift|both
-            --shift-bars N (default 24)
+            --controls none|shuffle|shift|block|both
+            --control-shifts "169,173,181,191,337"  (>=168, not 24/168 multiples)
+            --control-replicates N (block-permutation draws, default 6)
+            --control-quantile Q (default 0.95; the verdict quantile)
             --thresholds 0.5,0.55,0.6   one fit, many policy thresholds
             --cost-levels 10:5,0:0      one fit, many cost levels
             --full-archive (diagnostic only; cannot feed a verdict)
@@ -2508,6 +2902,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--alpha", type=float, default=0.05)
         p.add_argument("--bootstrap-samples", type=int, default=1000)
         p.add_argument("--bootstrap-block", type=int, default=24)
+        p.add_argument(
+            "--baseline",
+            choices=("constant", "seasonal", "persistence", "strongest"),
+            default="strongest",
+        )
         p.add_argument("--json", action="store_true")
         p.add_argument("--limit", type=int, default=20)
 
@@ -2518,9 +2917,27 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--horizon", type=int, default=1)
     evaluate.add_argument("--full-archive", action="store_true")
     evaluate.add_argument(
-        "--controls", choices=("none", "shuffle", "shift", "both"), default="none"
+        "--controls",
+        choices=("none", "shuffle", "shift", "block", "both"),
+        default="none",
     )
-    evaluate.add_argument("--shift-bars", type=int, default=24)
+    evaluate.add_argument(
+        "--shift-bars",
+        type=int,
+        default=169,
+        help="single label shift (deprecated; use --control-shifts)",
+    )
+    evaluate.add_argument(
+        "--control-shifts",
+        default=None,
+        help="comma/space list of shifts, each >=168 and not a multiple of 24/168",
+    )
+    evaluate.add_argument(
+        "--control-replicates", type=int, default=6, help="block-permutation draws"
+    )
+    evaluate.add_argument(
+        "--control-quantile", type=float, default=DEFAULT_CONTROL_QUANTILE
+    )
     evaluate.add_argument(
         "--canary-leak",
         default=None,

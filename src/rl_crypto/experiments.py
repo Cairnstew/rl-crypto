@@ -160,6 +160,13 @@ POOLED_ECONOMIC_DEFAULT: dict[str, Any] = {
 #: Targets whose v2 verdict always includes the pooled economic gate.
 ECONOMIC_TARGETS = frozenset({"fwd_direction", "fwd_return"})
 
+#: Pre-registered control distribution. A real pooled improvement must exceed
+#: this quantile of the label-destroying controls; the median is reported.
+CONTROL_QUANTILE_DEFAULT = 0.95
+CONTROL_SHIFTS_DEFAULT: tuple[int, ...] = (169, 173, 181, 191, 337)
+CONTROL_BLOCK_BARS_DEFAULT = 24
+CONTROL_REPLICATES_DEFAULT = 6
+
 DEFAULT_CRITERIA_V2: dict[str, Any] = {
     "kind": "improvement",
     "criteria_version": CRITERIA_VERSION,
@@ -168,6 +175,11 @@ DEFAULT_CRITERIA_V2: dict[str, Any] = {
     "alpha": 0.05,
     "fold_rule": "all_positive",
     "require_controls": True,
+    "control_quantile": CONTROL_QUANTILE_DEFAULT,
+    "control_shifts": list(CONTROL_SHIFTS_DEFAULT),
+    "control_block_bars": CONTROL_BLOCK_BARS_DEFAULT,
+    "control_replicates": CONTROL_REPLICATES_DEFAULT,
+    "baseline": "strongest",
     "require_multiple_tickers": True,
     # Economics is not a default v2 gate: a pooled paired CI is the verdict,
     # and promotion has its own after-cost gate. A hypothesis may opt in.
@@ -1460,27 +1472,74 @@ def _evaluate_criteria_v2(
                 "metrics": metrics,
             }
         nulls: dict[str, Any] = {}
-        for name in ("shuffle", "shift"):
-            block = _pooled_control(lab_payload, name) or {}
-            control_pooled = block.get("pooled") or block
-            control_passed, _ = _paired_rule(
-                control_pooled, alpha=alpha, fold_rule=fold_rule
-            )
-            nulls[name] = {
-                "pooled": control_pooled,
-                "passed": control_passed,
-                "shift_bars": block.get("shift_bars"),
-            }
-            if control_passed:
-                return {
-                    "passed": False,
-                    "outcome": "invalid",
-                    "reasons": [
-                        f"{name} control beat the same rule: the measurement is leaking"
-                    ],
-                    "metrics": {**metrics, "controls": nulls},
+        for name in ("shuffle", "shift", "permute"):
+            block = _pooled_control(lab_payload, name)
+            if block is None:
+                continue
+            variants = block.get("by_shift") or block.get("by_seed") or [block]
+            for variant in variants:
+                control_pooled = variant.get("pooled") or variant
+                control_passed, _ = _paired_rule(
+                    control_pooled, alpha=alpha, fold_rule=fold_rule
+                )
+                label = (
+                    f"{name}:{variant.get('shift_bars') or variant.get('seed')}"
+                    if variant is not block
+                    else name
+                )
+                nulls[label] = {
+                    "pooled": control_pooled,
+                    "passed": control_passed,
+                    "shift_bars": variant.get("shift_bars"),
+                    "seed": variant.get("seed"),
                 }
+                # A globally shuffled label is the one control that can only
+                # pass if the measurement manufactures skill from noise. Shift
+                # and block-permutation controls preserve the target's own
+                # autocorrelation, so for a persistent target (fwd_volume_ratio)
+                # they legitimately carry skill; they form the null
+                # distribution the candidate must clear, not an automatic void.
+                if control_passed and name == "shuffle":
+                    return {
+                        "passed": False,
+                        "outcome": "invalid",
+                        "reasons": [
+                            f"{label} control beat the same rule: the measurement "
+                            "is leaking"
+                        ],
+                        "metrics": {**metrics, "controls": nulls},
+                    }
         metrics["controls"] = nulls
+
+        # The control distribution is the real null: the candidate must clear a
+        # pre-registered quantile of it, not merely any single control. A daily
+        # or weekly-multiple shift used to echo the target's own seasonality, so
+        # one weak control could not certify anything.
+        distribution = _pooled_control(lab_payload, "distribution")
+        if isinstance(distribution, Mapping):
+            quantile = float(criteria.get("control_quantile", CONTROL_QUANTILE_DEFAULT))
+            quantile_value = _number(distribution.get("quantile_value"))
+            median = _number(distribution.get("median"))
+            metrics["control_distribution"] = {
+                "n": distribution.get("n"),
+                "median": median,
+                "quantile": quantile,
+                "quantile_value": quantile_value,
+                "max": _number(distribution.get("max")),
+            }
+            candidate_mean = (
+                _number(pooled.get("mean_improvement"))
+                if isinstance(pooled, Mapping)
+                else None
+            )
+            if candidate_mean is None or quantile_value is None:
+                reasons.append("control distribution is incomplete")
+            elif candidate_mean <= quantile_value:
+                reasons.append(
+                    f"pooled improvement {candidate_mean:.6f} does not exceed the "
+                    f"{quantile:.2f} control quantile {quantile_value:.6f} "
+                    f"(control median {median:.6f})"
+                )
 
     # Per-ticker distribution: reported, but not counted as independent votes.
     per_ticker: dict[str, Any] = {}
