@@ -66,6 +66,7 @@ from rl_crypto.ml.tier1 import (
     regression_metrics,
     train_tier1,
 )
+from rl_crypto.ml.training_config import apply_promotion
 from rl_crypto.models import to_iso, utcnow
 from rl_crypto.samples import Sample, build_samples
 from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES, label_purge
@@ -970,9 +971,20 @@ def promote_action(args: argparse.Namespace) -> int:
             payload["backup"] = str(backup)
         save_bundle(candidate, current_path)
         payload["written"] = str(current_path)
+        # The bundle alone is overwritten by the next scheduled retrain; the
+        # committed config is what makes the promotion durable.
+        payload["training_config"] = str(
+            apply_promotion(
+                ROOT,
+                ticker=ticker,
+                feature_names=candidate.feature_names,
+                model_names=recommendation["models"],
+                horizon=candidate.horizon,
+            )
+        )
         payload["warning"] = (
-            "The scheduled train run will overwrite this bundle unless the default "
-            "training config in pipeline/run.py is updated to the same feature/model set."
+            "models/<slug>.json is rebuilt by the next scheduled train; the "
+            "committed config/training.json now reproduces this feature/model set."
         )
     path = _save("promote", payload)
     if args.json:
