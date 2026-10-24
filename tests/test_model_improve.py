@@ -1343,3 +1343,29 @@ def test_promotion_is_only_attempted_after_the_statistical_rule_passes(tmp_path,
     verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
     assert calls == [True]
     assert verdict["outcome"] == "provisional"
+
+
+def test_token_and_cost_ceilings_block_from_recorded_step_usage(tmp_path):
+    ctx = _ctx(tmp_path)
+    logs = ctx.run_dir / "logs"
+    logs.mkdir()
+    (logs / "researcher.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "step_finish",
+                "part": {"tokens": {"total": 500}, "cost": 0.25},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ctx.config["budgets"]["maxTokensPerRun"] = 100
+    reason = tool.ceiling_reason(ctx)
+    assert reason is not None and "token ceiling" in reason
+
+    ctx.config["budgets"]["maxTokensPerRun"] = 10_000
+    ctx.config["budgets"]["maxCostUsdPerRun"] = 0.1
+    reason = tool.ceiling_reason(ctx)
+    assert reason is not None and "cost ceiling" in reason
+    assert ctx.usage["tokens"] == 500
+    assert ctx.usage["costUsd"] == 0.25
