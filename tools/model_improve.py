@@ -96,6 +96,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "maxCostUsdPerRun": 5.0,
     },
     "review": {"enabled": True, "require": False},
+    "team": {"maxLeadTurns": 3},
     "promotion": {"apply": False, "requiresPromoteDryRun": True},
     "scope": {
         "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
@@ -626,6 +627,20 @@ def role_prompt(ctx: Context, role: str) -> str:
             "`team_message(model=...)` when changing a running teammate) so the "
             "whole team uses the configured model."
         )
+        if ctx.hypothesis.needs_code:
+            lines.append(
+                "This hypothesis needs code: spawn the implementer, merge and "
+                "test its branch, then spawn the auditor."
+            )
+        else:
+            lines.append(
+                "This hypothesis needs no code: spawn only the researcher. Do "
+                "not spawn an implementer or auditor."
+            )
+        lines.append(
+            "Do not end your turn until RUN_DIR/lead.json exists. Write it as "
+            "your final action."
+        )
         lines.append("")
     lines.extend(
         [
@@ -638,28 +653,75 @@ def role_prompt(ctx: Context, role: str) -> str:
     return "\n".join(lines)
 
 
-def run_role(ctx: Context, role: str) -> dict[str, Any]:
+FALLBACK_MARKER = "is a subagent, not a primary agent"
+
+
+def agent_fallback_banner(stdout: str, stderr: str) -> bool:
+    """True only for the startup banner, never for a transcript echo.
+
+    ``--format json`` puts tool output inside JSON events. The original
+    detector scanned the whole transcript, so an agent that read this file
+    (which contains the marker) was marked as a fallback. The real banner is
+    plain text before the first JSON event.
+    """
+    for text in (stdout[:8192], stderr[:8192]):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("{"):
+                break
+            if FALLBACK_MARKER in stripped:
+                return True
+    return False
+
+
+def _session_id(text: str) -> str | None:
+    for line in text.splitlines()[:80]:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        session = event.get("sessionID") or (event.get("part") or {}).get("sessionID")
+        if session:
+            return str(session)
+    return None
+
+
+def run_role(
+    ctx: Context,
+    role: str,
+    *,
+    session_id: str | None = None,
+    turn: int = 1,
+    extra_prompt: str = "",
+) -> dict[str, Any]:
     if ctx.executor == "mechanical":
         return {"role": role, "status": "skipped", "reason": "mechanical executor"}
     agent = ROLE_AGENTS[role]
     model = resolve_model(ctx.config, role)
     timeout = float((ctx.config.get("budgets") or {}).get("roleTimeoutSeconds", 1800))
-    command = [
-        opencode_command(),
-        "run",
-        "--agent",
-        agent,
-        "--format",
-        "json",
-        "--auto",
-        "--dir",
-        str(ctx.repo),
-        "--title",
-        f"model-improve {ctx.run_id} {role}",
-    ]
+    command = [opencode_command(), "run"]
+    if session_id:
+        command.extend(["--session", session_id])
+    command.extend(
+        [
+            "--agent",
+            agent,
+            "--format",
+            "json",
+            "--auto",
+            "--dir",
+            str(ctx.repo),
+            "--title",
+            f"model-improve {ctx.run_id} {role}"
+            + (f" turn {turn}" if turn > 1 else ""),
+        ]
+    )
     if model:
         command.extend(["--model", str(model)])
-    command.append(role_prompt(ctx, role))
+    prompt = role_prompt(ctx, role)
+    if extra_prompt:
+        prompt += "\n\n" + extra_prompt
+    command.append(prompt)
     started = time.time()
     try:
         proc = _run(
@@ -678,7 +740,8 @@ def run_role(ctx: Context, role: str) -> dict[str, Any]:
         returncode = 124
         stdout = str(exc.stdout or "")
         stderr = f"timeout after {timeout}s"
-    log = ctx.artifact(f"logs/{role}.jsonl")
+    log_name = f"{role}.jsonl" if turn == 1 else f"{role}-turn{turn}.jsonl"
+    log = ctx.artifact(f"logs/{log_name}")
     log.write_text(stdout + "\n--- STDERR ---\n" + stderr, encoding="utf-8")
 
     missing = [name for name in REQUIRED_ARTIFACTS[role] if not (ctx.run_dir / name).exists()]
@@ -691,10 +754,12 @@ def run_role(ctx: Context, role: str) -> dict[str, Any]:
         "seconds": round(time.time() - started, 1),
         "log": str(log),
         "missing": missing,
+        "turn": turn,
+        "session": _session_id(stdout) or session_id,
     }
     # A silent fallback to the default agent would bypass the role's
     # permissions, so treat it as a hard failure.
-    if "is a subagent, not a primary agent" in (stdout + stderr):
+    if agent_fallback_banner(stdout, stderr):
         record["status"] = "failed"
         record["reason"] = (
             f"opencode refused {agent} (subagent) and fell back to the default "
@@ -789,7 +854,6 @@ def run_lab(ctx: Context, action: str, args: Sequence[str], *, label: str) -> di
         "RL_MODEL_LAB_DIR": str(ctx.run_dir / "lab"),
         "RL_MODEL_IMPROVE_RUN_DIR": str(ctx.run_dir),
     }
-    artifact = ctx.artifact(f"{label}.json")
     try:
         proc = _run(
             command,
@@ -799,16 +863,29 @@ def run_lab(ctx: Context, action: str, args: Sequence[str], *, label: str) -> di
             stdin_null=True,
         )
     except subprocess.TimeoutExpired as exc:
-        artifact.write_text(f"timeout: {exc}\n", encoding="utf-8")
-        ctx.artifacts[label] = str(artifact)
+        log = ctx.artifact(f"{label}.log")
+        log.write_text(f"timeout after {_lab_timeout(ctx)}s\n{exc}\n", encoding="utf-8")
+        ctx.artifacts[label] = str(log)
         return None
-    artifact.write_text(proc.stdout + "\n--- STDERR ---\n" + proc.stderr, encoding="utf-8")
+
+    stderr_path = ctx.artifact(f"{label}.stderr.log")
+    stderr_path.write_text(proc.stderr or "", encoding="utf-8")
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        # Keep the artifact parseable: the ledger points at this file.
+        artifact = ctx.artifact(f"{label}.json")
+        _write_json(artifact, payload)
+    else:
+        artifact = ctx.artifact(f"{label}.log")
+        artifact.write_text(
+            (proc.stdout or "") + (("\n--- STDERR ---\n" + proc.stderr) if proc.stderr else ""),
+            encoding="utf-8",
+        )
     ctx.artifacts[label] = str(artifact)
     if proc.returncode != 0:
-        return None
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -1176,7 +1253,9 @@ def run_review(
                     "reviewer did not complete: "
                     f"{record.get('reason') or 'missing review.json'}"
                 ),
-                "findings": mechanical.get("checks") or [],
+                # checks are rendered from `checks`; do not copy them into
+                # `findings` or the report shows every check twice.
+                "findings": [],
             }
         else:
             llm_status = str(payload.get("status", "warn"))
@@ -1191,6 +1270,7 @@ def run_review(
                 "status": status,
                 "source": "llm",
                 "mechanical": mechanical,
+                "checks": mechanical.get("checks") or [],
                 "git": payload.get("git") or mechanical.get("git"),
             }
 
@@ -1261,7 +1341,7 @@ def build_report(
         f" ({'passed' if verdict.get('passed') else 'did not pass'})",
         f"- **Hypothesis:** {prereg.get('hypothesis_id')} — {prereg.get('title')}",
         f"- **Executor:** `{ctx.executor}` (trigger: `{ctx.trigger}`)",
-        f"- **Branch:** `{ctx.branch or 'in-place'}`",
+        f"- **Branch:** `{ctx.branch or git_state(ctx.repo).get('branch') or 'in-place'}`",
         f"- **Pre-registration:** `{prereg.get('id')}`"
         f" (family `{prereg.get('family')}`, trial {prereg.get('trial_index')})",
         f"- **Git:** `{((prereg.get('git') or {}).get('sha') or 'unknown')[:12]}`",
@@ -1271,7 +1351,16 @@ def build_report(
         "",
     ]
     reasons = verdict.get("reasons") or []
-    lines.extend([f"- {reason}" for reason in reasons] or ["- none: all pre-registered bars met"])
+    if verdict.get("outcome") == "diagnostic":
+        lines.append(
+            "- diagnostic completed; the criteria are recorded but non-gating "
+            "(there is no pass/fail bar for a diagnostic)"
+        )
+    else:
+        lines.extend(
+            [f"- {reason}" for reason in reasons]
+            or ["- none: all pre-registered bars met"]
+        )
     lines.extend(["", "## Per-ticker result", ""])
     per_ticker = metrics.get("per_ticker") or {}
     targets = metrics.get("targets") or []
@@ -1396,6 +1485,8 @@ def build_report(
         findings = review.get("findings") or []
         for finding in findings:
             if isinstance(finding, Mapping):
+                if not finding.get("detail"):
+                    continue
                 lines.append(
                     f"- [{finding.get('severity', 'info')}] "
                     f"{finding.get('area', '')}: {finding.get('detail', '')}".strip()
@@ -1850,6 +1941,39 @@ def cmd_run(args: argparse.Namespace) -> int:
         trigger=args.trigger,
         seed=int(config.get("seed") or 0),
     )
+    if not args.force and (hypothesis.criteria or {}).get("kind") == "diagnostic":
+        prior_preregs = [
+            entry
+            for entry in entries
+            if entry.get("kind") == "preregister"
+            and entry.get("hypothesis_id") == hypothesis.id
+            and entry.get("config_hash") == prereg["config_hash"]
+            and (entry.get("data") or {}).get("combined")
+            == (prereg.get("data") or {}).get("combined")
+        ]
+        prior_runs = {entry.get("run_id") for entry in prior_preregs}
+        prior_verdicts = [
+            entry
+            for entry in entries
+            if entry.get("kind") == "verdict" and entry.get("run_id") in prior_runs
+        ]
+        if prior_verdicts:
+            message = (
+                "duplicate diagnostic: this hypothesis/config/data already has "
+                f"verdict {prior_verdicts[-1].get('id')}; pass --force to repeat "
+                "or change the data/features"
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        {"outcome": "duplicate-diagnostic", "reason": message},
+                        indent=2,
+                    )
+                )
+            else:
+                print(message)
+            return 0
+
     ctx.prereg = prereg
     _write_json(ctx.artifact("preregister.json"), prereg)
     _write_json(
@@ -1894,6 +2018,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             },
         )
         verdict = {"outcome": "blocked", "passed": False, "reasons": [reason], "metrics": {}}
+        pre_review_next = select_hypothesis(
+            load_queue(ctx.queue_path),
+            read_ledger(ctx.ledger),
+            capabilities={"code", "tooling"} if executor != "mechanical" else set(),
+        )
+        ctx.artifact("report.md").write_text(
+            build_report(ctx, verdict, next_hypothesis=pre_review_next),
+            encoding="utf-8",
+        )
         review_enabled = bool((ctx.config.get("review") or {}).get("enabled", True))
         if review_enabled and not args.no_review:
             run_review(ctx, verdict, allow_llm=executor != "mechanical")
@@ -1928,7 +2061,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     if executor == "mechanical":
         pass
     elif executor == "team":
+        # A headless lead can end its turn after spawning teammates, before it
+        # has their results. Resume the same session (bounded) instead of
+        # treating that as a hard failure.
+        max_turns = int((ctx.config.get("team") or {}).get("maxLeadTurns", 3))
         record = run_role(ctx, "lead")
+        turn = 1
+        while (
+            turn < max_turns
+            and record.get("returncode") == 0
+            and "lead.json" in (record.get("missing") or [])
+            and record.get("session")
+        ):
+            turn += 1
+            record = run_role(
+                ctx,
+                "lead",
+                session_id=str(record["session"]),
+                turn=turn,
+                extra_prompt=(
+                    "CONTINUE: your previous turn ended before writing "
+                    "RUN_DIR/lead.json. Wait for the teammates' messages, merge "
+                    "and test the implementer's work, run the auditor, and write "
+                    "RUN_DIR/lead.json as your final action. Do not end this "
+                    "turn before that file exists."
+                ),
+            )
         blocker = role_blocker(ctx, "lead", record)
         if blocker:
             return stop(blocker, "lead")
@@ -1965,6 +2123,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         if record.get("status") != "done":
             note = f"evaluator prose pass: {record.get('status')}"
             verdict.setdefault("reasons", []).append(note)
+
+    # Write a provisional report before the reviewer: the reviewer is allowed
+    # to read report.md, and it is rebuilt with the review + final state after.
+    pre_review_next = select_hypothesis(
+        load_queue(ctx.queue_path),
+        read_ledger(ctx.ledger),
+        capabilities={"code", "tooling"} if executor != "mechanical" else set(),
+    )
+    ctx.artifact("report.md").write_text(
+        build_report(ctx, verdict, next_hypothesis=pre_review_next),
+        encoding="utf-8",
+    )
 
     review: dict[str, Any] | None = None
     review_enabled = bool((ctx.config.get("review") or {}).get("enabled", True))

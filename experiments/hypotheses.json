@@ -1,0 +1,537 @@
+{
+  "schema": "rl-crypto/hypotheses/1",
+  "notes": [
+    "Ordered queue for tools/model_improve.py. status=open means runnable when its `needs` are available; blocked means a human or an external dependency must act first.",
+    "criteria are frozen by the driver before execution; the evaluator never chooses them after seeing a result.",
+    "A negative verdict closes the hypothesis for this queue; re-opening it needs new data, a new feature class, or a fixed measurement bug and counts as a new trial in the same family."
+  ],
+  "hypotheses": [
+    {
+      "id": "H0",
+      "title": "Baseline diagnosis",
+      "family": "diagnostic",
+      "order": 0,
+      "status": "open",
+      "needs": [],
+      "mechanism": "Establish the current out-of-sample baseline on the committed archive before any change, so later claims have a control.",
+      "experiment": {
+        "action": "evaluate",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_return",
+          "fwd_volatility",
+          "fwd_volume_ratio"
+        ],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1
+      },
+      "criteria": {
+        "kind": "diagnostic"
+      }
+    },
+    {
+      "id": "H1",
+      "title": "Pooled panel model",
+      "family": "model-class",
+      "order": 1,
+      "status": "blocked",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "One model trained on all tickers with per-ticker normalisation and ticker-time purged folds should reduce variance against the ~1,700-bar per-ticker sample limit.",
+      "evidence": "Prior pooled-panel trial h1-panel-v1 on branch model-improve/2026-10-24-h1 (commit d598641) is negative: panel-vs-aligned-control paired 95% CI [-0.0046,+0.0092] includes 0, and the 24-bar shifted-label control beat baseline in 14/15 tickers, which voids the pre-registered run. The panel also added no material gain over the per-ticker model on fwd_volume_ratio.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_return"
+        ],
+        "featureSets": [
+          "all",
+          "market",
+          "core",
+          "price"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 8,
+        "folds": 4,
+        "extraLabArgs": [
+          "--panel"
+        ]
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": {
+          "total_return_min": 0.0,
+          "sharpe_above_momentum": true,
+          "trades_min": 100
+        }
+      },
+      "notes": "Blocked until the shifted-label null is fixed or a new H1 lineage is opened with a stated difference. Merge/account for d598641 first; do not silently re-test the same panel idea (trial_index would be wrong)."
+    },
+    {
+      "id": "H2",
+      "title": "Longer history",
+      "family": "data",
+      "order": 2,
+      "status": "blocked",
+      "needs": [
+        "data"
+      ],
+      "mechanism": "Backfill more bars per ticker and re-run the best current config to separate the data effect from the model effect.",
+      "evidence": "Upstream pagination limits must be verified before planning; the archive currently holds ~1,700 hourly bars per ticker.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSets": [
+          "all"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 2,
+        "folds": 4
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": {
+          "total_return_min": 0.0,
+          "sharpe_above_momentum": true,
+          "trades_min": 100
+        }
+      }
+    },
+    {
+      "id": "H3",
+      "title": "Cross-asset features",
+      "family": "features",
+      "order": 3,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "BTC/ETH lead-lag returns, relative strength, and cross-sectional momentum ranks may carry information the per-ticker features cannot express.",
+      "evidence": "The existing archive already contains all 15 tickers, so no new upstream fetch is needed; this is a feature-version bump.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_return"
+        ],
+        "featureSets": [
+          "all",
+          "core"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 6,
+        "folds": 4
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": {
+          "total_return_min": 0.0,
+          "sharpe_above_momentum": true,
+          "trades_min": 100
+        }
+      }
+    },
+    {
+      "id": "H4",
+      "title": "Cost-aware policy",
+      "family": "policy",
+      "order": 4,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "Hysteresis, a minimum holding period, and an expected-move-above-round-trip-cost filter can turn a weak gross signal into a lower-turnover policy.",
+      "evidence": "Every directional result so far is negative after 10+5 bps, and the current policy trades on every threshold crossing.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSets": [
+          "all",
+          "market"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 8,
+        "folds": 4,
+        "extraLabArgs": [
+          "--policy",
+          "hysteresis"
+        ]
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": {
+          "total_return_min": 0.0,
+          "sharpe_above_momentum": true,
+          "trades_min": 100
+        }
+      },
+      "notes": "Declares --policy hysteresis; the evaluator must charge costs on every position change."
+    },
+    {
+      "id": "H5",
+      "title": "Regime conditioning",
+      "family": "composition",
+      "order": 5,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "depends_on": [
+        "H10"
+      ],
+      "mechanism": "Trade direction only when predicted volatility/volume conditions are favourable, and size by inverse predicted volatility.",
+      "evidence": "fwd_volume_ratio is the one target with a consistent holdout win; direction needs a conditioning variable.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_volatility",
+          "fwd_volume_ratio"
+        ],
+        "featureSets": [
+          "all",
+          "market"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 6,
+        "folds": 4,
+        "extraLabArgs": [
+          "--regime-conditioned"
+        ]
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": {
+          "total_return_min": 0.0,
+          "sharpe_above_momentum": true,
+          "trades_min": 100
+        }
+      },
+      "notes": "Declares --regime-conditioned; direction is gated by the skilful activity targets."
+    },
+    {
+      "id": "H6",
+      "title": "Cross-sectional relative direction",
+      "family": "composition",
+      "order": 6,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "Rank tickers by predicted direction and go long the top / short the bottom, which removes the market factor from the signal.",
+      "evidence": "A long-only directional model is fighting the market factor; a relative rank is a different estimand.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSets": [
+          "all",
+          "market"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 4,
+        "folds": 4,
+        "extraLabArgs": [
+          "--cross-sectional"
+        ]
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": null
+      },
+      "notes": "Declares --cross-sectional; ranking replaces the absolute-direction estimand."
+    },
+    {
+      "id": "H7",
+      "title": "Lower-frequency horizons",
+      "family": "horizon",
+      "order": 7,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "At 4h and daily horizons the signal-to-cost ratio can improve enough for a directional edge to survive fees.",
+      "evidence": "Hourly direction is noise-dominated after costs; the archive must carry interval metadata for honest non-overlapping evaluation.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_return"
+        ],
+        "featureSets": [
+          "all",
+          "core"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          4
+        ],
+        "maxConfigs": 4,
+        "folds": 4
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": null
+      }
+    },
+    {
+      "id": "H8",
+      "title": "New data classes",
+      "family": "data",
+      "order": 8,
+      "status": "blocked",
+      "needs": [
+        "approval"
+      ],
+      "mechanism": "Funding rates, open interest, and order-book imbalance may carry directional information that price-only features cannot.",
+      "evidence": "Requires an upstream capability check and an archive schema change; needs explicit human approval.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSets": [
+          "all"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 4,
+        "folds": 4
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": null
+      }
+    },
+    {
+      "id": "H9",
+      "title": "Stronger model classes",
+      "family": "model-class",
+      "order": 9,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "depends_on": [
+        "H1"
+      ],
+      "mechanism": "Boosted trees or small ensembles can capture non-linear interactions the linear reference model cannot, but only after the sample-size lever is tested.",
+      "evidence": "Only worth trying after H1 or H2; needs the cumulative trial counter to stay honest.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction",
+          "fwd_return"
+        ],
+        "featureSets": [
+          "all"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 6,
+        "folds": 4,
+        "extraLabArgs": [
+          "--model-class",
+          "boosted"
+        ]
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_direction",
+        "tickers_beating_min": 2,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": null
+      },
+      "notes": "Declares --model-class boosted; only after H1 or H2, with the family trial counter."
+    },
+    {
+      "id": "H10",
+      "title": "Improve the skilful targets directly",
+      "family": "activity",
+      "order": 10,
+      "status": "open",
+      "needs": [
+        "code"
+      ],
+      "mechanism": "fwd_volume_ratio already beats its baseline on every ticker; better features and a model class for it produce a verifiable gain even though it is not directly tradable.",
+      "evidence": "Volume-ratio holdouts pass 15/15 while direction passes 0/15.",
+      "experiment": {
+        "action": "sweep",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_volume_ratio",
+          "fwd_volatility"
+        ],
+        "featureSets": [
+          "all",
+          "market",
+          "core",
+          "price"
+        ],
+        "modelSets": [
+          "reference"
+        ],
+        "horizons": [
+          1
+        ],
+        "maxConfigs": 8,
+        "folds": 4
+      },
+      "criteria": {
+        "kind": "improvement",
+        "target": "fwd_volume_ratio",
+        "tickers_beating_min": 3,
+        "folds_beating_min": 3,
+        "mean_improvement_min": 0.0,
+        "min_improvement_min": 0.0,
+        "economic": null
+      }
+    }
+  ]
+}

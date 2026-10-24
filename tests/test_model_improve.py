@@ -97,6 +97,7 @@ FAKE_OPENCODE = '''\
 import json, os, pathlib, sys
 
 args = sys.argv[1:]
+print(json.dumps({"type": "step_start", "sessionID": "fake-session"}))
 agent = args[args.index("--agent") + 1]
 role = agent.replace("model-improve-", "")
 run_dir = pathlib.Path(os.environ["RL_MODEL_IMPROVE_RUN_DIR"])
@@ -130,9 +131,26 @@ elif role == "auditor":
         json.dumps({"blocking": False, "findings": []}), encoding="utf-8"
     )
 elif role == "lead":
-    (run_dir / "lead.json").write_text(
-        json.dumps({"status": "done", "summary": "fake", "artifacts": {}}), encoding="utf-8"
-    )
+    # A headless lead can end its first turn before writing lead.json. On the
+    # resumed turn (--session present) it produces the full team artifacts.
+    if "--session" in args:
+        (run_dir / "diagnosis.md").write_text("# diagnosis\\n", encoding="utf-8")
+        (run_dir / "researcher.json").write_text(
+            json.dumps(
+                {
+                    "hypothesis_id": "H0",
+                    "ready": True,
+                    "recommendation": "proceed",
+                    "blockers": [],
+                    "summary": "fake",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "lead.json").write_text(
+            json.dumps({"status": "done", "summary": "fake", "artifacts": {}}),
+            encoding="utf-8",
+        )
 elif role == "reviewer":
     (run_dir / "review.md").write_text("# review\\n", encoding="utf-8")
     (run_dir / "review.json").write_text(
@@ -357,7 +375,30 @@ def test_mechanical_diagnostic_run_records_prereg_results_and_verdict(
     assert (run_dir / "preregister.json").exists()
     assert (run_dir / "review.json").exists()
     assert json.loads((run_dir / "review.json").read_text())["status"] == "pass"
+    assert json.loads((run_dir / "lab-evaluate.json").read_text())["action"] == "evaluate"
+    report = (run_dir / "report.md").read_text()
+    assert "diagnostic completed" in report
+    assert "all pre-registered bars met" not in report
     assert "diagnostic" in (root / "experiments" / "SCOREBOARD.md").read_text()
+
+    # The same diagnostic on the same config/data is a duplicate unless forced.
+    rc2 = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--hypothesis",
+            "H0",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc2 == 0
+    duplicate = json.loads(capsys.readouterr().out)
+    assert duplicate["outcome"] == "duplicate-diagnostic"
 
 
 def test_failed_improvement_gate_is_a_negative_success(tmp_path, monkeypatch, capsys):
@@ -591,3 +632,51 @@ def test_repo_config_has_one_model_knob():
     assert config["model"] == "opencode/deepseek-v4.1-flash-free"
     assert config["models"] == {}
     assert config["review"]["enabled"] is True
+
+
+def test_fallback_detector_ignores_a_transcript_echo():
+    transcript = json.dumps(
+        {
+            "type": "tool_use",
+            "part": {
+                "state": {
+                    "output": "tools/model_improve.py: is a subagent, not a primary agent"
+                }
+            },
+        }
+    )
+    assert tool.agent_fallback_banner(transcript + "\n", "") is False
+    banner = (
+        '! agent "x" is a subagent, not a primary agent. Falling back to default agent\n'
+        '{"type":"step_start"}\n'
+    )
+    assert tool.agent_fallback_banner("", banner) is True
+
+
+def test_team_lead_resumes_a_turn_that_ended_without_lead_json(
+    tmp_path, monkeypatch, capsys
+):
+    root = _repo(tmp_path, _hypothesis())
+    _env(monkeypatch, root, tmp_path, fake_opencode=True)
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "team",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["review"]["status"] == "pass"
+    roles = json.loads((Path(summary["run_dir"]) / "roles.json").read_text())
+    lead_turns = [role for role in roles if role["role"] == "lead"]
+    assert len(lead_turns) == 2
+    assert lead_turns[0]["missing"] == ["lead.json"]
+    assert lead_turns[0]["turn"] == 1
+    assert lead_turns[1]["turn"] == 2
+    assert lead_turns[1]["status"] == "done"

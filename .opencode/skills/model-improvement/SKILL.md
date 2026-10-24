@@ -197,3 +197,62 @@ uv run python tools/model_improve.py status --render # scoreboard + queue
 - Fix: `status` now prints per-target `holdout beats`
   (`ret/D dir/D vol/D vratio/D`) and `--json` carries `target_holdouts`; the
   single `holdout` field is labelled `fwd_direction`.
+
+### 2026-10-24 — H1 run blocked by a false-positive fallback detector
+
+- `20261024T155909Z-h1` (H1 pooled panel) preregistered `e0011`, then blocked
+  at the lead stage (`e0012`, exit 2). The recorded reason was
+  "opencode refused model-improve-lead (subagent)", but `model-improve-lead`
+  is `mode: primary` and preflight's `agent-modes` check passed minutes before.
+  The real cause is `run_role`'s detector: it greps the whole role transcript
+  for the literal string `is a subagent, not a primary agent`, and the lead
+  read `tools/model_improve.py` (which contains that literal on line 697), so
+  the detector matched its own source echo. Fix belongs in
+  `tools/model_improve.py`: inspect only the stderr banner / a structured
+  field, or anchor the match to the `opencode` error line, never arbitrary
+  file output the role printed.
+- The same run exposed a prompt bug now fixed in
+  `.opencode/agents/model-improve-lead.md`: the lead was told it was "already
+  inside a dedicated worktree", but CI and `--no-worktree` runs execute in the
+  repo itself. The lead worked around it by creating branches and
+  `git reset`-ing staged run inputs. The lead now checks the layout and, for
+  in-place runs, leaves the commit to the orchestrator.
+- Separate branch `model-improve/2026-10-24-h1` (worktree
+  `../rl-crypto-h1`) already holds a completed H1 pooled-panel trial
+  (preregister 14:28Z, result 14:40Z) whose primary target `fwd_volume_ratio`
+  was **negative** (panel-vs-control paired CI95 includes 0) and whose
+  `fwd_direction` / `fwd_return` improvements were negative. That result is
+  not merged into `main`, so `e0011` still counts as trial 1. A future H1 run
+  must cite it instead of silently re-testing the same panel idea; if the
+  panel code is re-landed, the trial counter has to advance.
+
+### 2026-10-24 — H0 smoke run (`team` executor): diagnostic semantics and reviewer inputs
+
+- `20261024T161936Z-h0` ran H0 a **fourth** time (`e0014`→`e0016`) on the same
+  `config_hash` and data hashes; `e0016` reproduces `e0009` to the digit
+  (BTC/ETH/SOL direction 0/4 folds, Sharpe -18.46/-17.98/-9.24). Treat a
+  duplicate diagnostic as a control only. Do not spend a fifth trial on the
+  same archive: if a new H0 is queued, either cite the existing verdict or
+  require new data/features first.
+- `kind: diagnostic` is **non-gating**. `evaluate_criteria` returns
+  `passed = bool(rows)` for a diagnostic and does not apply
+  `folds_beating_min` / `tickers_beating_min` / `mean_improvement_min`, while
+  `build_report` prints "all pre-registered bars met" when `reasons` is empty.
+  Read the per-ticker matrix, not the `passed` flag, and never quote a
+  diagnostic `passed: true` as evidence of directional edge.
+- `evaluate` uses `reserve_final = 0.0`, so its walk-forward test windows cover
+  the newest rows that `promote` reserves. That is fine for a diagnostic that
+  selects nothing, but it means the tail has been *seen*; a later promote on
+  the same archive is not a clean first look. Keep saying `holdout_touched:
+  false` only when no selection or promotion used it.
+- `report.md` is written by `run_review()`'s caller **after** the reviewer
+  finishes, so the reviewer cannot read it. Review honesty from `lead.json`,
+  `diagnosis.md`, the lab payload and the ledger. Also: the root
+  `lab-*.json` file is a stdout capture ending in `--- STDERR ---` and is not
+  valid JSON; the parseable artifact is `RUN_DIR/lab/evaluate-*.json`.
+- No-code runs: the orchestrator requires only `researcher.json` +
+  `diagnosis.md`. The lead may record no-op `implementation.json` / `audit.json`
+  itself, but they are not an independent audit and must be labelled
+  lead-recorded. `roles.json` records only the lead in team mode; the spawned
+  teammate's transcript is not captured under `logs/`, so verify it ran from
+  the spawn event, the artifact mtimes and `team_results`.

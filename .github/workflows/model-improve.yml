@@ -1,0 +1,225 @@
+# Unattended model improvement.
+#
+# One run = one pre-registered hypothesis, judged out of sample by the
+# mechanical verdict in tools/model_improve.py, recorded in the append-only
+# ledger, and delivered as a branch + pull request. It never pushes to main,
+# never merges its own PR, and a negative result is a successful run.
+#
+# Dispatch it by hand first:
+#   gh workflow run model-improve.yml -f mode=run -f executor=passes
+#
+# The weekly schedule is off until the repository variable
+# RL_MODEL_IMPROVE_ENABLED=true is set. That is deliberate: an enabled schedule
+# spends model credits and opens PRs without anyone pressing a button.
+#
+# Required secret for any non-mechanical executor:
+#   OPENCODE_AUTH_JSON — the contents of ~/.local/share/opencode/auth.json for
+#   a CI-only provider credential. The job writes it to the runner's opencode
+#   data dir (mode 600) and never echoes it.
+#
+# `executor=mechanical` needs no model credential and is the safe smoke test.
+name: model improve
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "run a hypothesis, or inspect the loop"
+        type: choice
+        options: [run, plan, status, verify]
+        default: run
+      hypothesis:
+        description: "Hypothesis id (e.g. H4); empty selects the next runnable one"
+        required: false
+        default: ""
+      executor:
+        description: "passes = sequential headless roles; team = Ensemble; mechanical = no LLM"
+        type: choice
+        options: [passes, team, mechanical]
+        default: passes
+      model:
+        description: "Override config.model for this run (provider/model); empty uses the repo default"
+        required: false
+        default: ""
+      dry_run:
+        description: "Pre-register and print the plan without executing"
+        type: boolean
+        default: false
+      apply:
+        description: "Allow models/ writes after a passing gate (still only in the PR branch)"
+        type: boolean
+        default: false
+  schedule:
+    # Weekly, off unless RL_MODEL_IMPROVE_ENABLED=true.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # One improvement run at a time: two runs would race the ledger and the lab
+  # artifacts, and the ledger is append-only by contract.
+  group: rl-crypto-model-improve
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.RL_MODEL_IMPROVE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rl-crypto
+
+      # The lab imports the package, which resolves the two upstreams as
+      # sibling path dependencies — same layout as every local checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/tickerkit
+          path: tickerkit
+      - uses: actions/checkout@v4
+        with:
+          repository: Cairnstew/ticker-news-signals
+          path: ticker-news-signals
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: sync
+        working-directory: rl-crypto
+        run: uv sync --group dev
+
+      # plan/status/verify never invoke an LLM role. plan still runs preflight,
+      # which checks that the role agents load, so it needs the binary but no
+      # credential.
+      - name: install opencode
+        if: ${{ contains(fromJSON('["run","plan"]'), inputs.mode || 'run') }}
+        run: npm install -g opencode-ai@1.18.31
+
+      - name: configure opencode credentials
+        if: ${{ (inputs.mode || 'run') == 'run' && (inputs.executor || 'passes') != 'mechanical' }}
+        env:
+          OPENCODE_AUTH_JSON: ${{ secrets.OPENCODE_AUTH_JSON }}
+        run: |
+          if [ -z "$OPENCODE_AUTH_JSON" ]; then
+            echo "::error::OPENCODE_AUTH_JSON is not set. Add a CI-only credential as a repository secret, or dispatch with executor=mechanical."
+            exit 1
+          fi
+          mkdir -p "$HOME/.local/share/opencode"
+          printf '%s' "$OPENCODE_AUTH_JSON" > "$HOME/.local/share/opencode/auth.json"
+          chmod 600 "$HOME/.local/share/opencode/auth.json"
+
+      - name: run the loop
+        id: loop
+        working-directory: rl-crypto
+        env:
+          MODE: ${{ inputs.mode || 'run' }}
+          EXECUTOR: ${{ inputs.executor || 'passes' }}
+          HYPOTHESIS: ${{ inputs.hypothesis || '' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          APPLY: ${{ inputs.apply || false }}
+          # Empty falls through to config/model-improvement.json's `model`.
+          RL_MODEL_IMPROVE_MODEL: ${{ inputs.model || vars.RL_MODEL_IMPROVE_MODEL || '' }}
+          RUN_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUN_DIR"
+          if [ "$MODE" = "run" ]; then
+            # The driver commits on a run branch; checkout leaves us on main in
+            # a dispatch, so create the branch before the run (never commit to
+            # main).
+            # The run id suffix makes retries on the same day/hypothesis unique,
+            # so a second push can never be a non-fast-forward against an old
+            # PR branch.
+            BRANCH="model-improve/$(date -u +%Y%m%d)-${HYPOTHESIS:-auto}-${GITHUB_RUN_ID}"
+            BRANCH="${BRANCH//[^a-zA-Z0-9._\/-]/-}"
+            git checkout -B "$BRANCH"
+            ARGS=(--executor "$EXECUTOR" --run-dir "$RUN_DIR" --json --no-worktree --commit)
+            if [ -n "$HYPOTHESIS" ]; then ARGS+=(--hypothesis "$HYPOTHESIS"); fi
+            if [ "$DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
+            if [ "$APPLY" = "true" ]; then ARGS+=(--apply); else ARGS+=(--no-apply); fi
+          elif [ "$MODE" = "plan" ]; then
+            BRANCH=""
+            ARGS=(plan --executor "$EXECUTOR" --json)
+            if [ -n "$HYPOTHESIS" ]; then ARGS+=(--hypothesis "$HYPOTHESIS"); fi
+          elif [ "$MODE" = "status" ]; then
+            BRANCH=""
+            ARGS=(status --render --json)
+          elif [ "$MODE" = "verify" ]; then
+            BRANCH=""
+            ARGS=(verify --json --run-dir "$RUN_DIR")
+          else
+            echo "::error::unknown mode $MODE"
+            exit 1
+          fi
+
+          set +e
+          uv run python tools/model_improve.py "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/console.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          # 0 = completed (including negative), 2 = blocked. 1 is a real error.
+          if [ "$rc" -eq 1 ]; then exit 1; fi
+
+      - name: publish the run branch as a pull request
+        # rc 0 = completed (including a negative verdict); rc 2 = blocked but
+        # still a recorded ledger entry worth publishing. A dry run changes
+        # nothing, so there is nothing to push.
+        if: ${{ always() && steps.loop.outputs.branch != '' && (steps.loop.outputs.rc == '0' || steps.loop.outputs.rc == '2') && (inputs.dry_run || false) != true }}
+        working-directory: rl-crypto
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.loop.outputs.branch }}
+          RUN_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          # A shallow checkout has no merge base for a three-dot diff; compare
+          # the commit range instead.
+          if [ "$(git rev-list --count "origin/main..HEAD")" -eq 0 ]; then
+            echo "::notice::no commits on $BRANCH — nothing to publish"
+            exit 0
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
+          BODY="$RUN_DIR/report.md"
+          if [ ! -f "$BODY" ]; then
+            BODY="$RUN_DIR/console.log"
+          fi
+          TITLE="model-improve: $(basename "$(dirname "$BODY")") — automated run"
+          gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file "$BODY" \
+            || gh pr view "$BRANCH" --json url --jq .url
+
+      - name: upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-improve-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: ${{ github.workspace }}/artifacts
+
+      # Make a reviewer "fail" visible as a red run, after the PR and artifacts
+      # already exist. A blocked run has no review.json and stays green.
+      - name: surface the reviewer verdict
+        if: always()
+        working-directory: rl-crypto
+        env:
+          RUN_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          REVIEW=$(find "$RUN_DIR" -name review.json -print -quit 2>/dev/null || true)
+          if [ -z "$REVIEW" ]; then
+            echo "::notice::no reviewer artifact for this mode"
+            exit 0
+          fi
+          STATUS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$REVIEW")
+          echo "::notice::review status: $STATUS"
+          if [ "$STATUS" = "fail" ]; then
+            echo "::error::the higher-level reviewer marked this run failed; see the PR and review.json"
+            exit 1
+          fi

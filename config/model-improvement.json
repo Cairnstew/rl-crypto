@@ -6,6 +6,9 @@
     "enabled": true,
     "require": false
   },
+  "team": {
+    "maxLeadTurns": 3
+  },
   "budgets": {
     "maxConfigs": 8,
     "folds": 4,
