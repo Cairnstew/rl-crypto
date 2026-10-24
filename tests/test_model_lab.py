@@ -262,3 +262,39 @@ def test_scoreboard_action_renders_the_ledger(tmp_path, monkeypatch):
     text = (tmp_path / "experiments" / "SCOREBOARD.md").read_text()
     assert "Experiment scoreboard" in text
     assert "H1:BTC/USD" in text
+
+
+# --------------------------------------------------------------------------- parity
+
+
+def test_reference_model_set_matches_production_defaults():
+    from rl_crypto.ml.base import DEFAULT_MODEL
+    from rl_crypto.ml.tier1 import DEFAULT_MODEL_BY_TARGET
+    from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES
+
+    for target in TARGET_NAMES:
+        expected = DEFAULT_MODEL_BY_TARGET.get(target, DEFAULT_MODEL[TARGET_KINDS[target]])
+        assert lab.MODEL_SETS["reference"][target] == expected, target
+
+    # The specific parity gap that made lab verdicts non-comparable.
+    assert lab.MODEL_SETS["reference"]["fwd_volatility"] == "log_ridge"
+    assert lab.MODEL_SETS["production"] == lab.MODEL_SETS["reference"]
+
+
+def test_reference_volatility_is_scored_in_log_space():
+    from rl_crypto.ml.tier1 import train_tier1
+    from rl_crypto.samples import build_samples
+
+    from .conftest import make_dataset_rows
+
+    samples = build_samples(make_dataset_rows(160, wiggle=0.03))
+    bundle = train_tier1(
+        samples,
+        targets=("fwd_volatility",),
+        model_names=lab.MODEL_SETS["reference"],
+        holdout_fraction=0.2,
+    )
+    model = bundle.targets["fwd_volatility"]
+    assert model.metric_space == "log"
+    assert model.predict_row(samples[-1].features) is not None
+    assert model.predict_row(samples[-1].features) > 0

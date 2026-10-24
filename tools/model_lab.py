@@ -55,8 +55,10 @@ from rl_crypto.features import (
     FEATURE_NAMES,
     FEATURE_VERSION,
 )
+from rl_crypto.ml.base import DEFAULT_MODEL
 from rl_crypto.ml.store import default_bundle_path, load_bundle, save_bundle
 from rl_crypto.ml.tier1 import (
+    DEFAULT_MODEL_BY_TARGET,
     Tier1Bundle,
     baseline_for,
     beats_baseline,
@@ -76,13 +78,18 @@ LAB_DIR = Path(
 INTERVAL_SECONDS = DEFAULT_INTERVAL_SECONDS
 BARS_PER_YEAR = 365.0 * 24.0 * 3600.0 / INTERVAL_SECONDS
 
+#: The estimator production actually ships for each target: the trainer's
+#: per-target override, else the default estimator for the task kind. The lab's
+#: ``reference`` set is derived from this, not hand-written, so a lab verdict is
+#: comparable to the deployed bundle (notably ``log_ridge`` for volatility).
+PRODUCTION_MODELS: dict[str, str] = {
+    target: DEFAULT_MODEL_BY_TARGET.get(target, DEFAULT_MODEL[TARGET_KINDS[target]])
+    for target in TARGET_NAMES
+}
+
 MODEL_SETS: dict[str, dict[str, str]] = {
-    "reference": {
-        "fwd_return": "ridge",
-        "fwd_direction": "logistic",
-        "fwd_volatility": "ridge",
-        "fwd_volume_ratio": "ridge",
-    },
+    "reference": dict(PRODUCTION_MODELS),
+    "production": dict(PRODUCTION_MODELS),
     "baseline": {
         "fwd_return": "mean",
         "fwd_direction": "base_rate",
