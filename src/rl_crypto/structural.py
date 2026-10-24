@@ -115,10 +115,15 @@ def truncation_invariance(
             "targets": list(targets),
             "violations": [],
         }
+    # Audit the declared names *and* any feature the pipeline actually emits
+    # but did not declare, so a run that adds a feature cannot hide it from the
+    # check by forgetting to update its own list.
+    present = sorted({name for sample in full for name in sample.features})
     names = tuple(
         dict.fromkeys(
             [
                 *(feature_names if feature_names is not None else FEATURE_NAMES),
+                *present,
                 *extra_features,
             ]
         )
