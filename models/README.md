@@ -69,13 +69,38 @@ Across all 15 tracked tickers, on the current archive:
 | ------ | -------------- | ------- |
 | `fwd_return` | 0/15 | **no directional skill** — worse than a constant on every ticker |
 | `fwd_direction` | 0/15 | **no directional skill** — at or below always-up |
-| `fwd_volatility` | 9/15 | modest, real (2–13% better than baseline) |
+| `fwd_volatility` | 6/15 | marginal — log-space verdict, inconsistent across tickers |
 | `fwd_volume_ratio` | 15/15 | solidly real (14–24% better than baseline) |
+
+*Re-derived from `data/*/summary.json` on 2026-10-24; re-derive rather than copy.*
+The volatility count is a **log-space** verdict (see below); the earlier 10/15
+was raw-scale RMSE, which is not the loss the log-space estimator minimises.
 
 `Tier1Bundle.trusted(target)` returns this verdict, and Tier 2 withholds
 `signal`/`confidence` for any target that is not trusted. Point predictions are
 still emitted either way — they are inputs for a future RL observation vector,
 not claims about the market.
+
+A point prediction is only emitted when it is inside the target's domain.
+`fwd_volatility` is a standard deviation, so a negative fit is impossible
+physically. Two layers enforce that now:
+
+- **The estimator (`log_ridge`).** `fwd_volatility` is fitted in log space and
+  exponentiated back, so the served value is positive by construction. A plain
+  `ridge` is unbounded, and on 2026-10-24 11 of 15 tickers served a negative
+  spread — a number no market can produce. The log predictor is clipped to a
+  safe range so an extreme out-of-range row cannot underflow to `0.0` either.
+- **The serve guard (`tier2._clip_domain`).** A negative value from any future
+  estimator is withheld as `None` with a note, rather than clipped to `0.0`,
+  which would fabricate a spread no asset has.
+
+Because the model now minimises squared error in log space, its metrics and the
+constant baseline are computed there too (`metric_space: "log"` in the bundle
+and summary, versus `"raw"` for the other targets). Scoring a log-space model by
+raw RMSE against a raw-mean baseline would report a loss it never optimised and
+wrongly fail it. Rows with a zero realised spread have no log and are excluded
+from log-space scoring. The target definition itself is unchanged: it is still a
+realised standard deviation.
 
 `fwd_return` scoring *below* the baseline out of sample is the expected result
 for 1-hour-ahead returns on price-only features: the model is fitting noise, and

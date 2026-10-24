@@ -209,6 +209,9 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "targets": {
             name: {
                 "in_sample": model.metrics,
+                # "raw" or "log": the scale the regression metrics are on, so a
+                # log-space model is not compared to a raw-scale constant.
+                "metric_space": model.metric_space,
                 "holdout": None
                 if model.holdout is None
                 else {

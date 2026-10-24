@@ -61,6 +61,21 @@ MIN_HOLDOUT_SAMPLES = 5
 #: ratio 14-24%) from the noise ones (direction 0.1-0.3%).
 RELATIVE_SKILL_MARGIN = 0.01
 
+#: Per-target estimator overrides, applied when the caller names none.
+#:
+#: ``fwd_volatility`` is a standard deviation, so it has a non-negative domain.
+#: The reference ridge is unbounded: on live feature rows its sign is arbitrary,
+#: and before this override 8 of the 10 "trusted" volatility models served a
+#: negative spread. ``log_ridge`` fits ``log(vol)`` and exponentiates back, so
+#: the served value is positive by construction without changing the target
+#: definition or the raw-scale holdout comparison.
+DEFAULT_MODEL_BY_TARGET: dict[str, str] = {"fwd_volatility": "log_ridge"}
+
+#: Smallest strictly-positive value used when scoring in log space. A zero
+#: realised spread carries no log; such rows are excluded from log-space
+#: scoring rather than floored, so one quiet bar cannot dominate the metric.
+_LOG_FLOOR = 1e-12
+
 
 # --------------------------------------------------------------------------- metrics
 
@@ -92,14 +107,31 @@ def classification_metrics(y: np.ndarray, probability: np.ndarray) -> dict[str, 
     }
 
 
-def baseline_for(kind: str, y_train: np.ndarray, y_test: np.ndarray) -> dict[str, float | None]:
+def baseline_for(
+    kind: str, y_train: np.ndarray, y_test: np.ndarray, *, space: str = "raw"
+) -> dict[str, float | None]:
     """Metrics for the best *constant* predictor of ``y_test`` known from ``y_train``.
 
     This is the bar a real model has to clear. A model that cannot beat it has
     learned nothing an average would not have given it, and its predictions
     should not be presented as signal.
+
+    ``space`` selects the scale the comparison happens on. ``"raw"`` is the
+    ordinary target scale. ``"log"`` is used by a log-space estimator: both the
+    truth and the constant are scored as logs, so the model is judged on the
+    loss it actually minimises. Rows with a non-positive target have no log and
+    are excluded; a single zero would otherwise make the log baseline infinite
+    and hand the model a fake win.
     """
     if kind == "regression":
+        if space == "log":
+            positive = y_test > 0.0
+            train = y_train[y_train > 0.0]
+            if train.size == 0 or not np.any(positive):
+                return {"rmse": None, "mae": None, "r2": None}
+            constant = float(np.mean(np.log(train)))
+            held = np.log(y_test[positive])
+            return regression_metrics(held, np.full(held.shape, constant))
         prediction = float(np.mean(y_train)) if y_train.size else 0.0
         return regression_metrics(y_test, np.full(y_test.shape, prediction))
     rate = float(np.mean(y_train)) if y_train.size else 0.5
@@ -133,6 +165,21 @@ def beats_baseline(
     if bar <= 0.0:
         return got < bar
     return bool(got < bar * (1.0 - RELATIVE_SKILL_MARGIN))
+
+
+def _regression_metrics_in_space(
+    truth: np.ndarray, predicted: np.ndarray, space: str
+) -> dict[str, float | None]:
+    """Score a regression fit on the scale its estimator optimises."""
+    if space != "log":
+        return regression_metrics(truth, predicted)
+    positive = truth > 0.0
+    if not np.any(positive):
+        return {"rmse": None, "mae": None, "r2": None}
+    return regression_metrics(
+        np.log(truth[positive]),
+        np.log(np.clip(predicted[positive], _LOG_FLOOR, None)),
+    )
 
 
 def usable_features(
@@ -215,6 +262,10 @@ class Tier1Model:
     model: Model
     metrics: dict[str, float | None] = field(default_factory=dict)
     n_samples: int = 0
+    #: Scale the regression metrics are computed on: ``"raw"`` or ``"log"``.
+    #: A log-space estimator is judged on log loss against a log-space constant;
+    #: scoring it on the raw scale would report a loss it never optimised.
+    metric_space: str = "raw"
     holdout: HoldoutReport | None = None
 
     @property
@@ -236,6 +287,7 @@ class Tier1Model:
             "kind": self.kind,
             "feature_names": list(self.feature_names),
             "n_samples": self.n_samples,
+            "metric_space": self.metric_space,
             "metrics": dict(self.metrics),
             "holdout": None if self.holdout is None else self.holdout.to_dict(),
             "model": self.model.to_dict(),
@@ -251,6 +303,7 @@ class Tier1Model:
             model=model_from_dict(kind, payload["model"]),  # type: ignore[arg-type]
             metrics=dict(payload.get("metrics") or {}),
             n_samples=int(payload.get("n_samples", 0)),
+            metric_space=str(payload.get("metric_space", "raw")),
             holdout=HoldoutReport.from_dict(payload.get("holdout")),
         )
 
@@ -429,11 +482,13 @@ def train_tier1(
         train_rows, test_rows = usable[:split], usable[split:]
         matrix = _vectors(train_rows)
         labels = np.asarray([s.targets[target] for s in train_rows], dtype=float)
-        model = make_model(kind, overrides.get(target))  # type: ignore[arg-type]
+        chosen = overrides.get(target) or DEFAULT_MODEL_BY_TARGET.get(target)
+        model = make_model(kind, chosen)  # type: ignore[arg-type]
         model.fit(matrix, labels)
         predicted = model.predict(matrix)
+        space = str(getattr(model, "metric_space", "raw"))
         metrics = (
-            regression_metrics(labels, predicted)
+            _regression_metrics_in_space(labels, predicted, space)
             if kind == "regression"
             else classification_metrics(labels, predicted)
         )
@@ -444,11 +499,11 @@ def train_tier1(
             test_labels = np.asarray([s.targets[target] for s in test_rows], dtype=float)
             test_pred = model.predict(test_matrix)
             held_metrics = (
-                regression_metrics(test_labels, test_pred)
+                _regression_metrics_in_space(test_labels, test_pred, space)
                 if kind == "regression"
                 else classification_metrics(test_labels, test_pred)
             )
-            baseline = baseline_for(kind, labels, test_labels)
+            baseline = baseline_for(kind, labels, test_labels, space=space)
             holdout = HoldoutReport(
                 n_samples=len(test_rows),
                 metrics=held_metrics,
@@ -458,15 +513,17 @@ def train_tier1(
             verdict = "beats" if holdout.beats_baseline else "does not beat"
             key = "rmse" if kind == "regression" else "log_loss"
             got, bar = held_metrics.get(key), baseline.get(key)
-            improvement = (
-                f" ({100.0 * (bar - got) / bar:+.2f}% vs baseline)"
-                if got is not None and bar
-                else ""
-            )
+            scale = "log-space " if space == "log" else ""
+            if got is None or bar is None:
+                detail = f"{scale}{key}=unmeasurable"
+            else:
+                improvement = (
+                    f" ({100.0 * (bar - got) / bar:+.2f}% vs baseline)" if bar else ""
+                )
+                detail = f"{scale}{key}={got:.5f} vs baseline {bar:.5f}{improvement}"
             needed = f"need {RELATIVE_SKILL_MARGIN:.0%} to count as skill"
             notes.append(
-                f"{target}: out-of-sample {key}={got:.5f} vs "
-                f"baseline {bar:.5f}{improvement} — {verdict} it "
+                f"{target}: out-of-sample {detail} — {verdict} it "
                 f"({len(test_rows)} held-out rows, {needed})"
             )
 
@@ -477,6 +534,7 @@ def train_tier1(
             model=model,
             metrics=metrics,
             n_samples=len(train_rows),
+            metric_space=space,
             holdout=holdout,
         )
 

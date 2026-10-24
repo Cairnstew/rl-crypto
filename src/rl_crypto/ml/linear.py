@@ -1,15 +1,24 @@
 """Reference Tier-1 estimators — pure numpy, no model-serving dependency.
 
-Four estimators, two per task kind, all serialising to JSON:
+Five estimators, all serialising to JSON:
 
 ======================  =================  ====================================
 name                    kind               idea
 ======================  =================  ====================================
 ``ridge``               regression         L2-regularised least squares (closed form)
+``log_ridge``           regression         ridge fitted on ``log(y)``, exponentiated back
 ``mean``                regression         predict the training mean (baseline)
 ``logistic``            classification     L2-regularised logistic regression (GD)
 ``base_rate``           classification     predict the training positive rate
 ======================  =================  ====================================
+
+``log_ridge`` exists for targets with a non-negative domain (a realised
+volatility). A plain ``ridge`` is unbounded, so on live feature rows it can
+predict a negative spread — a physically impossible number — even when its
+holdout score looks fine. Fitting in log space makes ``exp(...)`` positive by
+construction while keeping the linear closed form; the inverse-transformed value
+is on the target's own scale, so raw-scale metrics and the constant baseline
+stay comparable.
 
 They exist so the tiered pipeline runs with zero extra dependencies and can be
 exercised offline. A heavier backend (scikit-learn, gradient boosting) can be
@@ -26,6 +35,11 @@ import numpy as np
 from .base import Model, Standardizer, TaskKind, register_model
 
 _SIGMOID_CLIP = 60.0
+
+#: Bound the log-space linear predictor so ``exp`` neither overflows nor
+#: underflows to ``0.0`` on an extreme out-of-range feature row. ``exp(±700)``
+#: stays inside float64 and, crucially, remains strictly positive.
+_EXP_CLIP = 700.0
 
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
@@ -92,6 +106,77 @@ class Ridge:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> Ridge:
+        model = cls(alpha=float(payload.get("alpha", 1.0)))
+        model._scaler = Standardizer.from_dict(payload["scaler"])
+        coef = payload.get("coef")
+        model._coef = np.asarray(coef, dtype=float) if coef is not None else None
+        model._intercept = float(payload.get("intercept", 0.0))
+        return model
+
+
+@register_model
+class LogRidge:
+    """Ridge fitted in ``log`` space and exponentiated back to the target scale.
+
+    For a non-negative target such as :func:`~rl_crypto.targets.forward_volatility`
+    (a standard deviation), an unconstrained linear fit is not merely imprecise:
+    its sign on a live feature row is arbitrary, and a negative spread is a
+    number no market can produce. This estimator keeps the same closed-form
+    solve, fits ``log(y)``, and returns ``exp(...)``, so every prediction is
+    positive by construction. Metrics are still computed on the raw scale
+    against the same constant baseline, so the holdout verdict stays comparable.
+
+    Rows whose target is not strictly positive (a zero realised spread) carry no
+    log and are excluded from the fit; they are still scored, because the model
+    predicts for them like any other row.
+    """
+
+    name = "log_ridge"
+    kind: TaskKind = "regression"
+    #: This estimator minimises squared error in log space, so its metrics and
+    #: constant baseline must be computed there too (see ``Tier1.train_tier1``).
+    metric_space = "log"
+
+    def __init__(self, alpha: float = 1.0) -> None:
+        self.alpha = float(alpha)
+        self._scaler = Standardizer()
+        self._coef: np.ndarray | None = None
+        self._intercept = 0.0
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> LogRidge:
+        matrix = _as_matrix(X)
+        target = _as_target(y)
+        if matrix.shape[0] != target.shape[0]:
+            raise ValueError("X and y disagree on the number of samples")
+        positive = target > 0.0
+        if not np.any(positive):
+            raise ValueError("log_ridge needs at least one strictly positive target")
+        matrix = matrix[positive]
+        log_target = np.log(target[positive])
+        self._scaler.fit(matrix)
+        scaled = self._scaler.transform(matrix)
+        gram = scaled.T @ scaled + self.alpha * np.eye(scaled.shape[1])
+        self._coef = np.linalg.solve(gram, scaled.T @ (log_target - log_target.mean()))
+        self._intercept = float(log_target.mean())
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        if self._coef is None:
+            raise RuntimeError("LogRidge used before fit")
+        scaled = self._scaler.transform(_as_matrix(X))
+        return np.exp(np.clip(scaled @ self._coef + self._intercept, -_EXP_CLIP, _EXP_CLIP))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.name,
+            "alpha": self.alpha,
+            "scaler": self._scaler.to_dict(),
+            "coef": None if self._coef is None else self._coef.tolist(),
+            "intercept": self._intercept,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> LogRidge:
         model = cls(alpha=float(payload.get("alpha", 1.0)))
         model._scaler = Standardizer.from_dict(payload["scaler"])
         coef = payload.get("coef")
