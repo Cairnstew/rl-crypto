@@ -1574,6 +1574,12 @@ def test_cli_blocks_a_no_new_information_rerun(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["outcome"] == "blocked"
     assert "no-new-information" in payload["reason"]
+    entries = tool.read_ledger(root / "experiments" / "ledger.jsonl")
+    assert entries[-1]["kind"] == "blocked"
+    assert entries[-1]["infra"] is True
+    assert entries[-1]["infra_kind"] == "staleness"
+    # The staleness block did not add a pre-registration (a trial).
+    assert sum(1 for entry in entries if entry.get("kind") == "preregister") == 1
 
 
 def test_family_trial_cap_is_configurable_and_blocks_past_it(tmp_path):
