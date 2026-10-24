@@ -97,8 +97,11 @@ candidate: <path from the sweep artifact>
 ticker: BTC/USD
 ```
 
-Dry-run by default. If the gate fails, report every reason and stop. If it
-passes, ask the human before `apply: true`.
+Dry-run by default. Pass `hypothesis` and `lineage` so the ledger attributes the
+holdout spend: the final holdout is touched at most once per lineage, and a
+different candidate in a spent lineage is refused before any holdout bar is
+read. If the gate fails, report every reason and stop. If it passes, ask the
+human before `apply: true`.
 
 ## 6. Make it durable
 
@@ -106,10 +109,13 @@ passes, ask the human before `apply: true`.
 To keep the win:
 
 1. Read the promotion artifact's `recommendation`.
-2. Update `pipeline/run.py` so the default training uses the same
-   `feature_names`, `model_names`, and `horizon`.
+2. `promote --apply` writes the same `feature_names`, `model_names` and
+   `horizon` into the committed `config/training.json` (per-ticker override),
+   which is what production training reads — so the next retrain reproduces the
+   promotion instead of overwriting it.
 3. Re-run the pipeline / retrain.
-4. Verify `models/<slug>.json`, `models/README.md`, and the dashboard.
+4. Verify `models/<slug>.json`, `models/README.md`, the dashboard, and that
+   `config/training.json` carries the override.
 5. Run the offline tests and `ruff`.
 
 ## 7. Record
@@ -131,3 +137,23 @@ or the memory graph. Do not commit or push without explicit direction.
 - Fix: `status` now prints per-target `holdout beats`
   (`ret/D dir/D vol/D vratio/D`) and `--json` carries `target_holdouts`; the
   single `holdout` field is labelled `fwd_direction`.
+
+### 2026-10-24 — foundation pass (measurement gaps closed)
+
+- `fwd_volatility` labels span `max(horizon, 2)`, so a flat `horizon` purge
+  leaked one bar into the test window; fixed in `targets.label_purge` +
+  `tier1.chronological_split`, and the lab's `walk_forward` now purges the
+  widest reach among the evaluated targets.
+- Trial/holdout accounting lives in `rl_crypto.experiments` and
+  `experiments/ledger.jsonl`; `promote` refuses a lineage whose holdout was
+  already spent and records every touch. Counts surface in `status`/`report`.
+- The lab's `reference` model set is derived from production defaults
+  (`log_ridge` for volatility), so a lab verdict describes the shipped bundle.
+- Production training reads `config/training.json`; `promote --apply` edits it,
+  so a promotion survives the next scheduled retrain.
+- `tools/forward_score.py` scores served predictions against realised outcomes.
+  Live records written before `bundle_trained_at` existed report as `unknown`
+  until the next bundles are deployed.
+- Data freshness at the time of this pass: the archive was 7.4h stale (dropped
+  scheduled train runs) and forward windows were ~8.8 days, below the 14-day
+  confirmation minimum — so no candidate can be confirmed yet.

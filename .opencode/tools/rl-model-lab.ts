@@ -22,7 +22,16 @@ import { join, resolve, sep } from "node:path";
  *                                     to suppress the dev-shell banner at source
  */
 
-const ACTIONS = ["status", "evaluate", "sweep", "promote", "report", "help"] as const;
+const ACTIONS = [
+    "status",
+    "evaluate",
+    "sweep",
+    "preregister",
+    "promote",
+    "report",
+    "scoreboard",
+    "help",
+] as const;
 type Action = (typeof ACTIONS)[number];
 
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
@@ -31,9 +40,11 @@ const KILL_GRACE_MS = 5_000;
 const TIMEOUTS_MS: Record<Action, number> = {
     sweep: 900_000,
     evaluate: 900_000,
+    preregister: 120_000,
     promote: 300_000,
     status: 180_000,
     report: 180_000,
+    scoreboard: 120_000,
     help: 60_000,
 };
 
@@ -43,9 +54,28 @@ const USED_ARGS: Record<Action, ReadonlySet<string>> = {
     help: new Set(["action"]),
     status: new Set(["action", "tickers", "json"]),
     report: new Set(["action", "limit", "json"]),
+    scoreboard: new Set(["action", "json"]),
+    preregister: new Set([
+        "action",
+        "hypothesis",
+        "family",
+        "lineage",
+        "mechanism",
+        "configs",
+        "tickers",
+        "targets",
+        "metric",
+        "criteria",
+        "negative",
+        "seed",
+        "folds",
+        "json",
+    ]),
     promote: new Set([
         "action",
         "candidate",
+        "hypothesis",
+        "lineage",
         "ticker",
         "tickers",
         "targets",
@@ -84,6 +114,8 @@ const USED_ARGS: Record<Action, ReadonlySet<string>> = {
         "featureSet",
         "modelSet",
         "horizon",
+        "thresholds",
+        "costLevels",
         "limit",
         "json",
     ]),
@@ -107,6 +139,17 @@ type LabArgs = {
     maxConfigs?: number;
     candidate?: string;
     ticker?: string;
+    hypothesis?: string;
+    family?: string;
+    lineage?: string;
+    mechanism?: string;
+    configs?: string;
+    metric?: string;
+    criteria?: string;
+    negative?: string;
+    seed?: number;
+    thresholds?: string;
+    costLevels?: string;
     apply?: boolean;
     json?: boolean;
     limit?: number;
@@ -216,8 +259,19 @@ function validate(args: LabArgs): string | undefined {
     if (args.position !== undefined && !["long-only", "long-short"].includes(args.position)) {
         errors.push("position must be 'long-only' or 'long-short'.");
     }
-    if (args.modelSet !== undefined && !["reference", "baseline"].includes(args.modelSet)) {
-        errors.push("modelSet must be 'reference' or 'baseline'.");
+    if (
+        args.modelSet !== undefined &&
+        !["reference", "production", "baseline"].includes(args.modelSet)
+    ) {
+        errors.push("modelSet must be 'reference', 'production' or 'baseline'.");
+    }
+    for (const [name, value] of [
+        ["thresholds", args.thresholds],
+        ["costLevels", args.costLevels],
+    ] as const) {
+        if (value !== undefined && !/^[0-9.:,;\s/]+$/.test(value)) {
+            errors.push(`${name} may only contain numbers and . : , ; / separators.`);
+        }
     }
     return errors.length ? errors.join(" ") : undefined;
 }
@@ -354,11 +408,12 @@ function run(
 
 export default {
     description:
-        "Offline walk-forward model lab for rl-crypto. Actions: status (deployed bundles/trust/freshness), evaluate (out-of-sample metrics + after-cost economic proxy vs constant and momentum baselines), sweep (controlled feature/model/horizon experiments, writes candidates), promote (validate a candidate on a reserved final holdout; dry run unless apply=true, and apply requires a prior dry run of the same candidate), report (experiment ledger), help (full argument reference). It measures honestly and does not guarantee profit. Artifacts live under ~/.local/share/rl-crypto/model-lab.",
+        "Offline walk-forward model lab for rl-crypto. Actions: status (deployed bundles/trust/freshness), evaluate (out-of-sample metrics + after-cost economics; a thresholds/cost grid fits each fold once), sweep (controlled feature/model/horizon experiments, writes candidates), preregister (record hypothesis + numeric criteria before running), promote (validate a candidate on a reserved final holdout; the holdout is spent at most once per lineage; dry run unless apply=true, and apply requires a prior passing dry run of the same candidate), report (experiment ledger with trial/holdout counts), scoreboard (regenerate experiments/SCOREBOARD.md), help (full argument reference). It measures honestly and does not guarantee profit. Artifacts live under ~/.local/share/rl-crypto/model-lab; the committed ledger is experiments/ledger.jsonl.",
     args: {
         action: {
             type: "string",
-            description: "One of: status, evaluate, sweep, promote, report, help.",
+            description:
+                "One of: status, evaluate, sweep, preregister, promote, report, scoreboard, help.",
         },
         tickers: {
             type: "string",
@@ -378,7 +433,7 @@ export default {
         modelSet: {
             type: "string",
             description:
-                "evaluate: reference (ridge/logistic) | baseline (mean/base_rate). Default reference.",
+                "evaluate: reference/production (what production ships, including log_ridge for volatility) | baseline (mean/base_rate). Default reference.",
         },
         horizon: {
             type: "number",
@@ -439,6 +494,53 @@ export default {
             type: "boolean",
             description:
                 "promote: actually write models/<slug>.json after a passing gate. Default false (dry run). Requires a prior dry run of the same candidate in this session.",
+        },
+        thresholds: {
+            type: "string",
+            description:
+                "evaluate: comma-separated direction thresholds to sweep in one fit, e.g. '0.5,0.55,0.6'.",
+        },
+        costLevels: {
+            type: "string",
+            description:
+                "evaluate: per-side fee:slippage pairs to sweep in one fit, e.g. '10:5,0:0'.",
+        },
+        hypothesis: {
+            type: "string",
+            description: "preregister/promote: hypothesis id, e.g. H1.",
+        },
+        family: {
+            type: "string",
+            description: "preregister: hypothesis family, for the cumulative trial counter.",
+        },
+        lineage: {
+            type: "string",
+            description:
+                "preregister/promote: candidate lineage that owns the holdout budget (default <hypothesis>:<ticker>).",
+        },
+        mechanism: {
+            type: "string",
+            description: "preregister: why this should help, in two sentences.",
+        },
+        configs: {
+            type: "string",
+            description: "preregister: JSON object or list of the exact configs to run.",
+        },
+        metric: {
+            type: "string",
+            description: "preregister: the metric of record.",
+        },
+        criteria: {
+            type: "string",
+            description: "preregister: numeric pass/fail criteria, fixed before the run.",
+        },
+        negative: {
+            type: "string",
+            description: "preregister: what result would count as a negative finding.",
+        },
+        seed: {
+            type: "number",
+            description: "preregister: seed recorded with the trial (default 0).",
         },
         json: {
             type: "boolean",
@@ -515,6 +617,39 @@ export default {
                 add("--json", args.json);
                 break;
 
+            case "scoreboard":
+                add("--json", args.json);
+                break;
+
+            case "preregister": {
+                for (const [flag, value] of [
+                    ["hypothesis", args.hypothesis],
+                    ["family", args.family],
+                    ["lineage", args.lineage],
+                    ["mechanism", args.mechanism],
+                    ["configs", args.configs],
+                    ["metric", args.metric],
+                    ["criteria", args.criteria],
+                    ["negative", args.negative],
+                ] as const) {
+                    if (!value) return `rl-model-lab: preregister requires ${flag}.`;
+                }
+                add("--hypothesis", args.hypothesis);
+                add("--family", args.family);
+                add("--lineage", args.lineage);
+                add("--mechanism", args.mechanism);
+                add("--configs", args.configs);
+                add("--tickers", normList(args.tickers));
+                add("--targets", normList(args.targets));
+                add("--metric", args.metric);
+                add("--criteria", args.criteria);
+                add("--negative", args.negative);
+                add("--seed", args.seed ?? 0);
+                add("--folds", args.folds ?? 4);
+                add("--json", args.json);
+                break;
+            }
+
             case "promote": {
                 if (!args.candidate) return "rl-model-lab: promote requires candidate.";
                 const candidate = resolve(args.candidate);
@@ -529,6 +664,8 @@ export default {
                 }
                 add("--candidate", candidate);
                 add("--ticker", args.ticker);
+                add("--hypothesis", args.hypothesis);
+                add("--lineage", args.lineage);
                 add("--tickers", normList(args.tickers));
                 add("--targets", normList(args.targets));
                 economics();
@@ -558,6 +695,8 @@ export default {
                 add("--feature-set", args.featureSet ?? "all");
                 add("--model-set", args.modelSet ?? "reference");
                 add("--horizon", args.horizon ?? 1);
+                add("--thresholds", args.thresholds);
+                add("--cost-levels", args.costLevels);
                 add("--limit", args.limit ?? 20);
                 add("--json", args.json);
                 break;
