@@ -1,0 +1,199 @@
+---
+name: model-improvement
+description: Use when the user asks to improve rl-crypto model performance, find an edge, retrain, sweep, diagnose a weak model, or promote a candidate. Orchestrates status → evaluate → diagnose → sweep → promote → wire-in, using rl-model-lab and the repo's data/model/pipeline skills. Never claims profit and stops when the data has no edge.
+---
+
+# Model Improvement Loop
+
+This is the **orchestrator**. It decides what to do; `rl-model-lab` measures.
+Do not hardcode a sweep-everything loop. Diagnose first, then choose the
+smallest experiment that tests a real hypothesis.
+
+Companions: **`model-contract`** (features/targets/holdout/bundle contract),
+**`backtest-protocol`** (evaluation contract), **`data-quality-audit`**
+(input data), **`pipeline-hardening`** (runner/cache),
+**`cache-incident-response`** (stale/broken cache),
+**`ticker-onboarding`** (watchlist changes).
+
+## 0. Guardrails
+
+- **No profit claims.** Report out-of-sample metrics, after-cost policy, and
+  gate reasons. "No edge" is a valid, useful result.
+- **Never train or tune on the final 20%.** Only `promote` may read it.
+- **No `--apply` without explicit human approval.** Dry-run first.
+- **No feature/target change without bumping `FEATURE_VERSION`** and following
+  `model-contract`.
+- **Do not sweep stale or broken data.** Fix the input first.
+- **Budget:** default one sweep per request, `--max-configs 8`, `--folds 4`.
+  Ask before exceeding.
+- **Do not promote** a candidate that wins one fold, loses after costs, or only
+  beats a weaker previous bundle.
+
+## 1. Scope
+
+Establish: tickers (default `BTC/USD ETH/USD SOL/USD`), targets (default all
+four; directional work uses `fwd_direction` / `fwd_return`), time budget, and
+whether the user asked for diagnosis, sweep, or promotion.
+
+## 2. Observe
+
+Run `rl-model-lab` `status`, then `evaluate` on the scoped tickers.
+
+Read:
+
+- **Target table** — model vs constant baseline, mean/min improvement, folds
+  beating. Directional needs a consistent majority; one lucky fold is noise.
+- **Policy table** — after-cost Sharpe/return/drawdown vs momentum and
+  always-long. A gross edge smaller than fees + slippage is not an edge.
+- **Bundle state** — feature version, trust, holdout, freshness.
+- **Read `trusted` and `holdout beats` together.** `trusted` lists the targets
+  whose *own* holdout beat the baseline; `holdout beats` shows each target
+  (`ret`, `dir`, `vol`, `vratio`). Do not treat the `dir` row as the whole
+  bundle: directional failure does **not** mean the activity targets failed.
+
+## 3. Diagnose before acting
+
+Choose exactly one branch:
+
+- **Stale/missing cache, failed pipeline, feature-version mismatch** → load
+  `cache-incident-response` / `data-quality-audit` / `pipeline-hardening`.
+  Fix that; do not sweep.
+- **Directional targets at/below baseline, policy negative after costs** →
+  price-only hourly data may simply have no directional edge. Check cost
+  sensitivity and horizon before spending a sweep. Do not force a direction.
+- **Volatility/volume targets beat, direction does not** → the real skill is in
+  activity/volatility. Do not promote a directional model just because another
+  target works.
+- **Current and candidate horizons differ** → align horizons; promotion will
+  reject a mismatch.
+- **Plausible hypothesis** (feature group, horizon, model set, ticker) → run a
+  small sweep that tests it, not a blind grid.
+
+## 4. Sweep
+
+Use `rl-model-lab` `sweep` with an explicit budget:
+
+```text
+action: sweep
+tickers: BTC/USD
+featureSets: market,core
+modelSets: reference
+horizons: 1
+maxConfigs: 8
+folds: 4
+```
+
+The sweep evaluates the first 80%; the final 20% is reserved. A sweep winner is
+**not** promoted yet. If no config beats the baseline consistently, stop and
+report the negative result with the artifact path.
+
+## 5. Promote
+
+For a candidate that passed the sweep gate:
+
+```text
+action: promote
+candidate: <path from the sweep artifact>
+ticker: BTC/USD
+```
+
+Dry-run by default. If the gate fails, report every reason and stop. If it
+passes, ask the human before `apply: true`.
+
+## 6. Make it durable
+
+`--apply` writes `models/<slug>.json`, but the scheduled train overwrites it.
+To keep the win:
+
+1. Read the promotion artifact's `recommendation`.
+2. Update `pipeline/run.py` so the default training uses the same
+   `feature_names`, `model_names`, and `horizon`.
+3. Re-run the pipeline / retrain.
+4. Verify `models/<slug>.json`, `models/README.md`, and the dashboard.
+5. Run the offline tests and `ruff`.
+
+## 7. Record
+
+Report: scope, before/after metrics, policy numbers, gate reasons, artifact
+paths, and what changed. Append durable findings to the relevant skill's RUN LOG
+or the memory graph. Do not commit or push without explicit direction.
+
+## 8. Unattended mode
+
+When no human is in the loop, do not improvise the orchestration. Use the
+driver, which implements phases 0-7 with a file-based handoff:
+
+Run these inside `nix develop`: the venv's numpy/pandas need the devshell's
+`LD_LIBRARY_PATH`, and preflight fails loudly without it.
+
+```bash
+uv run python tools/model_improve.py plan            # frozen prereg, no execution
+uv run python tools/model_improve.py run             # one hypothesis
+uv run python tools/model_improve.py run --no-llm    # mechanical only
+uv run python tools/model_improve.py status --render # scoreboard + queue
+```
+
+- The **criteria and configs come from `experiments/hypotheses.json`**, not
+  from the agent. The driver writes them to the append-only ledger before the
+  lab runs; the verdict is computed by `rl_crypto.experiments`, never by an
+  LLM.
+- Roles are separate processes with fresh context (`--executor passes`) or an
+  Ensemble lead (`--executor team`). They must not ask questions or wait for
+  approval; a blocker goes into the role artifact and stops the run.
+- The final 20% is still reserved for `promote`. `promotion.apply` defaults to
+  false; a passing gate writes `models/` on the run branch only, and CI
+  delivers that as a PR. Never set it true to "see what happens".
+- `experiments/` is committed, including negative results. A blocked run is a
+  ledger entry, not a silent retry.
+- The forward scorer does not exist yet, so nothing from this loop is
+  `confirmed`; a backtest pass is at most `provisional`. Say that explicitly.
+- **Model:** one knob, `config/model-improvement.json` → `model`
+  (default `opencode/deepseek-v4.1-flash-free`). The role agents have no
+  hardcoded model; `--model` / `RL_MODEL_IMPROVE_MODEL` override it, and the
+  lead passes it to every `team_spawn`.
+- **Reviewer:** after the verdict, a mechanical audit plus
+  `model-improve-reviewer` check the ensemble session, report honesty and final
+  git state. A `fail` blocks the run; the reviewer may fix a concrete defect in
+  `.opencode/` and must record it in `review.json`'s `config_changes`. It may
+  not change the model policy or the hypothesis queue.
+
+## RUN LOG
+
+### 2026-10-24 — unattended orchestrator + mechanical verdict
+
+- Built `tools/model_improve.py` and `src/rl_crypto/experiments.py`: the
+  pre-registration, trial counter, holdout accounting, criteria evaluation and
+  ledger rendering are now code, not agent judgment. The five role contracts
+  live in `.opencode/agents/model-improve-*.md`.
+- The evaluator is intentionally the weakest role: it may only write prose.
+  Promotion is gated by `promotion_gate`, and `apply` defaults off because the
+  scheduled retrain still overwrites `models/` (no `config/training.json` yet).
+- CI (`model-improve.yml`) publishes a branch + PR and never pushes main; the
+  weekly schedule stays off behind `RL_MODEL_IMPROVE_ENABLED`.
+- **Trap found by running it, not by reading docs:** `opencode run --agent X`
+  silently falls back to the default agent when `X` is `mode: subagent`, so a
+  role would run with the wrong permissions. All role agents are now
+  `mode: all`; preflight's `agent-modes` check and `run_role`'s log scan both
+  treat a fallback as a hard failure.
+- Local runs need `nix develop` (the venv's numpy/pandas need the devshell's
+  `LD_LIBRARY_PATH`); preflight's `lab-imports` probe fails early instead of
+  after a long sweep.
+- Added a post-run `model-improve-reviewer` (mechanical checks + an adversarial
+  session/git/report audit; may fix concrete `.opencode/` defects and must
+  record them) and a single `model` knob
+  (`opencode/deepseek-v4.1-flash-free`). The role agents no longer hardcode a
+  model: an agent-file `model:` overrides the CLI `--model`, so a single knob
+  requires removing it. `--model` / `RL_MODEL_IMPROVE_MODEL` now changes the
+  whole team, and the lead passes `model=MODEL` to every `team_spawn`.
+
+### 2026-10-24 — first real run (negative directional, activity trusted)
+
+- A bare `/rl-model-lab` run diagnosed BTC/ETH/SOL: directional/return `0/4`
+  folds, policy negative even at zero cost — no gross directional edge.
+- The first `status` table had one `holdout` column that was actually
+  `fwd_direction` only; the run misread it as bundle-wide and wrongly concluded
+  the activity targets failed too. The bundle holdouts say otherwise:
+  `fwd_volume_ratio` 15/15 and `fwd_volatility` 10/15 pass.
+- Fix: `status` now prints per-target `holdout beats`
+  (`ret/D dir/D vol/D vratio/D`) and `--json` carries `target_holdouts`; the
+  single `holdout` field is labelled `fwd_direction`.

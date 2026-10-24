@@ -1,0 +1,36 @@
+{
+  "schema": "rl-crypto/model-improvement/1",
+  "executor": "auto",
+  "model": "opencode/deepseek-v4.1-flash-free",
+  "review": {
+    "enabled": true,
+    "require": false
+  },
+  "budgets": {
+    "maxConfigs": 8,
+    "folds": 4,
+    "roleTimeoutSeconds": 1800,
+    "labTimeoutSeconds": 3600,
+    "maxRolesPerRun": 6,
+    "maxCostUsdPerRun": 5.0
+  },
+  "promotion": {
+    "apply": false,
+    "requiresPromoteDryRun": true
+  },
+  "scope": {
+    "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
+    "targets": [
+      "fwd_direction",
+      "fwd_return",
+      "fwd_volatility",
+      "fwd_volume_ratio"
+    ],
+    "threshold": 0.55,
+    "position": "long-only",
+    "feeBps": 10.0,
+    "slippageBps": 5.0
+  },
+  "seed": 0,
+  "staleHours": 6
+}

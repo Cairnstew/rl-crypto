@@ -274,3 +274,90 @@ def test_merge_refreshes_the_README_dashboard():
     assert merge_runs.index("no cache changes to commit") < merge_runs.index(
         "tools/render_dashboard.py"
     )
+
+
+# --------------------------------------------------------------------------- model improve
+
+_IMPROVE = _WORKFLOWS / "model-improve.yml"
+
+
+def test_model_improve_is_dispatch_first_and_schedule_gated():
+    doc = _workflow(_IMPROVE)
+    triggers = _triggers(doc)
+    assert "workflow_dispatch" in triggers
+    assert [entry["cron"] for entry in triggers["schedule"]]
+    # An armed schedule spends credits and opens PRs; it stays off until a
+    # human sets the repository variable.
+    assert "RL_MODEL_IMPROVE_ENABLED" in str(doc["jobs"]["improve"]["if"])
+
+
+def test_model_improve_never_pushes_main_and_never_merges():
+    runs = _runs(_workflow(_IMPROVE)["jobs"]["improve"])
+    assert "git push origin \"HEAD:refs/heads/$BRANCH\"" in runs
+    assert "push origin main" not in runs
+    assert "refs/heads/main" not in runs
+    assert "gh pr create" in runs
+    assert "gh pr merge" not in runs
+    assert "--body-file" in runs
+
+
+def test_model_improve_requires_credentials_only_for_llm_executors():
+    doc = _workflow(_IMPROVE)
+    steps = {step.get("name"): step for step in doc["jobs"]["improve"]["steps"]}
+    auth = steps["configure opencode credentials"]
+    assert "mechanical" in auth["if"]
+    assert "OPENCODE_AUTH_JSON" in auth["env"]
+    assert "chmod 600" in auth["run"]
+    # The secret is written once and never echoed or traced.
+    assert "echo $OPENCODE_AUTH_JSON" not in auth["run"]
+    assert "set -x" not in auth["run"]
+
+
+def test_model_improve_pins_opencode_and_uses_the_driver():
+    runs = _runs(_workflow(_IMPROVE)["jobs"]["improve"])
+    assert "opencode-ai@1.18.31" in runs
+    assert "tools/model_improve.py" in runs
+    # A fresh CI checkout is already isolated; the driver commits on the run
+    # branch instead of creating a nested worktree.
+    assert "--no-worktree" in runs
+    assert "--commit" in runs
+
+
+def test_model_improve_uploads_artifacts_even_when_blocked():
+    steps = {step.get("name"): step for step in _workflow(_IMPROVE)["jobs"]["improve"]["steps"]}
+    upload = steps["upload run artifacts"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"].endswith("/artifacts")
+
+
+def test_model_improve_serialises_runs():
+    concurrency = _workflow(_IMPROVE)["concurrency"]
+    assert concurrency["group"] == "rl-crypto-model-improve"
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_model_improve_exposes_a_single_model_override():
+    doc = _workflow(_IMPROVE)
+    dispatch = _triggers(doc)["workflow_dispatch"]["inputs"]
+    assert "model" in dispatch
+    step = next(
+        step for step in doc["jobs"]["improve"]["steps"] if step.get("name") == "run the loop"
+    )
+    assert "RL_MODEL_IMPROVE_MODEL" in step["env"]
+    assert "inputs.model" in str(step["env"]["RL_MODEL_IMPROVE_MODEL"])
+    # The repo default lives in config/model-improvement.json, not the YAML.
+    assert "opencode/deepseek-v4.1-flash-free" not in _runs(doc["jobs"]["improve"])
+
+
+def test_model_improve_does_not_bypass_the_reviewer():
+    runs = _runs(_workflow(_IMPROVE)["jobs"]["improve"])
+    assert "--no-review" not in runs
+
+
+def test_model_improve_surfaces_reviewer_failure():
+    steps = {step.get("name"): step for step in _workflow(_IMPROVE)["jobs"]["improve"]["steps"]}
+    surface = steps["surface the reviewer verdict"]
+    assert surface["if"] == "always()"
+    assert "review.json" in surface["run"]
+    assert 'if [ "$STATUS" = "fail" ]' in surface["run"]
+    assert "::error::" in surface["run"]

@@ -99,6 +99,19 @@ def _probability(value: Any) -> str:
     return f"{value:.3f}" if isinstance(value, int | float) else MISSING
 
 
+def _spread(value: Any) -> str:
+    """A spread forecast, or a dash when there is no valid one.
+
+    ``fwd_volatility`` is non-negative by definition. Records written before the
+    serve-time domain check in ``ml/tier2.py`` may carry a negative value; the
+    stored record is left untouched and the product shows an honest gap rather
+    than a number (or a fabricated zero).
+    """
+    if not isinstance(value, int | float) or value < 0.0:
+        return MISSING
+    return f"{value:g}"
+
+
 def _newest(rows: list[dict[str, Any]], key: str) -> tuple[Any, datetime | None]:
     """The newest stamp in a column, as ``(raw, instant)``."""
     best: tuple[Any, datetime | None] = (None, None)
@@ -173,6 +186,8 @@ def collect_rows(root: Path) -> list[dict[str, Any]]:
         predictions = predictions if isinstance(predictions, dict) else {}
         probabilities = predictions.get("probabilities")
         probabilities = probabilities if isinstance(probabilities, dict) else {}
+        points = predictions.get("predictions")
+        points = points if isinstance(points, dict) else {}
         market = live.get("market")
         market = market if isinstance(market, dict) else {}
         archive = summary.get("archive")
@@ -186,10 +201,9 @@ def collect_rows(root: Path) -> list[dict[str, Any]]:
             {
                 "ticker": summary.get("ticker") or live.get("ticker") or slug.upper(),
                 "price": market.get("price", summary_live.get("price")),
-                "signal": predictions.get("signal") if predictions else None,
-                "confidence": predictions.get("confidence") if predictions else None,
                 "p_up": probabilities.get("fwd_direction"),
-                "has_predictions": bool(predictions),
+                "vol_fcst": points.get("fwd_volatility"),
+                "vratio_fcst": points.get("fwd_volume_ratio"),
                 "bars": archive.get("rows"),
                 "span": (
                     f"{str(spans[0])[:10]} → {str(spans[-1])[:10]}"
@@ -225,26 +239,25 @@ def render(rows: list[dict[str, Any]], *, now: datetime, cache_bytes: int) -> st
         f" · trained {newest_train or MISSING} ({_age(newest_train, now)})"
         f" · feature contract {contract}",
         "",
-        "| ticker | price | signal | conf | p(up) | archive | beats baseline | last live |",
+        "| ticker | price | vol | vratio | p(up) | archive | beats baseline | last live |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         bars = f"{row['bars']:,} · {row['span']}" if isinstance(row["bars"], int) else MISSING
         beats = f"{row['trusted']}/{row['targets']}" if row["targets"] else MISSING
-        if not row["has_predictions"]:
-            signal, confidence = MISSING, MISSING
-        else:
-            signal = _number(row["signal"])
-            confidence = "n/a" if row["confidence"] is None else _number(row["confidence"])
         lines.append(
-            f"| {row['ticker']} | {_price(row['price'])} | {signal} | {confidence}"
-            f" | {_probability(row['p_up'])} | {bars} | {beats} | {_clock(row['last_live'])} |"
+            f"| {row['ticker']} | {_price(row['price'])} | {_spread(row['vol_fcst'])}"
+            f" | {_number(row['vratio_fcst'])} | {_probability(row['p_up'])}"
+            f" | {bars} | {beats} | {_clock(row['last_live'])} |"
         )
     lines += [
         "",
-        "*`signal` `—` = withheld (no target earned it) · `conf` `n/a` = no confidence"
-        " · `p(up)` = model probability of an up move (emitted even when withheld)"
-        " · `beats baseline` = targets that beat a constant predictor out of sample.*",
+        "*`vol` = forecast spread of the next bar's log returns (`fwd_volatility`,"
+        " non-negative by definition; `—` means the model's value fell outside that"
+        " domain) · `vratio` = forecast `log`(forward volume / trailing volume) ·"
+        " `p(up)` = model probability of an up move (emitted even when withheld) ·"
+        " `beats baseline` = targets that beat a constant predictor out of sample."
+        " A directional `signal` is withheld while no directional target earns it.*",
     ]
     return "\n".join(lines)
 

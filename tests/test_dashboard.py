@@ -64,6 +64,10 @@ def _write_cache(root: Path, *, withheld: bool = False, verdicts: bool = False) 
             "signal": None if withheld else 1,
             "confidence": None if withheld else 0.4234,
             "probabilities": {"fwd_direction": 0.5123},
+            "predictions": {
+                "fwd_volatility": 0.0011720763,
+                "fwd_volume_ratio": -0.4067855563776053,
+            },
         },
     }
     (data / "live.jsonl").write_text(
@@ -100,9 +104,22 @@ def test_dashboard_has_a_row_with_the_cache_state(tmp_path):
 
     assert "**1 tickers**" in block
     assert "as of 2026-10-23T20:30Z" in block
-    assert "| ETH/USD | $2,392.11 | 1 | 0.4234 | 0.512 | 1,725 · 2026-08-12 → 2026-10-23 | 2/4 | 20:15Z |" in block
+    assert (
+        "| ETH/USD | $2,392.11 | 0.00117208 | -0.406786 | 0.512"
+        " | 1,725 · 2026-08-12 → 2026-10-23 | 2/4 | 20:15Z |"
+    ) in block
     # freshness comes from the bundle's trained_at, not the summary run
     assert "trained 2026-10-23T18:00:00Z (2h ago)" in block
+
+
+def test_dashboard_surfaces_the_activity_forecasts_not_the_direction_signal(tmp_path):
+    """The earned targets are the headline; a directional signal has no column."""
+    _write_cache(tmp_path)
+    block = _block(tmp_path)
+
+    header = next(line for line in block.splitlines() if line.startswith("| ticker |"))
+    assert "vol" in header and "vratio" in header
+    assert "signal" not in header and "conf" not in header
 
 
 def test_legacy_summary_falls_back_to_the_bundle_holdout(tmp_path):
@@ -120,9 +137,53 @@ def test_summary_verdicts_win_when_present(tmp_path):
     assert rows[0]["targets"] == 4
 
 
-def test_withheld_signal_renders_as_dash_and_na(tmp_path):
+def test_withheld_signal_still_publishes_the_activity_forecasts(tmp_path):
+    """Withholding the direction signal must not hide the forecasts that earned it."""
     _write_cache(tmp_path, withheld=True)
-    assert "| — | n/a |" in _block(tmp_path)
+    block = _block(tmp_path)
+    assert "| 0.00117208 | -0.406786 | 0.512 |" in block
+
+
+def test_negative_spread_forecast_renders_as_a_gap(tmp_path):
+    """A pre-domain-check record may carry a negative volatility.
+
+    Rendering it would publish a physically impossible number, and rendering
+    ``0`` would fabricate a spread no asset has, so it is an honest dash.
+    """
+    _write_cache(tmp_path)
+    live_path = tmp_path / "data" / "eth-usd" / "live.jsonl"
+    lines = live_path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-1])
+    record["predictions"]["predictions"]["fwd_volatility"] = -0.0011720763
+    live_path.write_text(
+        "\n".join([lines[0], json.dumps(record)]) + "\n", encoding="utf-8"
+    )
+
+    block = _block(tmp_path)
+    assert "| — | -0.406786 |" in block
+    assert "-0.0011720763" not in block
+
+
+def test_missing_point_predictions_render_as_dashes(tmp_path):
+    _write_cache(tmp_path)
+    live_path = tmp_path / "data" / "eth-usd" / "live.jsonl"
+    lines = live_path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-1])
+    del record["predictions"]["predictions"]
+    live_path.write_text(
+        "\n".join([lines[0], json.dumps(record)]) + "\n", encoding="utf-8"
+    )
+
+    assert "| — | — |" in _block(tmp_path)
+
+
+def test_spread_never_renders_negative_or_fabricates_zero():
+    tool = _load()
+    assert tool._spread(-1e-9) == tool.MISSING
+    assert tool._spread(0.001234) == "0.001234"
+    assert tool._spread(0.0) == "0"
+    assert tool._spread(None) == tool.MISSING
+    assert tool._spread("n/a") == tool.MISSING
 
 
 def test_replacement_is_idempotent_and_preserves_handwritten_text(tmp_path):
