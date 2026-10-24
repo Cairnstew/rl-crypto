@@ -265,3 +265,8 @@ def test_the_pooled_rule_passes_a_real_signal():
     )
     assert pooled["mean_improvement"] > 0
     assert pooled["ci_low"] > 0
+
+
+def test_promote_apply_refuses_without_a_frozen_cutoff():
+    with pytest.raises(SystemExit, match="requires --holdout-start"):
+        lab.main(["promote", "--candidate", "candidate.json", "--apply"])

@@ -1293,6 +1293,11 @@ def promotion_gate(
 
 
 def promote_action(args: argparse.Namespace) -> int:
+    if args.apply and not args.holdout_start:
+        raise SystemExit(
+            "promote --apply requires --holdout-start: without a frozen cutoff the "
+            "comparison is against a deployed bundle that may have seen the holdout"
+        )
     candidate_path = Path(args.candidate).expanduser().resolve()
     if not candidate_path.exists():
         raise SystemExit(f"candidate not found: {candidate_path}")

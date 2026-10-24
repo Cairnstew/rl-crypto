@@ -79,7 +79,8 @@ contradiction. The effective old rule was "every fold positive" (because
 `fold_rule: all_positive` (or `majority_positive` / `none`).
 
 The final holdout is a **timestamp**, frozen once per lineage by a
-`holdout_freeze` ledger entry (`holdout_start`). `evaluate`, `sweep` and
+`holdout_freeze` ledger entry (`holdout_start`). `promote --apply` refuses to
+run without one; the deployed-bundle comparison is informational only. `evaluate`, `sweep` and
 `promote` all receive the same cutoff; selection only sees bars strictly before
 it. Appending bars never moves it. `evaluate --full-archive` still exists for
 diagnostics, records `diagnostic_full_archive: true`, consumes the lineage's
