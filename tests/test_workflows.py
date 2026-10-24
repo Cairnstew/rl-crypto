@@ -148,14 +148,32 @@ def test_production_uses_the_pipeline_entry_point():
 # --------------------------------------------------------------------------- watchdog
 
 
-def test_watchdog_dispatches_production_when_stale():
+def test_watchdog_probes_the_archive_bar_not_any_data_commit():
+    """A live record or a retrain-only summary touches data/ without adding bars.
+
+    Measuring "newest commit touching data/" let both mask a stale archive — on
+    2026-10-24 a 7-hour-stale archive read as 10 minutes old after a live commit.
+    """
     doc = _workflow(_WATCHDOG)
     assert "actions" in (doc.get("permissions") or {})
     assert doc["permissions"]["actions"] == "write"
     runs = _runs(doc["jobs"]["heal"])
-    assert "gh workflow run production.yml" in runs
+
+    assert "data/btc-usd/summary.json" in runs
+    assert "archive.spans" in runs
+    assert "commits?path=data&" not in runs
+    # Fallback only: candles.jsonl is rewritten only when bars are added.
+    assert "commits?path=data/btc-usd/candles.jsonl" in runs
     assert "MAX_AGE_MINUTES" in runs
-    assert "commits?path=data" in runs
+
+
+def test_watchdog_dispatches_train_with_an_explicit_repo():
+    """The heal job has no checkout, so gh must be told the repo; live cannot heal."""
+    runs = _runs(_workflow(_WATCHDOG)["jobs"]["heal"])
+
+    assert 'gh workflow run production.yml --repo "${GITHUB_REPOSITORY}"' in runs
+    assert "-f mode=train" in runs
+    assert "-f mode=live" not in runs
 
 
 # --------------------------------------------------------------------------- prepare
