@@ -1805,6 +1805,23 @@ def test_null_calibration_measures_the_empirical_rate_without_touching_the_ledge
     assert (root / "experiments" / "ledger.jsonl").read_text() == ledger_before
 
 
+def test_realistic_leak_canaries_all_come_out_invalid():
+    alpha = 0.025
+    base, scenarios = tool.leak_contract_payloads("fwd_volume_ratio", alpha)
+    prereg = tool._leak_prereg("fwd_volume_ratio", 0.05)
+    clean = tool.evaluate_criteria(prereg, base)
+    assert clean["outcome"] == "provisional"
+    assert [name for name, _, _ in scenarios] == [
+        "scaler_fit_on_full_data",
+        "label_overlap_across_split",
+        "selection_on_holdout",
+    ]
+    for name, payload, layer in scenarios:
+        verdict = tool.evaluate_criteria(prereg, payload)
+        assert verdict["outcome"] == "invalid", name
+        assert layer.split()[0] in " ".join(verdict["reasons"])
+
+
 def test_power_calibration_finds_the_minimum_planted_effect(tmp_path, monkeypatch):
     root = _repo(tmp_path, _null_hypothesis())
     (root / "tools" / "model_lab.py").write_text(FAKE_POWER_LAB, encoding="utf-8")

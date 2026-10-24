@@ -23,7 +23,7 @@ _SPEC.loader.exec_module(lab)
 def _samples(n: int = 200) -> list[Sample]:
     return [
         Sample(
-            timestamp=f"2026-01-01T{i % 24:02d}:00:00Z",
+            timestamp=f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:00:00Z",
             features={"ret_1": 0.01 if i % 2 == 0 else -0.01},
             targets={
                 "fwd_return": 0.01 if i % 3 == 0 else -0.005,
@@ -62,7 +62,7 @@ def test_plant_signal_adds_a_learnable_feature_and_reports_its_effect():
 def test_plant_signal_in_log_space_keeps_the_target_positive():
     samples = [
         Sample(
-            timestamp=f"2026-01-01T{i % 24:02d}:00:00Z",
+            timestamp=f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:00:00Z",
             features={"ret_1": 0.0},
             targets={"fwd_volatility": 0.02},
         )
@@ -73,6 +73,32 @@ def test_plant_signal_in_log_space_keeps_the_target_positive():
     )
     assert meta["space"] == "log"
     assert all((sample.targets["fwd_volatility"] or 0.0) > 0.0 for sample in planted)
+
+
+def test_inject_correlated_feature_hits_the_requested_strength():
+    samples = _samples(400)
+    for requested in (0.5, 0.2, 0.1, 0.05):
+        planted, meta = lab.inject_correlated_feature(
+            samples, "fwd_return", requested, seed=7
+        )
+        actual = meta["actual_correlation"]
+        assert actual is not None
+        assert abs(abs(actual) - requested) < 0.03
+        assert lab.detect_leaks(planted, ["fwd_return"]) == []
+
+
+def test_validate_splits_catches_a_missing_purge():
+    samples = _samples(200)
+    good = lab.walk_forward(samples, folds=3, horizon=2, targets=["fwd_return"])
+    assert lab.validate_splits(
+        samples, good, targets=["fwd_return"], horizon=2
+    )["ok"] is True
+    bad = lab.walk_forward(
+        samples, folds=3, horizon=2, targets=["fwd_return"], purge=0
+    )
+    result = lab.validate_splits(samples, bad, targets=["fwd_return"], horizon=2)
+    assert result["ok"] is False
+    assert result["violations"]
 
 
 def test_walk_forward_refuses_too_few_samples():

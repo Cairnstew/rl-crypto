@@ -1179,6 +1179,38 @@ def paired_rule(
     return _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
 
 
+def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
+    """A deterministic provenance failure, or ``None`` when the contracts hold.
+
+    These are the mechanisms a correlation threshold cannot see: preprocessing
+    fitted on the full dataset, a training label reaching across the split, and
+    a candidate selected on the reserved holdout. The lab reports what it did;
+    the verdict refuses a payload that admits a leak.
+    """
+    if not isinstance(lab_payload, Mapping):
+        return None
+    purge = lab_payload.get("purge")
+    if isinstance(purge, Mapping) and purge.get("ok") is False:
+        violations = purge.get("violations") or []
+        detail = ""
+        if violations:
+            first = violations[0]
+            if isinstance(first, Mapping):
+                detail = f" ({first.get('reason') or first})"
+        return "label reach crosses the train/test split (purge violation)" + detail
+    preprocessing = lab_payload.get("preprocessing")
+    if isinstance(preprocessing, Mapping):
+        scope = preprocessing.get("fit_scope")
+        if scope not in (None, "train"):
+            return f"preprocessing was fit on {scope!r}, not the training split"
+    selection = lab_payload.get("selection")
+    if isinstance(selection, Mapping):
+        scope = selection.get("scope")
+        if scope not in (None, "pre-cutoff", "train", "reserved-final", "not-applicable"):
+            return f"candidate selection used {scope!r}, not the pre-cutoff data"
+    return None
+
+
 def _paired_rule(
     pooled: Mapping[str, Any] | None,
     *,
@@ -1284,6 +1316,15 @@ def _evaluate_criteria_v2(
             "passed": False,
             "outcome": "blocked",
             "reasons": ["a full-archive diagnostic cannot feed a verdict"],
+            "metrics": metrics,
+        }
+
+    violation = contract_violation(lab_payload)
+    if violation is not None:
+        return {
+            "passed": False,
+            "outcome": "invalid",
+            "reasons": [violation],
             "metrics": metrics,
         }
 

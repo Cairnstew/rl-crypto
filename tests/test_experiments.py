@@ -197,6 +197,76 @@ def test_binomial_calibration_uses_its_own_uncertainty():
     assert failed["exceeds"] is True
 
 
+def test_v2_contract_violations_are_invalid_not_negative():
+    """A leak that the correlation threshold cannot see must still be refused."""
+    from rl_crypto.experiments import contract_violation, evaluate_criteria
+
+    prereg = {
+        "criteria": {
+            "kind": "improvement",
+            "criteria_version": 2,
+            "target": "fwd_volume_ratio",
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+            "alpha": 0.05,
+            "fold_rule": "all_positive",
+            "require_controls": True,
+            "require_multiple_tickers": False,
+            "requires_promote": False,
+        },
+        "trial_index": 1,
+    }
+    pooled = {
+        "mean_improvement": 0.01,
+        "ci_low": 0.005,
+        "ci_high": 0.02,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [0.01] * 4,
+        "resolution_ok": True,
+    }
+    base = {
+        "results": [{"ticker": "BTC/USD"}],
+        "pooled": pooled,
+        "controls": {
+            "shuffle": {
+                "pooled": {
+                    "mean_improvement": -0.01,
+                    "ci_low": -0.02,
+                    "n": 100,
+                    "alpha": 0.025,
+                    "fold_improvements": [-0.01] * 4,
+                    "resolution_ok": True,
+                }
+            },
+            "shift": {
+                "pooled": {
+                    "mean_improvement": -0.01,
+                    "ci_low": -0.02,
+                    "n": 100,
+                    "alpha": 0.025,
+                    "fold_improvements": [-0.01] * 4,
+                    "resolution_ok": True,
+                }
+            },
+        },
+        "purge": {"ok": True, "violations": []},
+        "preprocessing": {"fit_scope": "train"},
+        "selection": {"scope": "pre-cutoff"},
+    }
+    clean = evaluate_criteria(prereg, base)
+    assert clean["outcome"] == "provisional"
+    assert contract_violation(base) is None
+
+    for mutation, needle in (
+        ({"preprocessing": {"fit_scope": "all"}}, "preprocessing"),
+        ({"purge": {"ok": False, "violations": [{"reason": "overlap"}]}}, "purge"),
+        ({"selection": {"scope": "holdout"}}, "selection"),
+    ):
+        verdict = evaluate_criteria(prereg, {**base, **mutation})
+        assert verdict["outcome"] == "invalid"
+        assert any(needle in reason for reason in verdict["reasons"])
+
+
 def test_canary_freshness_requires_both_canaries_at_the_current_hash(tmp_path):
     from rl_crypto.experiments import canary_gate, canary_status
 

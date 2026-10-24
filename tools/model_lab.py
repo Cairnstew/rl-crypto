@@ -221,6 +221,61 @@ def walk_forward(
     return split
 
 
+def purge_required(targets: Sequence[str], horizon: int) -> int:
+    """Rows that must sit between the last training label and the first test row."""
+    return max((label_purge(target, horizon) for target in targets), default=max(0, horizon))
+
+
+def validate_splits(
+    samples: Sequence[Sample],
+    splits: Sequence[tuple[tuple[Sample, ...], tuple[Sample, ...]]],
+    *,
+    targets: Sequence[str],
+    horizon: int,
+    purge: int | None = None,
+) -> dict[str, Any]:
+    """Mechanically check that no training label reaches into its test fold.
+
+    This is what turns the purge from a convention into a checkable layer. A
+    canary that deliberately skips the purge is reported as a violation, and
+    the v2 verdict refuses it instead of scoring the leak.
+    """
+    index = {sample.timestamp: position for position, sample in enumerate(samples)}
+    required = max(0, int(purge if purge is not None else purge_required(targets, horizon)))
+    violations: list[dict[str, Any]] = []
+    for number, (train, test) in enumerate(splits):
+        if not train or not test:
+            violations.append({"fold": number, "reason": "empty train or test"})
+            continue
+        test_start = index.get(test[0].timestamp)
+        train_last = index.get(train[-1].timestamp)
+        if test_start is None or train_last is None:
+            violations.append({"fold": number, "reason": "unknown timestamp"})
+            continue
+        train_end = train_last + 1
+        gap = test_start - train_end
+        if gap < required:
+            violations.append(
+                {
+                    "fold": number,
+                    "reason": "label reach overlaps the test fold",
+                    "gap": gap,
+                    "required": required,
+                }
+            )
+        if any(
+            (position := index.get(sample.timestamp)) is not None
+            and position >= test_start
+            for sample in train
+        ):
+            violations.append({"fold": number, "reason": "train sample at/after test start"})
+    return {
+        "ok": not violations,
+        "required_purge": required,
+        "violations": violations,
+    }
+
+
 def metric_key(kind: str) -> str:
     return "rmse" if kind == "regression" else "log_loss"
 
@@ -700,6 +755,79 @@ def plant_signal(
     }
 
 
+LEAK_CORRELATION_FEATURE = "leak_correlation"
+
+
+def inject_correlated_feature(
+    samples: Sequence[Sample],
+    target: str,
+    correlation: float,
+    *,
+    seed: int,
+    feature: str = LEAK_CORRELATION_FEATURE,
+) -> tuple[tuple[Sample, ...], dict[str, Any]]:
+    """Add a feature with a graded, finite-sample correlation to ``target``.
+
+    The deterministic positive canary uses ``|r| = 1``. Graded leaks matter
+    because a real implementation bug (a normalised future window, a centred
+    target) produces a strong but not perfect correlation, which the strict
+    ``detect_leaks`` threshold cannot see. This helper makes that scenario
+    reproducible so the calibration can report which layer, if any, catches it.
+    """
+    values = [sample.targets.get(target) for sample in samples]
+    usable = [index for index, value in enumerate(values) if value is not None]
+    usable_values = {index: float(value) for index, value in enumerate(values) if value is not None}
+    rng = np.random.default_rng(int(seed))
+    rho = max(-0.999, min(0.999, float(correlation)))
+    signal = np.zeros(len(samples), dtype=float)
+    noise = rng.standard_normal(len(samples))
+    if usable:
+        observed = np.asarray([usable_values[index] for index in usable], dtype=float)
+        spread = float(np.std(observed))
+        standardised = (
+            (observed - float(np.mean(observed))) / spread
+            if spread > 0.0
+            else np.zeros_like(observed)
+        )
+        # Orthogonalise the noise against the standardised target so the sample
+        # correlation is the requested value, not a finite-sample draw around it.
+        residual = noise[usable] - float(np.mean(noise[usable]))
+        projection = (
+            float(np.dot(residual, standardised))
+            / float(np.dot(standardised, standardised))
+            if float(np.dot(standardised, standardised)) > 0.0
+            else 0.0
+        )
+        residual = residual - projection * standardised
+        residual_spread = float(np.std(residual))
+        if residual_spread > 0.0:
+            residual = residual / residual_spread
+        signal[usable] = (
+            rho * standardised
+            + math.sqrt(max(0.0, 1.0 - rho * rho)) * residual
+        )
+    planted = tuple(
+        Sample(
+            timestamp=sample.timestamp,
+            features={**sample.features, feature: float(signal[index])},
+            targets=dict(sample.targets),
+        )
+        for index, sample in enumerate(samples)
+    )
+    actual = None
+    if len(usable) >= 2:
+        xs = np.asarray([float(planted[i].features[feature]) for i in usable])
+        ys = np.asarray([usable_values[i] for i in usable])
+        if float(np.std(xs)) > 0.0 and float(np.std(ys)) > 0.0:
+            actual = float(np.corrcoef(xs, ys)[0, 1])
+    return planted, {
+        "feature": feature,
+        "requested_correlation": rho,
+        "actual_correlation": actual,
+        "n": len(usable),
+    }
+
+
 def inject_leaky_feature(
     samples: Sequence[Sample], feature: str, target: str = "fwd_return"
 ) -> tuple[Sample, ...]:
@@ -776,6 +904,8 @@ def evaluate_control_ticker(
     plant_strength: float = 0.0,
     plant_space: str = "raw",
     plant_feature: str | None = None,
+    inject_correlation: float | None = None,
+    inject_feature: str | None = None,
 ) -> dict[str, Any]:
     """One walk-forward pass with an optional planted signal and control.
 
@@ -793,6 +923,14 @@ def evaluate_control_ticker(
             seed=seed,
             space=plant_space,
             feature=plant_feature or PLANTED_FEATURE,
+        )
+    if inject_correlation is not None:
+        samples, _ = inject_correlated_feature(
+            samples,
+            target,
+            inject_correlation,
+            seed=seed,
+            feature=inject_feature or LEAK_CORRELATION_FEATURE,
         )
     if leak_feature:
         samples = inject_leaky_feature(samples, leak_feature)
@@ -821,6 +959,9 @@ def evaluate_control_ticker(
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
         "planted": planted,
+        "purge": validate_splits(
+            samples, splits, targets=[target], horizon=config.horizon
+        ),
     }
 
 
@@ -968,6 +1109,9 @@ def evaluate_ticker(
         },
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
+        "purge": validate_splits(
+            samples, splits, targets=targets, horizon=config.horizon
+        ),
         "leak_detected": bool(leaks),
         "leak_features": leaks,
     }
@@ -1061,6 +1205,41 @@ def _save(action: str, payload: dict[str, Any]) -> Path:
     with (LAB_DIR / "ledger.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(ledger, default=str) + "\n")
     return path
+
+
+def aggregate_purge(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """One purge verdict for a multi-ticker payload."""
+    rows = [result.get("purge") or {} for result in results if "error" not in result]
+    violations = [
+        {"ticker": result.get("ticker"), **violation}
+        for result in results
+        for violation in ((result.get("purge") or {}).get("violations") or [])
+    ]
+    return {
+        "ok": not violations,
+        "required_purge": max(
+            (int(row.get("required_purge") or 0) for row in rows), default=0
+        ),
+        "violations": violations,
+    }
+
+
+def contract_block(
+    *,
+    fit_scope: str = "train",
+    selection_scope: str = "not-applicable",
+) -> dict[str, Any]:
+    """Declarative provenance blocks the mechanical verdict can refuse.
+
+    The lab reports what it actually did; these are the fields that make a
+    fit-on-everything scaler or a holdout-selected candidate expressible as a
+    deterministic ``invalid`` rather than something only a human reviewer might
+    notice.
+    """
+    return {
+        "preprocessing": {"fit_scope": fit_scope},
+        "selection": {"scope": selection_scope},
+    }
 
 
 def _pool_results(
@@ -1312,6 +1491,17 @@ def evaluate_action(args: argparse.Namespace) -> int:
             for result in results
             for leak in (result.get("leak_features") or [])
         ),
+        "purge": aggregate_purge(results),
+        **contract_block(
+            fit_scope="train",
+            selection_scope=(
+                "pre-cutoff"
+                if args.holdout_start
+                else "reserved-final"
+                if not args.full_archive
+                else "not-applicable"
+            ),
+        ),
         "controls": controls,
         "results": results,
         "summary": {
@@ -1521,6 +1711,11 @@ def sweep_action(args: argparse.Namespace) -> int:
         "top": top,
         "candidates": candidates,
         "primary_candidates": candidates,
+        "purge": aggregate_purge(results),
+        **contract_block(
+            fit_scope="train",
+            selection_scope="pre-cutoff" if args.holdout_start else "reserved-final",
+        ),
         "summary": {
             "tickers": len(tickers),
             "configs": len(configs),

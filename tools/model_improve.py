@@ -58,6 +58,7 @@ from rl_crypto.experiments import (
     calibration_verdict,
     canary_gate,
     canary_status,
+    contract_violation,
     criteria_version,
     evaluate_criteria,
     git_state,
@@ -3482,6 +3483,455 @@ def cmd_calibrate_power(args: argparse.Namespace) -> int:
     return 0
 
 
+def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """One graded-correlation scenario: candidate plus shuffle/shift controls."""
+    root = Path(str(payload["root"]))
+    lab = load_model_lab(root)
+    experiment = payload["experiment"]
+    feature = str(payload["feature"])
+    feature_names = tuple(
+        dict.fromkeys(
+            (
+                *lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
+                feature,
+            )
+        )
+    )
+    config = lab.Config(
+        name=payload["config_name"],
+        feature_names=feature_names,
+        model_names=lab.resolve_model_set(str(experiment.get("modelSet") or "reference")),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    target = str(payload["target"])
+    folds = int(payload["folds"])
+    seed = int(payload["seed"])
+
+    def run(mode: str | None) -> dict[str, Any]:
+        per_ticker = {
+            ticker: lab.evaluate_control_ticker(
+                ticker,
+                config,
+                target,
+                mode,
+                folds=folds,
+                holdout_start=payload.get("holdout_start"),
+                seed=seed,
+                shift_bars=int(payload.get("shift_bars") or 24),
+                inject_correlation=(
+                    None
+                    if payload.get("correlation") is None
+                    else float(payload["correlation"])
+                ),
+                inject_feature=feature,
+            )
+            for ticker in payload["tickers"]
+        }
+        rows_by_ticker = {
+            ticker: list(row.get("paired_rows") or [])
+            for ticker, row in per_ticker.items()
+        }
+        pooled = lab.bootstrap_pooled(
+            rows_by_ticker,
+            alpha=float(payload["alpha"]),
+            seed=seed,
+            block_bars=int(payload["block_bars"]),
+            bootstrap_samples=int(payload["bootstrap_samples"]),
+        )
+        pooled["fold_improvements"] = lab.pool_fold_improvements(
+            {ticker: row.get("fold_improvements") or [] for ticker, row in per_ticker.items()},
+            folds,
+        )
+        pooled["target"] = target
+        return {"pooled": pooled, "per_ticker": per_ticker}
+
+    candidate = run(None)
+    controls = {mode: run(mode) for mode in payload.get("controls") or []}
+    return {
+        "candidate": candidate,
+        "controls": controls,
+        "purge": lab.aggregate_purge(list(candidate["per_ticker"].values())),
+    }
+
+
+def _leak_prereg(target: str, alpha: float) -> dict[str, Any]:
+    return {
+        "run_id": "calibration-leak",
+        "hypothesis_id": "calibration-leak",
+        "family": "calibration",
+        "lineage": "calibration-leak",
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": "2026-01-01T00:00:00Z",
+        "criteria": {
+            "kind": "improvement",
+            "criteria_version": 2,
+            "target": target,
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+            "alpha": alpha,
+            "fold_rule": "all_positive",
+            "require_controls": True,
+            "require_multiple_tickers": False,
+            "requires_promote": False,
+        },
+        "experiment": {"tickers": ["BTC/USD"], "targets": [target]},
+    }
+
+
+def _leak_payload(
+    lab_payload: Mapping[str, Any], target: str
+) -> dict[str, Any]:
+    """Shape a v2 lab payload from a leak job."""
+    candidate = lab_payload["candidate"]
+    controls = lab_payload["controls"]
+    return {
+        "results": [
+            {
+                "ticker": ticker,
+                "paired": {
+                    "n": len(row.get("paired_rows") or []),
+                    "mean_improvement": (
+                        sum(float(item["improvement"]) for item in row["paired_rows"])
+                        / len(row["paired_rows"])
+                        if row.get("paired_rows")
+                        else None
+                    ),
+                    "ci_low": None,
+                    "ci_high": None,
+                },
+            }
+            for ticker, row in candidate["per_ticker"].items()
+        ],
+        "pooled": candidate["pooled"],
+        "controls": {
+            mode: {"pooled": block["pooled"]}
+            for mode, block in controls.items()
+        },
+        "purge": lab_payload["purge"],
+        "preprocessing": {"fit_scope": "train"},
+        "selection": {"scope": "pre-cutoff"},
+        "target": target,
+    }
+
+
+def leak_contract_payloads(
+    target: str, alpha: float
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any], str]]]:
+    """A passing v2 payload plus one realistic leak per mechanism."""
+    negative = {
+        "mean_improvement": -0.01,
+        "ci_low": -0.02,
+        "ci_high": 0.0,
+        "n": 100,
+        "alpha": alpha,
+        "fold_improvements": [-0.01] * 4,
+        "resolution_ok": True,
+    }
+    base: dict[str, Any] = {
+        "results": [
+            {
+                "ticker": "BTC/USD",
+                "paired": {"n": 100, "mean_improvement": 0.01, "ci_low": 0.005},
+            }
+        ],
+        "pooled": {
+            "mean_improvement": 0.01,
+            "ci_low": 0.005,
+            "ci_high": 0.02,
+            "n": 100,
+            "alpha": alpha,
+            "fold_improvements": [0.01, 0.01, 0.01, 0.01],
+            "resolution_ok": True,
+        },
+        "controls": {
+            "shuffle": {"pooled": dict(negative)},
+            "shift": {"pooled": dict(negative)},
+        },
+        "purge": {"ok": True, "violations": []},
+        "preprocessing": {"fit_scope": "train"},
+        "selection": {"scope": "pre-cutoff"},
+        "target": target,
+    }
+    scenarios: list[tuple[str, dict[str, Any], str]] = [
+        (
+            "scaler_fit_on_full_data",
+            {**base, "preprocessing": {"fit_scope": "all"}},
+            "preprocessing contract",
+        ),
+        (
+            "label_overlap_across_split",
+            {
+                **base,
+                "purge": {
+                    "ok": False,
+                    "violations": [{"fold": 0, "reason": "label reach overlaps"}],
+                },
+            },
+            "purge",
+        ),
+        (
+            "selection_on_holdout",
+            {**base, "selection": {"scope": "holdout"}},
+            "selection contract",
+        ),
+    ]
+    return base, scenarios
+
+
+def calibrate_leaks(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    entries: Sequence[Mapping[str, Any]],
+    target: str = "fwd_volume_ratio",
+    correlations: Sequence[float] = (0.5, 0.2, 0.1, 0.05),
+    cutoff: str | None = None,
+) -> dict[str, Any]:
+    """Which mechanical layer (if any) catches each realistic leak."""
+    lab = load_model_lab(root)
+    hypothesis = calibration_hypothesis(queue)
+    if hypothesis is None:
+        raise SystemExit("no canary hypothesis in experiments/hypotheses.json")
+    experiment = dict(hypothesis.experiment or {})
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    computed_cutoff, cutoff_source = calibration_cutoff(
+        root, config, hypothesis, entries
+    )
+    cutoff = cutoff or computed_cutoff
+    if cutoff and cutoff != computed_cutoff:
+        cutoff_source = "cli"
+    budgets = config.get("budgets") or {}
+    alpha_family = float((hypothesis.criteria or {}).get("alpha", 0.05))
+    alpha = alpha_for_trial(alpha_family, 1)
+    prereg = _leak_prereg(target, alpha_family)
+
+    graded: list[dict[str, Any]] = []
+    for correlation in correlations:
+        job = _leak_job(
+            {
+                "root": str(root),
+                "experiment": experiment,
+                "config_name": primary_config_name(experiment),
+                "feature": lab.LEAK_CORRELATION_FEATURE,
+                "target": target,
+                "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
+                "tickers": tickers,
+                "holdout_start": cutoff,
+                "shift_bars": int(experiment.get("shiftBars") or 24),
+                "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
+                "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
+                "alpha": alpha,
+                "seed": int(config.get("seed") or 0),
+                "correlation": float(correlation),
+                "controls": ["shuffle", "shift"],
+            }
+        )
+        detected: list[dict[str, Any]] = []
+        actual: list[float] = []
+        for ticker in tickers:
+            rows, _ = lab.filter_rows_before(lab.load_ticker_rows(ticker), cutoff)
+            samples = lab.build_samples(
+                rows,
+                horizon=int(experiment.get("horizon") or 1),
+                interval_seconds=lab.INTERVAL_SECONDS,
+            )
+            samples, meta = lab.inject_correlated_feature(
+                samples,
+                target,
+                float(correlation),
+                seed=int(config.get("seed") or 0),
+                feature=lab.LEAK_CORRELATION_FEATURE,
+            )
+            if meta.get("actual_correlation") is not None:
+                actual.append(float(meta["actual_correlation"]))
+            detected.extend(lab.detect_leaks(samples, lab.TARGET_NAMES))
+        payload = _leak_payload(job, target)
+        payload["leak_detected"] = bool(detected)
+        payload["leak_features"] = detected
+        verdict = evaluate_criteria(prereg, payload)
+        control_detail = {
+            mode: bool(
+                block["pooled"].get("resolution_ok") is True
+                and paired_rule(
+                    block["pooled"], alpha=alpha, fold_rule="all_positive"
+                )[0]
+            )
+            for mode, block in job["controls"].items()
+        }
+        control_flagged = any(control_detail.values())
+        layers: list[str] = []
+        if detected:
+            layers.append("correlation")
+        if control_flagged:
+            layers.append("controls")
+        if not job["purge"].get("ok", True):
+            layers.append("purge")
+        violation = contract_violation(payload)
+        if violation:
+            layers.append("contract")
+        graded.append(
+            {
+                "correlation_requested": float(correlation),
+                "correlation_actual": (
+                    sum(actual) / len(actual) if actual else None
+                ),
+                "outcome": verdict.get("outcome"),
+                "flagged_by": layers or ["none"],
+                "correlation_detector": bool(detected),
+                "controls_flagged": control_flagged,
+                "controls": control_detail,
+                "purge_ok": bool(job["purge"].get("ok", True)),
+                "contract_violation": violation,
+                "pooled_mean": job["candidate"]["pooled"].get("mean_improvement"),
+                "pooled_ci_low": job["candidate"]["pooled"].get("ci_low"),
+            }
+        )
+
+    baseline_job = _leak_job(
+        {
+            "root": str(root),
+            "experiment": experiment,
+            "config_name": primary_config_name(experiment),
+            "feature": lab.LEAK_CORRELATION_FEATURE,
+            "target": target,
+            "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
+            "tickers": tickers,
+            "holdout_start": cutoff,
+            "shift_bars": int(experiment.get("shiftBars") or 24),
+            "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
+            "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
+            "alpha": alpha,
+            "seed": int(config.get("seed") or 0),
+            "correlation": None,
+            "controls": ["shuffle", "shift"],
+        }
+    )
+    baseline_controls = {
+        mode: {
+            "passed": bool(
+                block["pooled"].get("resolution_ok") is True
+                and paired_rule(
+                    block["pooled"], alpha=alpha, fold_rule="all_positive"
+                )[0]
+            ),
+            "mean_improvement": block["pooled"].get("mean_improvement"),
+            "ci_low": block["pooled"].get("ci_low"),
+        }
+        for mode, block in baseline_job["controls"].items()
+    }
+    baseline_flagged = any(row["passed"] for row in baseline_controls.values())
+    for row in graded:
+        row["controls_specific"] = bool(row["controls_flagged"] and not baseline_flagged)
+    base, scenarios = leak_contract_payloads(target, alpha)
+    canaries: list[dict[str, Any]] = []
+    clean = evaluate_criteria(prereg, base)
+    for name, payload, layer in scenarios:
+        verdict = evaluate_criteria(prereg, payload)
+        canaries.append(
+            {
+                "canary": name,
+                "expected_layer": layer,
+                "outcome": verdict.get("outcome"),
+                "passed": verdict.get("outcome") == "invalid",
+                "reasons": verdict.get("reasons") or [],
+            }
+        )
+    protected = protected_digest(root)
+    return {
+        "action": "calibrate-leaks",
+        "target": target,
+        "tickers": tickers,
+        "frozen_cutoff": cutoff,
+        "cutoff_source": cutoff_source,
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "clean_baseline_outcome": clean.get("outcome"),
+        "control_baseline": {
+            "any_passed": baseline_flagged,
+            "controls": baseline_controls,
+        },
+        "graded": graded,
+        "canaries": canaries,
+    }
+
+
+def cmd_calibrate_leaks(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    correlations = [
+        float(part)
+        for part in str(args.correlations).replace(",", " ").split()
+        if part.strip()
+    ]
+    payload = calibrate_leaks(
+        root,
+        config=config,
+        queue=queue,
+        entries=entries,
+        target=args.target,
+        correlations=correlations,
+        cutoff=args.cutoff,
+    )
+    run_dir = _calibration_dir(args, "calibrate-leaks")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-leaks.json", payload)
+    lines = [
+        "# Leak sensitivity",
+        "",
+        f"- target: {payload['target']}",
+        f"- frozen cutoff: {payload['frozen_cutoff']} ({payload['cutoff_source']})",
+        f"- protected hash: {payload['protected_hash']}",
+        f"- clean baseline outcome: {payload['clean_baseline_outcome']}",
+        "",
+        "| leak | |r| actual | correlation detector | controls |"
+        " control baseline | purge | contract | flagged by |",
+        "| ---- | --------- | -------------------- | -------- |"
+        " ---------------- | ----- | -------- | ---------- |",
+    ]
+    for row in payload["graded"]:
+        actual = (
+            "—"
+            if row["correlation_actual"] is None
+            else f"{row['correlation_actual']:.3f}"
+        )
+        lines.append(
+            f"| corr {row['correlation_requested']:.2f} | {actual} | "
+            f"{'YES' if row['correlation_detector'] else 'no'} | "
+            f"{'YES' if row['controls_flagged'] else 'no'} | "
+            f"{'YES' if payload['control_baseline']['any_passed'] else 'no'} | "
+            f"{'no' if not row['purge_ok'] else 'ok'} | "
+            f"{'YES' if row['contract_violation'] else 'no'} | "
+            f"{', '.join(row['flagged_by'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| realistic canary | expected layer | outcome | caught |",
+            "| ---------------- | -------------- | ------- | ------ |",
+        ]
+    )
+    for row in payload["canaries"]:
+        lines.append(
+            f"| {row['canary']} | {row['expected_layer']} | {row['outcome']} | "
+            f"{'yes' if row['passed'] else 'NO'} |"
+        )
+    lines.append("")
+    lines.append(
+        "A 'none' row is a finding: no mechanical layer catches that leak at that strength."
+    )
+    (run_dir / "calibrate-leaks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-leaks.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = repo_root()
     config = load_config(root)
@@ -4357,6 +4807,17 @@ def build_parser() -> argparse.ArgumentParser:
     cal_power.add_argument("--run-dir", default=None)
     cal_power.add_argument("--json", action="store_true")
     cal_power.set_defaults(func=cmd_calibrate_power)
+
+    cal_leaks = sub.add_parser(
+        "calibrate-leaks",
+        help="offline: which mechanical layer catches each injected leak",
+    )
+    cal_leaks.add_argument("--target", default="fwd_volume_ratio")
+    cal_leaks.add_argument("--correlations", default="0.5,0.2,0.1,0.05")
+    cal_leaks.add_argument("--cutoff", default=None)
+    cal_leaks.add_argument("--run-dir", default=None)
+    cal_leaks.add_argument("--json", action="store_true")
+    cal_leaks.set_defaults(func=cmd_calibrate_leaks)
 
     verify = sub.add_parser("verify", help="forward-test status and bundle freshness")
     verify.add_argument("--run-dir", default=None)
