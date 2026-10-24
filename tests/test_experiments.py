@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -200,3 +201,18 @@ def test_ledger_is_append_only_jsonl(tmp_path):
 
 def test_file_hash_is_none_for_a_missing_file(tmp_path):
     assert ledger.file_hash(tmp_path / "nope") is None
+
+
+def test_committed_scoreboard_matches_the_ledger():
+    """SCOREBOARD.md is rendered, never hand-edited: it must equal a fresh render."""
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "experiments" / "ledger.jsonl").is_file()
+    rendered = ledger.render_scoreboard(ledger.read_entries(root))
+    assert (root / "experiments" / "SCOREBOARD.md").read_text() == rendered
+
+
+def test_hypotheses_queue_covers_every_documented_id():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "experiments" / "hypotheses.md").read_text()
+    for number in range(1, 11):
+        assert f"H{number}" in text
