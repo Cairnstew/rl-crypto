@@ -933,6 +933,53 @@ def test_no_new_information_blocks_an_identical_family_rerun(tmp_path):
     )
 
 
+def test_an_infra_blocked_run_does_not_block_a_retry_as_no_new_information(tmp_path):
+    ctx = _ctx(tmp_path)
+    tool.append_entry(
+        ctx.ledger,
+        {
+            "kind": "preregister",
+            "run_id": "infra",
+            "hypothesis_id": "H0",
+            "family": "diagnostic",
+        },
+    )
+    tool.append_entry(
+        ctx.ledger,
+        {
+            "kind": "blocked",
+            "run_id": "infra",
+            "hypothesis_id": "H0",
+            "stage": "researcher",
+            "reason": "credential failure",
+            "infra": True,
+            "infra_kind": "role-error",
+        },
+    )
+    assert tool.previous_family_prereg(tool.read_ledger(ctx.ledger), "diagnostic") is None
+
+    tool.append_entry(
+        ctx.ledger,
+        {
+            "kind": "preregister",
+            "run_id": "real",
+            "hypothesis_id": "H0",
+            "family": "diagnostic",
+        },
+    )
+    tool.append_entry(
+        ctx.ledger,
+        {
+            "kind": "results",
+            "run_id": "real",
+            "hypothesis_id": "H0",
+            "family": "diagnostic",
+        },
+    )
+    previous = tool.previous_family_prereg(tool.read_ledger(ctx.ledger), "diagnostic")
+    assert previous is not None and previous["run_id"] == "real"
+
+
 def test_canary_provisional_is_converted_to_invalid_and_voids_the_harness(tmp_path, monkeypatch):
     hypothesis = _hypothesis("H0-canary")
     hypothesis["family"] = "canary"

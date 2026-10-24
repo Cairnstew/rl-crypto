@@ -578,6 +578,11 @@ def is_infra_block(entry: Mapping[str, Any]) -> bool:
     return infra_kind(entry) is not None
 
 
+def consumed_runs(entries: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Runs that reached a lab result or a scored verdict (public wrapper)."""
+    return _consumed_runs(entries)
+
+
 def _consumed_runs(entries: Sequence[Mapping[str, Any]]) -> set[str]:
     """Runs that reached a lab result or a scored verdict."""
     runs: set[str] = set()

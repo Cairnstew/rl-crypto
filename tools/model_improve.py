@@ -58,6 +58,7 @@ from rl_crypto.experiments import (
     calibration_verdict,
     canary_gate,
     canary_status,
+    consumed_runs,
     contract_violation,
     criteria_version,
     evaluate_criteria,
@@ -66,6 +67,7 @@ from rl_crypto.experiments import (
     holdout_cutoffs,
     holdout_touches,
     infra_kind,
+    is_infra_block,
     iso,
     load_json,
     load_queue,
@@ -371,9 +373,24 @@ def resolve_or_compute_holdout(
 def previous_family_prereg(
     entries: Sequence[Mapping[str, Any]], family: str
 ) -> Mapping[str, Any] | None:
+    """The last *consumed* trial in a family, ignoring infrastructure failures.
+
+    An infra-blocked run is not a prior measurement, so it must not trigger the
+    no-new-information guard against a retry.
+    """
+    consumed = consumed_runs(entries)
+    infra_runs = {
+        str(entry.get("run_id"))
+        for entry in entries
+        if entry.get("run_id") and is_infra_block(entry)
+    }
     for entry in reversed(entries):
-        if entry.get("kind") == "preregister" and entry.get("family") == family:
-            return entry
+        if entry.get("kind") != "preregister" or entry.get("family") != family:
+            continue
+        run_id = str(entry.get("run_id") or "")
+        if run_id and (run_id not in consumed or run_id in infra_runs):
+            continue
+        return entry
     return None
 
 
