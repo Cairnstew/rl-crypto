@@ -54,6 +54,9 @@ const USED_ARGS: Record<Action, ReadonlySet<string>> = {
         "feeBps",
         "slippageBps",
         "apply",
+        "holdoutStart",
+        "seed",
+        "championRetrain",
         "json",
     ]),
     sweep: new Set([
@@ -69,6 +72,13 @@ const USED_ARGS: Record<Action, ReadonlySet<string>> = {
         "modelSets",
         "horizons",
         "maxConfigs",
+        "primaryConfig",
+        "primaryTarget",
+        "holdoutStart",
+        "seed",
+        "alpha",
+        "bootstrapSamples",
+        "bootstrapBlock",
         "limit",
         "json",
     ]),
@@ -84,6 +94,18 @@ const USED_ARGS: Record<Action, ReadonlySet<string>> = {
         "featureSet",
         "modelSet",
         "horizon",
+        "primaryTarget",
+        "holdoutStart",
+        "seed",
+        "alpha",
+        "bootstrapSamples",
+        "bootstrapBlock",
+        "controls",
+        "shiftBars",
+        "fullArchive",
+        "thresholds",
+        "costLevels",
+        "canaryLeak",
         "limit",
         "json",
     ]),
@@ -108,6 +130,20 @@ type LabArgs = {
     candidate?: string;
     ticker?: string;
     apply?: boolean;
+    holdoutStart?: string;
+    seed?: number;
+    alpha?: number;
+    bootstrapSamples?: number;
+    bootstrapBlock?: number;
+    controls?: string;
+    shiftBars?: number;
+    fullArchive?: boolean;
+    primaryTarget?: string;
+    primaryConfig?: string;
+    thresholds?: string;
+    costLevels?: string;
+    canaryLeak?: string;
+    championRetrain?: boolean;
     json?: boolean;
     limit?: number;
 };
@@ -440,6 +476,65 @@ export default {
             description:
                 "promote: actually write models/<slug>.json after a passing gate. Default false (dry run). Requires a prior dry run of the same candidate in this session.",
         },
+        holdoutStart: {
+            type: "string",
+            description:
+                "Freeze the holdout at this ISO timestamp. promote apply requires it.",
+        },
+        seed: {
+            type: "number",
+            description: "Controls and bootstrap seed. Default 0.",
+        },
+        alpha: {
+            type: "number",
+            description:
+                "evaluate/sweep: CI alpha, already spent for this trial by the driver.",
+        },
+        bootstrapSamples: {
+            type: "number",
+            description: "evaluate/sweep: block-bootstrap draws.",
+        },
+        bootstrapBlock: {
+            type: "number",
+            description: "evaluate/sweep: bars per bootstrap block.",
+        },
+        controls: {
+            type: "string",
+            description: "evaluate: none | shuffle | shift | both.",
+        },
+        shiftBars: {
+            type: "number",
+            description: "evaluate: shift width for the shift control.",
+        },
+        fullArchive: {
+            type: "boolean",
+            description: "evaluate: diagnostic full-archive run (never verdict-eligible).",
+        },
+        primaryTarget: {
+            type: "string",
+            description: "Target of record for the pooled paired improvement.",
+        },
+        primaryConfig: {
+            type: "string",
+            description: "sweep: the only verdict-eligible config (e.g. all+reference+h1).",
+        },
+        thresholds: {
+            type: "string",
+            description: "evaluate: comma/space thresholds to sweep in one fit.",
+        },
+        costLevels: {
+            type: "string",
+            description: "evaluate: fee:slippage pairs to sweep in one fit, e.g. 10:5,0:0.",
+        },
+        canaryLeak: {
+            type: "string",
+            description: "evaluate: positive-canary only; inject this feature from the label.",
+        },
+        championRetrain: {
+            type: "boolean",
+            description:
+                "promote: retrain the champion on the pre-cutoff slice (default true).",
+        },
         json: {
             type: "boolean",
             description: "Return the machine-readable payload instead of the table.",
@@ -497,6 +592,14 @@ export default {
             add("--fee-bps", args.feeBps ?? 10);
             add("--slippage-bps", args.slippageBps ?? 5);
         };
+        const statistics = () => {
+            add("--primary-target", args.primaryTarget);
+            add("--holdout-start", args.holdoutStart);
+            add("--seed", args.seed);
+            add("--alpha", args.alpha);
+            add("--bootstrap-samples", args.bootstrapSamples);
+            add("--bootstrap-block", args.bootstrapBlock);
+        };
 
         let promoteKey: string | undefined;
 
@@ -532,6 +635,9 @@ export default {
                 add("--tickers", normList(args.tickers));
                 add("--targets", normList(args.targets));
                 economics();
+                add("--holdout-start", args.holdoutStart);
+                add("--seed", args.seed);
+                if (args.championRetrain === false) add("--no-champion-retrain");
                 add("--apply", args.apply);
                 add("--json", args.json);
                 break;
@@ -542,6 +648,8 @@ export default {
                 add("--targets", normList(args.targets));
                 add("--folds", args.folds ?? 4);
                 economics();
+                statistics();
+                add("--primary-config", args.primaryConfig);
                 add("--feature-sets", args.featureSets ?? "all,market,core,price");
                 add("--model-sets", args.modelSets ?? "reference,baseline");
                 add("--horizons", normList(args.horizons) ?? "1");
@@ -555,9 +663,16 @@ export default {
                 add("--targets", normList(args.targets));
                 add("--folds", args.folds ?? 4);
                 economics();
+                statistics();
                 add("--feature-set", args.featureSet ?? "all");
                 add("--model-set", args.modelSet ?? "reference");
                 add("--horizon", args.horizon ?? 1);
+                add("--controls", args.controls);
+                add("--shift-bars", args.shiftBars);
+                add("--full-archive", args.fullArchive);
+                add("--thresholds", args.thresholds);
+                add("--cost-levels", args.costLevels);
+                add("--canary-leak", args.canaryLeak);
                 add("--limit", args.limit ?? 20);
                 add("--json", args.json);
                 break;

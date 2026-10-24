@@ -121,10 +121,10 @@ This command remains the human-in-the-loop review path.
    are: `label_purge` shared by trainer and lab, `rl_crypto.experiments`
    holdout accounting enforced in Python, lab/production model parity,
    `config/training.json` read by production, `tools/forward_score.py`,
-   cost-grid batching, tracked lab files, and `experiments/` records. If the
-   foundation branch is unmerged, build from it, not from main, and say so.
-   If any item is missing, switch to `foundation` mode and build only the
-   missing items.
+   cost-grid batching, tracked lab files, and `experiments/` records. All of
+   these now live on the integration/`main` line; verify them on the branch you
+   will build from and say so. If any item is missing, switch to `foundation`
+   mode and build only the missing items.
 5. Create the worktree and branch.
 
 ## Phase F: Foundation (`foundation` mode, or automatically when Phase 0.4 finds gaps)
@@ -339,7 +339,7 @@ refuted`. Only `confirmed` changes the champion on the scoreboard.
    and any incident found, reported separately from the modelling outcome.
 9. **Next**: the next hypothesis in the queue and what it needs (data,
    approval, tooling). If something needs approval, say exactly what,
-   including whether the foundation branch still needs merging.
+   including whether any foundation/hardening work is still unmerged.
 10. **Unverified / risks found**: anything you could not confirm, and any new
     measurement hole you found.
 

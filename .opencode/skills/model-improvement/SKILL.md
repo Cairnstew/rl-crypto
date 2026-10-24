@@ -145,8 +145,9 @@ uv run python tools/model_improve.py status --render # scoreboard + queue
   delivers that as a PR. Never set it true to "see what happens".
 - `experiments/` is committed, including negative results. A blocked run is a
   ledger entry, not a silent retry.
-- The forward scorer does not exist yet, so nothing from this loop is
-  `confirmed`; a backtest pass is at most `provisional`. Say that explicitly.
+- The forward scorer exists, but nothing from this loop is `confirmed` until it
+  has 14 days and 300 resolved predictions for the bundle; a backtest pass is at
+  most `provisional`. Say that explicitly.
 - **Model:** one knob, `config/model-improvement.json` → `model`
   (default `opencode/deepseek-v4.1-flash-free`). The role agents have no
   hardcoded model; `--model` / `RL_MODEL_IMPROVE_MODEL` override it, and the
