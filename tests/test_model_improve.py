@@ -1369,3 +1369,59 @@ def test_token_and_cost_ceilings_block_from_recorded_step_usage(tmp_path):
     assert reason is not None and "cost ceiling" in reason
     assert ctx.usage["tokens"] == 500
     assert ctx.usage["costUsd"] == 0.25
+
+
+def test_cli_blocks_a_no_new_information_rerun(tmp_path, monkeypatch, capsys):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["needs"] = []
+    hypothesis["experiment"] = {
+        "action": "evaluate",
+        "tickers": ["BTC/USD"],
+        "targets": ["fwd_direction"],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1,
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+    }
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    root = _repo(tmp_path, hypothesis)
+    _env(monkeypatch, root, tmp_path, fake_opencode=False)
+    tool.append_entry(
+        root / "experiments" / "ledger.jsonl",
+        {
+            "kind": "preregister",
+            "family": "features",
+            "feature_version": tool.FEATURE_VERSION,
+            "config_hash": tool.sha_of(hypothesis["experiment"]),
+            "data": {"tickers": {"BTC/USD": {"rows": 150}}},
+        },
+    )
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "blocked"
+    assert "no-new-information" in payload["reason"]
