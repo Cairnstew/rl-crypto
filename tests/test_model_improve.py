@@ -1866,6 +1866,7 @@ def test_realistic_leak_canaries_all_come_out_invalid():
         "scaler_fit_on_full_data",
         "label_overlap_across_split",
         "selection_on_holdout",
+        "lookahead_feature",
     ]
     for name, payload, layer in scenarios:
         verdict = tool.evaluate_criteria(prereg, payload)

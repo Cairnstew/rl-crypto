@@ -114,6 +114,7 @@ MIN_BOOTSTRAP_BLOCKS = 24
 #: moment the measurement contract itself changes.
 PROTECTED_FILES: tuple[str, ...] = (
     "src/rl_crypto/experiments.py",
+    "src/rl_crypto/structural.py",
     "src/rl_crypto/targets.py",
     "src/rl_crypto/samples.py",
     "src/rl_crypto/backtest.py",
@@ -123,6 +124,7 @@ PROTECTED_FILES: tuple[str, ...] = (
     "tools/model_improve.py",
     "tools/forward_score.py",
     "tests/test_experiments.py",
+    "tests/test_structural.py",
     "tests/test_model_lab.py",
     "tests/test_ml_measurement.py",
     "tests/test_model_improve.py",
@@ -1189,10 +1191,16 @@ def paired_rule(
 def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
     """A deterministic provenance failure, or ``None`` when the contracts hold.
 
-    These are the mechanisms a correlation threshold cannot see: preprocessing
-    fitted on the full dataset, a training label reaching across the split, and
-    a candidate selected on the reserved holdout. The lab reports what it did;
-    the verdict refuses a payload that admits a leak.
+    The gate is the lab's own **structural** result, not its self-description:
+    truncation invariance (no feature/target reads a bar it could not have
+    known) and perturbation invariance (holdout rows cannot move the fitted
+    scaler, feature selection or coefficients). ``preprocessing.fit_scope`` and
+    ``selection.scope`` are retained as documentation only; they no longer
+    decide anything, because a payload can claim ``"train"`` while fitting on
+    everything.
+
+    A label reach that crosses the split (``purge``) is still a hard failure:
+    that is a mechanical fact about the split, not a self-report.
     """
     if not isinstance(lab_payload, Mapping):
         return None
@@ -1205,16 +1213,29 @@ def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
             if isinstance(first, Mapping):
                 detail = f" ({first.get('reason') or first})"
         return "label reach crosses the train/test split (purge violation)" + detail
-    preprocessing = lab_payload.get("preprocessing")
-    if isinstance(preprocessing, Mapping):
-        scope = preprocessing.get("fit_scope")
-        if scope not in (None, "train"):
-            return f"preprocessing was fit on {scope!r}, not the training split"
-    selection = lab_payload.get("selection")
-    if isinstance(selection, Mapping):
-        scope = selection.get("scope")
-        if scope not in (None, "pre-cutoff", "train", "reserved-final", "not-applicable"):
-            return f"candidate selection used {scope!r}, not the pre-cutoff data"
+    structural = lab_payload.get("structural")
+    if isinstance(structural, Mapping) and structural.get("ok") is False:
+        details: list[str] = []
+        truncation = structural.get("truncation")
+        if isinstance(truncation, Mapping) and truncation.get("ok") is False:
+            count = truncation.get("violation_count") or len(
+                truncation.get("violations") or []
+            )
+            first = (truncation.get("violations") or [None])[0]
+            hint = ""
+            if isinstance(first, Mapping):
+                what = first.get("name") or first.get("kind")
+                hint = f" ({what} at row {first.get('row')})"
+            details.append(f"truncation invariance failed on {count} row(s){hint}")
+        perturbation = structural.get("perturbation")
+        if isinstance(perturbation, Mapping) and perturbation.get("ok") is False:
+            first = (perturbation.get("violations") or [None])[0]
+            path = first.get("path") if isinstance(first, Mapping) else None
+            details.append(
+                "perturbation invariance failed: the holdout changed fitted "
+                f"parameters{(' at ' + str(path)) if path else ''}"
+            )
+        return "structural causality check failed: " + "; ".join(details)
     return None
 
 
@@ -1303,6 +1324,12 @@ def _evaluate_criteria_v2(
         "fold_rule": fold_rule,
         "rows": len(lab_payload.get("results") or []),
         "summary": lab_payload.get("summary") or {},
+        # Self-reported provenance is kept for the record, not for the gate:
+        # the structural result below is what decides.
+        "documented_contracts": {
+            "preprocessing": lab_payload.get("preprocessing"),
+            "selection": lab_payload.get("selection"),
+        },
     }
 
     expected_primary = _config_name(criteria.get("primary"))

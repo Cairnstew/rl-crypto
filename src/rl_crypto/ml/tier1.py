@@ -456,30 +456,25 @@ def train_tier1(
     overrides = dict(model_names or {})
 
     complete = [s for s in samples if _complete(s, names)]
-    kept_names, dropped_names = usable_features(complete, names)
     notes: list[str] = []
-    if dropped_names:
-        notes.append(
-            f"dropped {len(dropped_names)} constant feature(s) with no variation in "
-            f"training data: {', '.join(dropped_names)}"
-        )
-    if not kept_names:
-        notes.append("no feature varied in the training data; nothing can be fitted")
+    if not complete:
+        notes.append("no complete feature rows in the training data; all targets skipped")
         return Tier1Bundle(
             feature_names=(),
             horizon=horizon,
             trained_at=trained_at or to_iso(utcnow()),
-            n_samples=len(complete),
-            dropped_features=dropped_names,
+            n_samples=0,
             notes=tuple(notes),
         )
 
-    def _vectors(usable: Sequence[Sample]) -> np.ndarray:
+    def _vectors(usable: Sequence[Sample], kept: Sequence[str]) -> np.ndarray:
         return np.asarray(
-            [[s.features[name] for name in kept_names] for s in usable], dtype=float
+            [[s.features[name] for name in kept] for s in usable], dtype=float
         )
 
     fitted: dict[str, Tier1Model] = {}
+    kept_union: list[str] = []
+    dropped_union: list[str] = []
     holdout_n = 0
     for target in wanted:
         kind = TARGET_KINDS.get(target)
@@ -514,7 +509,21 @@ def train_tier1(
             notes.append(f"{target}: no training rows after the holdout purge")
             continue
 
-        matrix = _vectors(train_rows)
+        # Feature selection is a fitted preprocessing step: it may only look at
+        # the training rows. Selecting on the full sample table (the old
+        # behaviour) let the holdout decide which columns were "constant", which
+        # the structural perturbation check now rejects.
+        kept_names, dropped_names = usable_features(train_rows, names)
+        if dropped_names:
+            notes.append(
+                f"{target}: dropped {len(dropped_names)} constant feature(s) with no "
+                f"variation in training data: {', '.join(dropped_names)}"
+            )
+        if not kept_names:
+            notes.append(f"{target}: no feature varied in the training data; skipped")
+            continue
+
+        matrix = _vectors(train_rows, kept_names)
         labels = np.asarray([s.targets[target] for s in train_rows], dtype=float)
         chosen = overrides.get(target) or DEFAULT_MODEL_BY_TARGET.get(target)
         model = make_model(kind, chosen)  # type: ignore[arg-type]
@@ -529,7 +538,7 @@ def train_tier1(
 
         holdout: HoldoutReport | None = None
         if test_rows:
-            test_matrix = _vectors(test_rows)
+            test_matrix = _vectors(test_rows, kept_names)
             test_labels = np.asarray([s.targets[target] for s in test_rows], dtype=float)
             test_pred = model.predict(test_matrix)
             held_metrics = (
@@ -561,6 +570,12 @@ def train_tier1(
                 f"({len(test_rows)} held-out rows, {needed})"
             )
 
+        for name in kept_names:
+            if name not in kept_union:
+                kept_union.append(name)
+        for name in dropped_names:
+            if name not in dropped_union:
+                dropped_union.append(name)
         fitted[target] = Tier1Model(
             target=target,
             kind=kind,
@@ -575,13 +590,13 @@ def train_tier1(
     if not fitted:
         notes.append("no targets had enough usable samples to fit")
     return Tier1Bundle(
-        feature_names=kept_names,
+        feature_names=tuple(kept_union),
         horizon=horizon,
         targets=fitted,
         trained_at=trained_at or to_iso(utcnow()),
         n_samples=len(complete),
         notes=tuple(notes),
-        dropped_features=dropped_names,
+        dropped_features=tuple(name for name in dropped_union if name not in kept_union),
         holdout_n_samples=holdout_n,
     )
 

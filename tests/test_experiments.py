@@ -250,6 +250,11 @@ def test_v2_contract_violations_are_invalid_not_negative():
             },
         },
         "purge": {"ok": True, "violations": []},
+        "structural": {
+            "ok": True,
+            "truncation": {"ok": True, "violations": []},
+            "perturbation": {"ok": True, "violations": []},
+        },
         "preprocessing": {"fit_scope": "train"},
         "selection": {"scope": "pre-cutoff"},
     }
@@ -257,10 +262,44 @@ def test_v2_contract_violations_are_invalid_not_negative():
     assert clean["outcome"] == "provisional"
     assert contract_violation(base) is None
 
+    # Self-reported provenance is documentation: it no longer decides.
+    documented = {
+        **base,
+        "preprocessing": {"fit_scope": "all"},
+        "selection": {"scope": "holdout"},
+    }
+    assert contract_violation(documented) is None
+    assert evaluate_criteria(prereg, documented)["outcome"] == "provisional"
+
     for mutation, needle in (
-        ({"preprocessing": {"fit_scope": "all"}}, "preprocessing"),
+        (
+            {
+                "structural": {
+                    "ok": False,
+                    "truncation": {
+                        "ok": False,
+                        "violation_count": 1,
+                        "violations": [{"kind": "feature", "name": "leak", "row": 3}],
+                    },
+                    "perturbation": {"ok": True, "violations": []},
+                }
+            },
+            "truncation",
+        ),
         ({"purge": {"ok": False, "violations": [{"reason": "overlap"}]}}, "purge"),
-        ({"selection": {"scope": "holdout"}}, "selection"),
+        (
+            {
+                "structural": {
+                    "ok": False,
+                    "truncation": {"ok": True, "violations": []},
+                    "perturbation": {
+                        "ok": False,
+                        "violations": [{"path": "feature_names"}],
+                    },
+                }
+            },
+            "perturbation",
+        ),
     ):
         verdict = evaluate_criteria(prereg, {**base, **mutation})
         assert verdict["outcome"] == "invalid"

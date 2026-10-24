@@ -431,7 +431,10 @@ def test_evaluate_grid_fits_each_fold_once(tmp_path, monkeypatch):
     real_train = lab.train_tier1
 
     def spy(*args, **kwargs):
-        calls["n"] += 1
+        # Structural perturbation invariance also refits, but it uses the
+        # newest holdout; count only the walk-forward fold fits here.
+        if kwargs.get("holdout_fraction") == 0.0:
+            calls["n"] += 1
         return real_train(*args, **kwargs)
 
     monkeypatch.setattr(lab, "train_tier1", spy)

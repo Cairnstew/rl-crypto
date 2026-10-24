@@ -54,6 +54,7 @@ from rl_crypto.ml.tier1 import (
 from rl_crypto.ml.training_config import apply_promotion
 from rl_crypto.models import to_iso, utcnow
 from rl_crypto.samples import Sample, build_samples
+from rl_crypto.structural import perturbation_invariance, truncation_invariance
 from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES, label_purge
 
 ROOT = Path(os.environ.get("RL_CRYPTO_ROOT") or Path.cwd()).resolve()
@@ -180,6 +181,117 @@ def resolve_model_set(spec: str) -> dict[str, str]:
 
 def sample_span(samples: Sequence[Sample]) -> tuple[str, str]:
     return (samples[0].timestamp, samples[-1].timestamp) if samples else ("", "")
+
+
+# --------------------------------------------------------------------------- structural checks
+
+
+def tier1_params(bundle: Tier1Bundle) -> dict[str, Any]:
+    """A canonical parameter tree for the perturbation-invariance check.
+
+    It deliberately includes everything a fitted preprocessing step could leak:
+    the selected feature names, the dropped constants, and each estimator's
+    serialised state (scaler mean/std, coefficients, intercept).
+    """
+    return {
+        "feature_names": list(bundle.feature_names),
+        "dropped_features": list(bundle.dropped_features),
+        "targets": {
+            name: {
+                "feature_names": list(model.feature_names),
+                "model": model.model.to_dict(),
+            }
+            for name, model in sorted(bundle.targets.items())
+        },
+    }
+
+
+def _pipeline_samples(
+    rows: Sequence[Any],
+    config: Config,
+    *,
+    leak_feature: str | None = None,
+) -> tuple[Sample, ...]:
+    samples = build_samples(
+        rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS
+    )
+    if leak_feature:
+        samples = inject_leaky_feature(samples, leak_feature)
+    return samples
+
+
+def structural_checks(
+    rows: Sequence[Any],
+    config: Config,
+    targets: Sequence[str],
+    *,
+    seed: int = 0,
+    sample_size: int = 24,
+    extra_features: Sequence[str] = (),
+    build: Any = None,
+    fit: Any = None,
+    leak_feature: str | None = None,
+) -> dict[str, Any]:
+    """Run truncation and perturbation invariance on one ticker's pipeline.
+
+    A failure is a measurement fault (a look-ahead feature, a full-data scaler,
+    or holdout-driven feature selection), not a modelling result. The caller
+    records it and the verdict refuses the run as ``invalid``.
+    """
+    builder = build or (
+        lambda prefix: _pipeline_samples(prefix, config, leak_feature=leak_feature)
+    )
+    truncation = truncation_invariance(
+        rows,
+        horizon=config.horizon,
+        targets=targets,
+        interval_seconds=INTERVAL_SECONDS,
+        feature_names=config.feature_names,
+        extra_features=tuple(extra_features),
+        sample_size=sample_size,
+        seed=seed,
+        build=builder,
+    )
+
+    def default_fit(samples: Sequence[Sample]) -> dict[str, Any]:
+        bundle = train_tier1(
+            samples,
+            horizon=config.horizon,
+            feature_names=config.feature_names,
+            targets=targets,
+            model_names=config.model_names,
+            holdout_fraction=0.2,
+        )
+        return tier1_params(bundle)
+
+    samples = builder(rows)
+    perturbation = perturbation_invariance(
+        samples,
+        fit=fit or default_fit,
+        targets=targets,
+        seed=seed,
+        feature_names=config.feature_names,
+    )
+    return {
+        "ok": bool(truncation.get("ok") and perturbation.get("ok")),
+        "truncation": truncation,
+        "perturbation": perturbation,
+    }
+
+
+def aggregate_structural(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    per_ticker = {
+        str(result.get("ticker")): result.get("structural")
+        for result in results
+        if "error" not in result
+    }
+    return {
+        "ok": all(
+            bool((block or {}).get("ok", True)) for block in per_ticker.values()
+        ),
+        "per_ticker": per_ticker,
+    }
+
 
 
 def walk_forward(
@@ -846,6 +958,127 @@ def inject_leaky_feature(
     )
 
 
+def lookahead_feature_series(
+    rows: Sequence[Any],
+    target: str,
+    *,
+    correlation: float,
+    horizon: int = 1,
+    interval_seconds: int = INTERVAL_SECONDS,
+    seed: int = 0,
+) -> list[float | None]:
+    """An **actual look-ahead** feature with a graded correlation to ``target``.
+
+    The future component is the realised target at row ``i`` (which requires
+    rows after ``i``); the causal component is the target observed one label
+    reach earlier. The two are standardised and orthogonalised over the usable
+    rows, then blended so the sample correlation is the requested ``|r|``.
+
+    Unlike :func:`inject_correlated_feature` (a post-hoc transform of the
+    complete sample table), this is a genuine feature function of the rows: it
+    cannot be evaluated at ``i`` from a prefix ending at ``i``. Truncation
+    invariance therefore catches it at every strength, including ``|r| = 0.05``.
+    """
+    from rl_crypto.targets import compute_targets
+
+    reach = label_purge(target, horizon)
+    future: list[float | None] = []
+    for index in range(len(rows)):
+        value = compute_targets(
+            rows, index, horizon=horizon, interval_seconds=interval_seconds
+        ).get(target)
+        future.append(None if value is None else float(value))
+    past: list[float | None] = [
+        future[index - reach] if index - reach >= 0 else None
+        for index in range(len(rows))
+    ]
+    usable = [
+        index
+        for index in range(len(rows))
+        if future[index] is not None and past[index] is not None
+    ]
+    values: list[float | None] = [None] * len(rows)
+    if len(usable) < 2:
+        return values
+    rng = np.random.default_rng(int(seed))
+    rho = max(-0.999, min(0.999, float(correlation)))
+    z_future = np.asarray([float(future[index]) for index in usable], dtype=float)
+    z_past = np.asarray([float(past[index]) for index in usable], dtype=float)
+    spread_future = float(np.std(z_future))
+    spread_past = float(np.std(z_past))
+    if spread_future <= 0.0 or spread_past <= 0.0:
+        return values
+    z_future = (z_future - float(np.mean(z_future))) / spread_future
+    z_past = (z_past - float(np.mean(z_past))) / spread_past
+    projection = (
+        float(np.dot(z_past, z_future)) / float(np.dot(z_future, z_future))
+        if float(np.dot(z_future, z_future)) > 0.0
+        else 0.0
+    )
+    residual = z_past - projection * z_future
+    residual_spread = float(np.std(residual))
+    if residual_spread > 0.0:
+        residual = residual / residual_spread
+    else:
+        residual = rng.standard_normal(len(usable))
+    blended = rho * z_future + math.sqrt(max(0.0, 1.0 - rho * rho)) * residual
+    for index, value in zip(usable, blended, strict=True):
+        values[index] = float(value)
+    return values
+
+
+def inject_lookahead_feature(
+    rows: Sequence[Any],
+    samples: Sequence[Sample],
+    target: str,
+    correlation: float,
+    *,
+    horizon: int,
+    interval_seconds: int = INTERVAL_SECONDS,
+    seed: int = 0,
+    feature: str = LEAK_CORRELATION_FEATURE,
+) -> tuple[tuple[Sample, ...], dict[str, Any]]:
+    """Attach :func:`lookahead_feature_series` to a sample table."""
+    values = lookahead_feature_series(
+        rows,
+        target,
+        correlation=correlation,
+        horizon=horizon,
+        interval_seconds=interval_seconds,
+        seed=seed,
+    )
+    planted = tuple(
+        Sample(
+            timestamp=sample.timestamp,
+            features={**sample.features, feature: values[index]},
+            targets=dict(sample.targets),
+        )
+        for index, sample in enumerate(samples)
+    )
+    xs = [values[index] for index in range(len(values)) if values[index] is not None]
+    ys = [
+        float(samples[index].targets[target])
+        for index in range(len(values))
+        if values[index] is not None and samples[index].targets.get(target) is not None
+    ]
+    actual = None
+    if (
+        len(xs) >= 2
+        and len(xs) == len(ys)
+        and float(np.std(xs)) > 0.0
+        and float(np.std(ys)) > 0.0
+    ):
+        actual = float(np.corrcoef(np.asarray(xs), np.asarray(ys))[0, 1])
+    return planted, {
+        "feature": feature,
+        "requested_correlation": float(correlation),
+        "actual_correlation": actual,
+        "n": len(xs),
+        "lookahead": True,
+    }
+
+
+
 def detect_leaks(
     samples: Sequence[Sample], targets: Sequence[str]
 ) -> list[dict[str, Any]]:
@@ -906,15 +1139,19 @@ def evaluate_control_ticker(
     plant_feature: str | None = None,
     inject_correlation: float | None = None,
     inject_feature: str | None = None,
+    lookahead_correlation: float | None = None,
 ) -> dict[str, Any]:
     """One walk-forward pass with an optional planted signal and control.
 
     ``mode=None`` is the planted candidate; ``"shuffle"``/``"shift"`` transform
     the (possibly planted) labels so the same signal can no longer be read.
+    ``lookahead_correlation`` injects an *actual* future-dependent feature (see
+    :func:`inject_lookahead_feature`), which the structural check must catch.
     """
     rows, _ = filter_rows_before(load_ticker_rows(ticker), holdout_start)
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
     planted: dict[str, Any] | None = None
+    lookahead_meta: dict[str, Any] | None = None
     if plant_strength:
         samples, planted = plant_signal(
             samples,
@@ -932,8 +1169,62 @@ def evaluate_control_ticker(
             seed=seed,
             feature=inject_feature or LEAK_CORRELATION_FEATURE,
         )
+    if lookahead_correlation is not None:
+        feature = inject_feature or LEAK_CORRELATION_FEATURE
+        samples, lookahead_meta = inject_lookahead_feature(
+            rows,
+            samples,
+            target,
+            lookahead_correlation,
+            horizon=config.horizon,
+            interval_seconds=INTERVAL_SECONDS,
+            seed=seed,
+            feature=feature,
+        )
     if leak_feature:
         samples = inject_leaky_feature(samples, leak_feature)
+    # Structural checks run *before* the label transform: shuffle/shift are
+    # deliberately misaligned controls, not claims about causality.
+    extra = tuple(
+        dict.fromkeys(
+            [
+                *(
+                    (inject_feature or LEAK_CORRELATION_FEATURE,)
+                    if lookahead_correlation is not None
+                    else ()
+                ),
+                *((leak_feature,) if leak_feature else ()),
+            ]
+        )
+    )
+
+    def pipeline(prefix: Sequence[Any]) -> tuple[Sample, ...]:
+        prefix_samples = build_samples(
+            prefix, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS
+        )
+        if lookahead_correlation is not None:
+            prefix_samples, _ = inject_lookahead_feature(
+                prefix,
+                prefix_samples,
+                target,
+                lookahead_correlation,
+                horizon=config.horizon,
+                interval_seconds=INTERVAL_SECONDS,
+                seed=seed,
+                feature=inject_feature or LEAK_CORRELATION_FEATURE,
+            )
+        if leak_feature:
+            prefix_samples = inject_leaky_feature(prefix_samples, leak_feature)
+        return prefix_samples
+
+    structural = structural_checks(
+        rows,
+        config,
+        [target],
+        seed=seed,
+        extra_features=extra,
+        build=pipeline,
+    )
     if mode is not None:
         samples = transform_targets(
             samples, target, mode, seed=seed, shift_bars=shift_bars
@@ -959,6 +1250,8 @@ def evaluate_control_ticker(
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
         "planted": planted,
+        "lookahead": lookahead_meta,
+        "structural": structural,
         "purge": validate_splits(
             samples, splits, targets=[target], horizon=config.horizon
         ),
@@ -982,6 +1275,7 @@ def evaluate_ticker(
     full_archive: bool = False,
     primary_target: str | None = None,
     leak_feature: str | None = None,
+    seed: int = 0,
 ) -> dict[str, Any]:
     """Walk-forward metrics plus a threshold x cost policy grid.
 
@@ -1002,6 +1296,17 @@ def evaluate_ticker(
     # Check against every target, not only the requested ones: a feature
     # computed from any realised outcome is a leak regardless of what is scored.
     leaks = detect_leaks(samples, TARGET_NAMES)
+    # Structural causality: recompute every feature/target from a truncated
+    # prefix, and re-fit with the holdout perturbed. This replaces the lab's
+    # self-reported fit_scope/selection scope as the mechanical gate.
+    structural = structural_checks(
+        rows,
+        config,
+        targets,
+        seed=int(seed),
+        extra_features=(leak_feature,) if leak_feature else (),
+        leak_feature=leak_feature,
+    )
     if reserve_final > 0.0 and not holdout_start:
         keep = int(len(samples) * (1.0 - reserve_final))
         samples = samples[:keep]
@@ -1114,6 +1419,7 @@ def evaluate_ticker(
         ),
         "leak_detected": bool(leaks),
         "leak_features": leaks,
+        "structural": structural,
     }
 
 
@@ -1436,6 +1742,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             full_archive=args.full_archive,
             primary_target=primary_target,
             leak_feature=leak_feature,
+            seed=int(args.seed),
         )
         for ticker in tickers
     ]
@@ -1492,6 +1799,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             for leak in (result.get("leak_features") or [])
         ),
         "purge": aggregate_purge(results),
+        "structural": aggregate_structural(results),
         **contract_block(
             fit_scope="train",
             selection_scope=(
@@ -1645,6 +1953,7 @@ def sweep_action(args: argparse.Namespace) -> int:
                 reserve_final=0.2,
                 holdout_start=args.holdout_start,
                 primary_target=primary_target,
+                seed=int(args.seed),
             )
             result["primary"] = config.name == primary_config
             result["rank"] = _rank_key(result, primary_target)
@@ -1712,6 +2021,7 @@ def sweep_action(args: argparse.Namespace) -> int:
         "candidates": candidates,
         "primary_candidates": candidates,
         "purge": aggregate_purge(results),
+        "structural": aggregate_structural(results),
         **contract_block(
             fit_scope="train",
             selection_scope="pre-cutoff" if args.holdout_start else "reserved-final",

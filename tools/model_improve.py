@@ -3510,12 +3510,18 @@ def cmd_calibrate_power(args: argparse.Namespace) -> int:
 
 
 def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """One graded-correlation scenario: candidate plus shuffle/shift controls."""
+    """One graded look-ahead scenario: candidate plus shuffle/shift controls.
+
+    ``correlation`` is injected as a real future-dependent feature, not a
+    post-hoc transform, so truncation invariance can catch it at any strength.
+    """
     root = Path(str(payload["root"]))
     lab = load_model_lab(root)
     experiment = payload["experiment"]
     feature = str(payload["feature"])
-    extra = () if payload.get("correlation") is None else (feature,)
+    correlation = payload.get("correlation")
+    lookahead = payload.get("lookahead", True) and correlation is not None
+    extra = () if correlation is None else (feature,)
     feature_names = tuple(
         dict.fromkeys(
             (
@@ -3547,8 +3553,11 @@ def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                 shift_bars=int(payload.get("shift_bars") or 24),
                 inject_correlation=(
                     None
-                    if payload.get("correlation") is None
+                    if payload.get("correlation") is None or lookahead
                     else float(payload["correlation"])
+                ),
+                lookahead_correlation=(
+                    float(payload["correlation"]) if lookahead else None
                 ),
                 inject_feature=feature,
             )
@@ -3574,10 +3583,18 @@ def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     candidate = run(None)
     controls = {mode: run(mode) for mode in payload.get("controls") or []}
+    structural = {
+        ticker: row.get("structural") or {}
+        for ticker, row in candidate["per_ticker"].items()
+    }
     return {
         "candidate": candidate,
         "controls": controls,
         "purge": lab.aggregate_purge(list(candidate["per_ticker"].values())),
+        "structural": {
+            "ok": all(bool(block.get("ok", True)) for block in structural.values()),
+            "per_ticker": structural,
+        },
     }
 
 
@@ -3635,6 +3652,9 @@ def _leak_payload(
             for mode, block in controls.items()
         },
         "purge": lab_payload["purge"],
+        # The structural result is the gate; the two blocks below are kept only
+        # as documentation of what the lab says it did.
+        "structural": lab_payload.get("structural") or {"ok": True},
         "preprocessing": {"fit_scope": "train"},
         "selection": {"scope": "pre-cutoff"},
         "target": target,
@@ -3675,15 +3695,34 @@ def leak_contract_payloads(
             "shift": {"pooled": dict(negative)},
         },
         "purge": {"ok": True, "violations": []},
+        "structural": {
+            "ok": True,
+            "truncation": {"ok": True, "violations": []},
+            "perturbation": {"ok": True, "violations": []},
+        },
         "preprocessing": {"fit_scope": "train"},
         "selection": {"scope": "pre-cutoff"},
         "target": target,
     }
+    # Each scenario carries the structural evidence a real run would produce.
+    # The self-reported fit_scope/selection fields stay in place as
+    # documentation; they are no longer what makes the verdict invalid.
     scenarios: list[tuple[str, dict[str, Any], str]] = [
         (
             "scaler_fit_on_full_data",
-            {**base, "preprocessing": {"fit_scope": "all"}},
-            "preprocessing contract",
+            {
+                **base,
+                "structural": {
+                    "ok": False,
+                    "truncation": {"ok": True, "violations": []},
+                    "perturbation": {
+                        "ok": False,
+                        "violations": [{"path": "targets.fwd_volume_ratio.model.scaler.mean"}],
+                    },
+                },
+                "preprocessing": {"fit_scope": "all"},
+            },
+            "perturbation invariance",
         ),
         (
             "label_overlap_across_split",
@@ -3698,8 +3737,35 @@ def leak_contract_payloads(
         ),
         (
             "selection_on_holdout",
-            {**base, "selection": {"scope": "holdout"}},
-            "selection contract",
+            {
+                **base,
+                "structural": {
+                    "ok": False,
+                    "truncation": {"ok": True, "violations": []},
+                    "perturbation": {
+                        "ok": False,
+                        "violations": [{"path": "feature_names"}],
+                    },
+                },
+                "selection": {"scope": "holdout"},
+            },
+            "perturbation invariance (selection)",
+        ),
+        (
+            "lookahead_feature",
+            {
+                **base,
+                "structural": {
+                    "ok": False,
+                    "truncation": {
+                        "ok": False,
+                        "violation_count": 1,
+                        "violations": [{"kind": "feature", "name": "leak", "row": 10}],
+                    },
+                    "perturbation": {"ok": True, "violations": []},
+                },
+            },
+            "truncation invariance",
         ),
     ]
     return base, scenarios
@@ -3751,27 +3817,35 @@ def calibrate_leaks(
                 "alpha": alpha,
                 "seed": int(config.get("seed") or 0),
                 "correlation": float(correlation),
+                "lookahead": True,
                 "controls": ["shuffle", "shift"],
             }
         )
         detected: list[dict[str, Any]] = []
         actual: list[float] = []
         for ticker in tickers:
+            meta = (
+                (job["candidate"]["per_ticker"].get(ticker) or {}).get("lookahead")
+                or {}
+            )
+            if meta.get("actual_correlation") is not None:
+                actual.append(float(meta["actual_correlation"]))
             rows, _ = lab.filter_rows_before(lab.load_ticker_rows(ticker), cutoff)
             samples = lab.build_samples(
                 rows,
                 horizon=int(experiment.get("horizon") or 1),
                 interval_seconds=lab.INTERVAL_SECONDS,
             )
-            samples, meta = lab.inject_correlated_feature(
+            samples, _ = lab.inject_lookahead_feature(
+                rows,
                 samples,
                 target,
                 float(correlation),
+                horizon=int(experiment.get("horizon") or 1),
+                interval_seconds=lab.INTERVAL_SECONDS,
                 seed=int(config.get("seed") or 0),
                 feature=lab.LEAK_CORRELATION_FEATURE,
             )
-            if meta.get("actual_correlation") is not None:
-                actual.append(float(meta["actual_correlation"]))
             detected.extend(lab.detect_leaks(samples, lab.TARGET_NAMES))
         payload = _leak_payload(job, target)
         payload["leak_detected"] = bool(detected)
@@ -3787,9 +3861,22 @@ def calibrate_leaks(
             for mode, block in job["controls"].items()
         }
         control_flagged = any(control_detail.values())
+        structural = job.get("structural") or {}
+        truncation_caught = any(
+            (block.get("truncation") or {}).get("ok") is False
+            for block in (structural.get("per_ticker") or {}).values()
+        )
+        perturbation_caught = any(
+            (block.get("perturbation") or {}).get("ok") is False
+            for block in (structural.get("per_ticker") or {}).values()
+        )
         layers: list[str] = []
         if detected:
             layers.append("correlation")
+        if truncation_caught:
+            layers.append("truncation")
+        if perturbation_caught:
+            layers.append("perturbation")
         if control_flagged:
             layers.append("controls")
         if not job["purge"].get("ok", True):
@@ -3805,7 +3892,10 @@ def calibrate_leaks(
                 ),
                 "outcome": verdict.get("outcome"),
                 "flagged_by": layers or ["none"],
+                "uncaught": verdict.get("outcome") != "invalid",
                 "correlation_detector": bool(detected),
+                "truncation_caught": truncation_caught,
+                "perturbation_caught": perturbation_caught,
                 "controls_flagged": control_flagged,
                 "controls": control_detail,
                 "purge_ok": bool(job["purge"].get("ok", True)),
@@ -3848,8 +3938,49 @@ def calibrate_leaks(
         for mode, block in baseline_job["controls"].items()
     }
     baseline_flagged = any(row["passed"] for row in baseline_controls.values())
+    baseline_structural = baseline_job.get("structural") or {}
+    baseline_structural_ok = bool(baseline_structural.get("ok"))
     for row in graded:
         row["controls_specific"] = bool(row["controls_flagged"] and not baseline_flagged)
+
+    # (b) A scaler fitted on the whole series must be caught by perturbation
+    # invariance. This is a direct demonstration, independent of the pipeline.
+    import numpy as np
+
+    from rl_crypto.ml.base import Standardizer
+
+    rows, _ = lab.filter_rows_before(lab.load_ticker_rows(tickers[0]), cutoff)
+    samples = lab.build_samples(
+        rows,
+        horizon=int(experiment.get("horizon") or 1),
+        interval_seconds=lab.INTERVAL_SECONDS,
+    )
+    scaler_features = lab.resolve_feature_names(str(experiment.get("featureSet") or "all"))
+    complete = [
+        sample
+        for sample in samples
+        if all(sample.features.get(name) is not None for name in scaler_features)
+    ]
+
+    def full_data_scaler_fit(values: Sequence[Any]) -> dict[str, Any]:
+        usable = [
+            sample
+            for sample in values
+            if all(sample.features.get(name) is not None for name in scaler_features)
+        ]
+        matrix = np.asarray(
+            [[sample.features[name] for name in scaler_features] for sample in usable],
+            dtype=float,
+        )
+        return {"scaler": Standardizer().fit(matrix).to_dict()}
+
+    scaler_canary = lab.perturbation_invariance(
+        tuple(complete),
+        fit=full_data_scaler_fit,
+        targets=[target],
+        seed=int(config.get("seed") or 0),
+    )
+
     base, scenarios = leak_contract_payloads(target, alpha)
     canaries: list[dict[str, Any]] = []
     clean = evaluate_criteria(prereg, base)
@@ -3874,11 +4005,20 @@ def calibrate_leaks(
         "protected_hash": protected["hash"],
         "date": iso(),
         "clean_baseline_outcome": clean.get("outcome"),
+        "baseline_structural": baseline_structural,
+        "baseline_structural_ok": baseline_structural_ok,
         "control_baseline": {
             "any_passed": baseline_flagged,
             "controls": baseline_controls,
         },
+        "scaler_canary": {
+            "caught": not bool(scaler_canary.get("ok")),
+            "result": scaler_canary,
+        },
         "graded": graded,
+        "uncaught": [
+            row["correlation_requested"] for row in graded if row["uncaught"]
+        ],
         "canaries": canaries,
     }
 
@@ -3913,10 +4053,10 @@ def cmd_calibrate_leaks(args: argparse.Namespace) -> int:
         f"- protected hash: {payload['protected_hash']}",
         f"- clean baseline outcome: {payload['clean_baseline_outcome']}",
         "",
-        "| leak | |r| actual | correlation detector | controls |"
-        " control baseline | purge | contract | flagged by |",
-        "| ---- | --------- | -------------------- | -------- |"
-        " ---------------- | ----- | -------- | ---------- |",
+        "| leak | |r| actual | truncation | correlation detector | perturbation |"
+        " controls | control baseline | purge | contract | outcome | flagged by |",
+        "| ---- | --------- | ---------- | -------------------- | ------------ |"
+        " -------- | ---------------- | ----- | -------- | ------- | ---------- |",
     ]
     for row in payload["graded"]:
         actual = (
@@ -3926,12 +4066,14 @@ def cmd_calibrate_leaks(args: argparse.Namespace) -> int:
         )
         lines.append(
             f"| corr {row['correlation_requested']:.2f} | {actual} | "
+            f"{'YES' if row['truncation_caught'] else 'no'} | "
             f"{'YES' if row['correlation_detector'] else 'no'} | "
+            f"{'YES' if row['perturbation_caught'] else 'no'} | "
             f"{'YES' if row['controls_flagged'] else 'no'} | "
             f"{'YES' if payload['control_baseline']['any_passed'] else 'no'} | "
             f"{'no' if not row['purge_ok'] else 'ok'} | "
             f"{'YES' if row['contract_violation'] else 'no'} | "
-            f"{', '.join(row['flagged_by'])} |"
+            f"{row['outcome']} | {', '.join(row['flagged_by'])} |"
         )
     lines.extend(
         [
@@ -3945,9 +4087,17 @@ def cmd_calibrate_leaks(args: argparse.Namespace) -> int:
             f"| {row['canary']} | {row['expected_layer']} | {row['outcome']} | "
             f"{'yes' if row['passed'] else 'NO'} |"
         )
-    lines.append("")
-    lines.append(
-        "A 'none' row is a finding: no mechanical layer catches that leak at that strength."
+    lines.extend(
+        [
+            "",
+            f"- baseline structural ok: **{payload['baseline_structural_ok']}**",
+            f"- full-data scaler caught by perturbation: "
+            f"**{payload['scaler_canary']['caught']}**",
+            f"- uncaught graded leaks: **{payload['uncaught'] or 'none'}**",
+            "",
+            "A 'none' row is a finding: no mechanical layer catches that leak "
+            "at that strength.",
+        ]
     )
     (run_dir / "calibrate-leaks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     payload["markdown"] = str(run_dir / "calibrate-leaks.md")
