@@ -1,7 +1,7 @@
 {
   "schema": "rl-crypto/ml/1",
   "feature_version": "rl-crypto/features/2",
-  "trained_at": "2026-10-24T06:45:56Z",
+  "trained_at": "2026-10-24T12:19:32Z",
   "horizon": 1,
   "n_samples": 1715,
   "holdout_n_samples": 342,
@@ -52,6 +52,7 @@
         "dow_cos"
       ],
       "n_samples": 1372,
+      "metric_space": "raw",
       "metrics": {
         "rmse": 0.0053819844347415685,
         "mae": 0.0032452911454454694,
@@ -151,6 +152,7 @@
         "dow_cos"
       ],
       "n_samples": 1372,
+      "metric_space": "raw",
       "metrics": {
         "accuracy": 0.5335276967930029,
         "log_loss": 0.6891627160255215,
@@ -252,27 +254,28 @@
         "dow_cos"
       ],
       "n_samples": 1371,
+      "metric_space": "log",
       "metrics": {
-        "rmse": 0.002626575483645506,
-        "mae": 0.0016762719850271124,
-        "r2": 0.1336322054844007
+        "rmse": 1.164008175277347,
+        "mae": 0.8816774807039722,
+        "r2": 0.09704913017809147
       },
       "holdout": {
         "n_samples": 342,
         "metrics": {
-          "rmse": 0.002331287176025532,
-          "mae": 0.0014691396912698,
-          "r2": 0.05914784939293816
+          "rmse": 1.074560672540753,
+          "mae": 0.8444488224901252,
+          "r2": 0.03076658970413837
         },
         "baseline": {
-          "rmse": 0.002404966230271413,
-          "mae": 0.0016448560697776826,
-          "r2": -0.0012621464330591081
+          "rmse": 1.0935156182558878,
+          "mae": 0.8394140898590231,
+          "r2": -0.0037290018985072226
         },
         "beats_baseline": true
       },
       "model": {
-        "kind": "ridge",
+        "kind": "log_ridge",
         "alpha": 1.0,
         "scaler": {
           "mean": [
@@ -311,23 +314,23 @@
           ]
         },
         "coef": [
-          -8.342332515524324e-05,
-          -0.0002028222307435039,
-          0.00018072278955478936,
-          -0.00025831889220643097,
-          8.777257770304847e-05,
-          0.0005309343585928551,
-          0.00022478705357041967,
-          0.00011779354497956625,
-          0.00020147063827654035,
-          0.0005516127657493318,
-          -0.0002561130474326804,
-          9.284295798748231e-05,
-          -0.0003157184160458735,
-          7.73794760705736e-05,
-          1.0968765487137469e-05
+          -0.1478368179700898,
+          -0.047502347041796476,
+          0.02039146580868515,
+          -0.013651173875510465,
+          -0.042021001683708994,
+          0.11768017225551464,
+          0.17423293824213995,
+          0.021723871911266,
+          0.0368458763519462,
+          0.34861634889100857,
+          -0.17793007268968497,
+          0.052948376073161295,
+          -0.12837081350290647,
+          0.06222160556022897,
+          0.04251502577451322
         ],
-        "intercept": 0.002397592513210828
+        "intercept": -6.6172006691940055
       }
     },
     "fwd_volume_ratio": {
@@ -351,6 +354,7 @@
         "dow_cos"
       ],
       "n_samples": 1372,
+      "metric_space": "raw",
       "metrics": {
         "rmse": 0.5638180323200026,
         "mae": 0.434400680568603,
@@ -434,7 +438,7 @@
     "dropped 6 constant feature(s) with no variation in training data: sentiment, sentiment_delta, sentiment_ewma_6, articles_log, novelty, has_news",
     "fwd_return: out-of-sample rmse=0.00490 vs baseline 0.00485 (-0.95% vs baseline) — does not beat it (342 held-out rows, need 1% to count as skill)",
     "fwd_direction: out-of-sample log_loss=0.69243 vs baseline 0.69288 (+0.06% vs baseline) — does not beat it (342 held-out rows, need 1% to count as skill)",
-    "fwd_volatility: out-of-sample rmse=0.00233 vs baseline 0.00240 (+3.06% vs baseline) — beats it (342 held-out rows, need 1% to count as skill)",
+    "fwd_volatility: out-of-sample log-space rmse=1.07456 vs baseline 1.09352 (+1.73% vs baseline) — beats it (342 held-out rows, need 1% to count as skill)",
     "fwd_volume_ratio: out-of-sample rmse=0.56750 vs baseline 0.71086 (+20.17% vs baseline) — beats it (342 held-out rows, need 1% to count as skill)"
   ]
 }

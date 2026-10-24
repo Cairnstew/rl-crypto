@@ -69,7 +69,7 @@ Across all 15 tracked tickers, on the current archive:
 | ------ | -------------- | ------- |
 | `fwd_return` | 0/15 | **no directional skill** — worse than a constant on every ticker |
 | `fwd_direction` | 0/15 | **no directional skill** — at or below always-up |
-| `fwd_volatility` | 6/15 | marginal — log-space verdict, inconsistent across tickers |
+| `fwd_volatility` | 5/15 | marginal — log-space verdict, inconsistent across tickers |
 | `fwd_volume_ratio` | 15/15 | solidly real (14–24% better than baseline) |
 
 *Re-derived from `data/*/summary.json` on 2026-10-24; re-derive rather than copy.*
