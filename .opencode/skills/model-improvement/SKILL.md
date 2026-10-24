@@ -17,6 +17,11 @@ Companions: **`model-contract`** (features/targets/holdout/bundle contract),
 
 ## 0. Guardrails
 
+- Run the lab, the pipeline and pytest inside `nix develop`: the uv venv's
+  numpy links `libz.so.1` by soname and the flake's `LD_LIBRARY_PATH` is what
+  makes it importable on NixOS. `.venv/bin/python` alone fails with
+  `ImportError: libz.so.1`.
+
 - **No profit claims.** Report out-of-sample metrics, after-cost policy, and
   gate reasons. "No edge" is a valid, useful result.
 - **Never train or tune on the final 20%.** Only `promote` may read it.
