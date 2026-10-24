@@ -28,3 +28,27 @@ dominated the wall time between fixes.
 **Why proposal-only.** It requires no code change — it is purely a workflow
 habit for the agent. Coded elsewhere as a skill, it just needs to be *used*
 here; nothing to build in this repo.
+---
+
+## 2026-10-24 — Wrap the dev-shell interpreter instead of re-typing `LD_LIBRARY_PATH`
+
+**Evidence.** In the foundation session (`ses_e91f3d653ffeim0RNc8kC7j529`,
+130 bash tool calls, cost $0.227), 44 parts carried an explicit
+`LD_LIBRARY_PATH=...` prefix and 26 parts invoked `nix develop` — roughly a
+third of the shell calls paid the dev-shell ritual just to import numpy (the
+uv venv links `libz.so.1` by soname and cannot import it outside the flake's
+environment). Query:
+`select count(*) from part where session_id='ses_e91f3d653ffeim0RNc8kC7j529' and data like '%LD_LIBRARY_PATH%'`.
+
+**Idea.** Add a tiny `tools/dev-python` shim (or a `direnv`/`nix develop -c`
+alias checked into the repo) that resolves the flake's `LD_LIBRARY_PATH` and
+execs `.venv/bin/python`, so a run writes `tools/dev-python tools/model_lab.py
+...` instead of a two-store-path prefix. A `--references`-style cached export
+file would also work.
+
+**Savings.** ~30-40 shell commands per session stop carrying a 120-character
+environment prefix and the associated copy/paste risk; the failure mode
+(`ImportError: libz.so.1`) becomes impossible rather than documented.
+
+**Why proposal-only.** It is a developer-ergonomics change, not measurement
+infrastructure; it was not built in the session that produced the evidence.
