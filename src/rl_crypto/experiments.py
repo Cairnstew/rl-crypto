@@ -50,6 +50,11 @@ ENTRY_KINDS = frozenset(
     }
 )
 CAPABILITY_NEEDS = frozenset({"code", "data", "approval", "tooling"})
+
+#: Canary verdicts live in their own append-only file, keyed by protected hash.
+#: They are harness checks, never trials, so they do not belong in the ledger's
+#: trial accounting.
+CANARY_FILENAME = "canary.jsonl"
 RUN_TYPES = frozenset({"experiment", "harness-change"})
 
 #: Criteria written before this hardening keep the old interpretation forever.
@@ -390,6 +395,11 @@ class Hypothesis:
     canary: bool = False
     #: "null" is the shuffled-label canary; "positive" injects a leaky feature.
     canary_kind: str = "null"
+    #: The smallest pooled improvement worth acting on, in criterion units.
+    minimal_meaningful_effect: float | None = None
+    #: "baseline" compares against the strongest baseline; "champion" against
+    #: the retrained deployed bundle.
+    comparison: str = "baseline"
 
     @property
     def needs_code(self) -> bool:
@@ -426,6 +436,8 @@ class Hypothesis:
             "lineage": self.stable_lineage,
             "canary": self.canary,
             "canary_kind": self.canary_kind,
+            "minimal_meaningful_effect": self.minimal_meaningful_effect,
+            "comparison": self.comparison,
         }
 
     @classmethod
@@ -442,6 +454,16 @@ class Hypothesis:
         canary_kind = str(payload.get("canary_kind") or "null")
         if canary_kind not in {"null", "positive"}:
             raise ValueError(f"{payload.get('id')}: unknown canary_kind {canary_kind!r}")
+        comparison = str(payload.get("comparison") or "baseline")
+        if comparison not in {"baseline", "champion"}:
+            raise ValueError(f"{payload.get('id')}: unknown comparison {comparison!r}")
+        raw_effect = payload.get("minimal_meaningful_effect")
+        try:
+            minimal_effect = None if raw_effect is None else float(raw_effect)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{payload.get('id')}: minimal_meaningful_effect must be numeric"
+            ) from exc
         raw_criteria = dict(payload.get("criteria") or {})
         version = criteria_version(raw_criteria)
         base = DEFAULT_CRITERIA_V2 if version >= 2 else DEFAULT_CRITERIA
@@ -462,6 +484,8 @@ class Hypothesis:
             lineage=str(payload.get("lineage") or ""),
             canary=bool(payload.get("canary", False)),
             canary_kind=canary_kind,
+            minimal_meaningful_effect=minimal_effect,
+            comparison=comparison,
         )
 
 
@@ -504,6 +528,16 @@ def read_ledger(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{number}: invalid JSON ({exc})") from exc
             entries.append(entry)
     return entries
+
+
+def read_canary(path: Path) -> list[dict[str, Any]]:
+    """Read the append-only canary record (same JSONL shape as the ledger)."""
+    return read_ledger(path)
+
+
+def append_canary(path: Path, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Append one canary verdict; canaries are never trials."""
+    return append_entry(path, {"kind": "verdict", **dict(entry)})
 
 
 def _next_id(entries: Sequence[Mapping[str, Any]]) -> str:
@@ -630,6 +664,9 @@ def trial_counts(entries: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, in
     for entry in entries:
         if entry.get("kind") != "preregister":
             continue
+        # A canary is a harness check, not a trial: it never spends family alpha.
+        if entry.get("canary") or str(entry.get("family") or "") == "canary":
+            continue
         run_id = str(entry.get("run_id") or "")
         # Very old entries predate ``run_id``. Without a run to match, the safe
         # assumption is that the pre-registration did consume a trial.
@@ -703,7 +740,10 @@ def _canary_hash(entry: Mapping[str, Any]) -> str | None:
 
 
 def canary_status(
-    entries: Sequence[Mapping[str, Any]], *, current_hash: str | None = None
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    current_hash: str | None = None,
+    canary_entries: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Freshness of the two harness canaries against the current contract.
 
@@ -715,8 +755,10 @@ def canary_status(
     """
     kinds: dict[str, dict[str, Any]] = {}
     latest_at: str | None = None
-    for entry in entries:
-        if entry.get("kind") != "verdict" or not entry.get("canary"):
+    combined = list(entries) + list(canary_entries or [])
+    for entry in combined:
+        kind_value = entry.get("kind")
+        if kind_value not in (None, "verdict") or not entry.get("canary"):
             continue
         kind = str(entry.get("canary_kind") or "null")
         at = str(entry.get("at") or "")
@@ -761,12 +803,16 @@ def canary_status(
 
 
 def canary_gate(
-    entries: Sequence[Mapping[str, Any]], current_hash: str | None
+    entries: Sequence[Mapping[str, Any]],
+    current_hash: str | None,
+    canary_entries: Sequence[Mapping[str, Any]] | None = None,
 ) -> str | None:
     """Why an experiment run may not proceed, or ``None`` when fresh."""
     if not current_hash:
         return "cannot hash the protected measurement files; refusing to run"
-    status = canary_status(entries, current_hash=current_hash)
+    status = canary_status(
+        entries, current_hash=current_hash, canary_entries=canary_entries
+    )
     if status["pass"]:
         return None
     missing = status.get("missing") or []
@@ -795,6 +841,7 @@ def completed_hypotheses(entries: Sequence[Mapping[str, Any]]) -> set[str]:
             "refuted",
             "diagnostic",
             "invalid",
+            "inconclusive",
             "harness-change",
         }:
             out.add(str(entry.get("hypothesis_id")))
@@ -840,6 +887,7 @@ def build_preregistration(
     run_type: str | None = None,
     feature_version: str | None = None,
     protected: Mapping[str, Any] | None = None,
+    power: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze the experiment definition before anything is executed."""
     counts = trial_counts(entries)
@@ -873,6 +921,9 @@ def build_preregistration(
         "run_type": run_type or hypothesis.run_type,
         "canary": bool(hypothesis.canary),
         "canary_kind": hypothesis.canary_kind,
+        "minimal_meaningful_effect": hypothesis.minimal_meaningful_effect,
+        "comparison": hypothesis.comparison,
+        "power": dict(power or {}),
         "criteria_version": criteria_version(hypothesis.criteria),
         "holdout_start": holdout_start,
         "feature_version": feature_version,
@@ -1334,6 +1385,13 @@ def _evaluate_criteria_v2(
         "spending_schedule": SPENDING_SCHEDULE,
         "trials_in_family": trial_index,
         "fold_rule": fold_rule,
+        "minimal_meaningful_effect": _number(
+            prereg.get("minimal_meaningful_effect")
+            if prereg.get("minimal_meaningful_effect") is not None
+            else criteria.get("minimal_meaningful_effect")
+        ),
+        "comparison": str(prereg.get("comparison") or "baseline"),
+        "power": dict(prereg.get("power") or {}),
         "rows": len(lab_payload.get("results") or []),
         "summary": lab_payload.get("summary") or {},
         # Self-reported provenance is kept for the record, not for the gate:
@@ -1638,13 +1696,58 @@ def _evaluate_criteria_v2(
                 "candidate": promote_payload.get("candidate"),
             }
 
+    # The MME turns "the CI cleared zero" into "the CI cleared an effect worth
+    # acting on". A CI whose upper bound is below the MME is genuinely negative;
+    # anything that still overlaps both zero and the MME is inconclusive.
+    mme = metrics.get("minimal_meaningful_effect")
+    if isinstance(pooled, Mapping):
+        metrics["ci_low"] = _number(pooled.get("ci_low"))
+        metrics["ci_high"] = _number(pooled.get("ci_high"))
+        metrics["mean_improvement"] = _number(pooled.get("mean_improvement"))
     passed = not reasons
+    if passed and mme is not None:
+        ci_low = metrics.get("ci_low")
+        if ci_low is None or ci_low < float(mme):
+            reasons.append(
+                f"the CI lower bound {ci_low} does not certify the minimal "
+                f"meaningful effect {float(mme):.6f}"
+            )
+            passed = False
+    outcome = _outcome_from_interval(
+        metrics.get("ci_low"), metrics.get("ci_high"), mme, passed
+    )
     return {
         "passed": passed,
-        "outcome": "provisional" if passed else "negative",
+        "outcome": outcome,
         "reasons": reasons,
         "metrics": metrics,
     }
+
+
+def _outcome_from_interval(
+    ci_low: Any, ci_high: Any, minimal_meaningful_effect: Any, passed: bool
+) -> str:
+    """Classify a result into ``provisional`` / ``inconclusive`` / ``negative``.
+
+    ``negative`` is only claimed when the CI upper bound is below the minimal
+    meaningful effect (or below zero when none is declared). A CI that still
+    overlaps zero or the MME cannot support either a positive or a negative
+    claim, so it is ``inconclusive``.
+    """
+    high = _number(ci_high)
+    low = _number(ci_low)
+    if high is None:
+        return "inconclusive"
+    threshold = (
+        float(minimal_meaningful_effect)
+        if isinstance(minimal_meaningful_effect, int | float)
+        else 0.0
+    )
+    if high < threshold:
+        return "negative"
+    if passed and low is not None and low >= threshold:
+        return "provisional"
+    return "inconclusive"
 
 
 def _first_row(best: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Any] | None:
@@ -1706,7 +1809,10 @@ def render_hypotheses(
     return "\n".join(lines)
 
 
-def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
+def render_scoreboard(
+    entries: Sequence[Mapping[str, Any]],
+    canary_entries: Sequence[Mapping[str, Any]] | None = None,
+) -> str:
     verdicts = [e for e in entries if e.get("kind") == "verdict"]
     prereg = [e for e in entries if e.get("kind") == "preregister"]
     outcomes = [str(entry.get("outcome") or "") for entry in verdicts]
@@ -1714,8 +1820,9 @@ def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
     confirmed = outcomes.count("confirmed")
     refuted = outcomes.count("refuted")
     invalid = outcomes.count("invalid")
+    inconclusive = outcomes.count("inconclusive")
     void = harness_void(entries)
-    canary = canary_status(entries)
+    canary = canary_status(entries, canary_entries=canary_entries)
     if canary["pass"]:
         canary_line = f"- canary: **pass @ {canary['hash']} {canary['date']}**"
     elif canary["hash"]:
@@ -1733,7 +1840,8 @@ def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
         f"- preregistrations: **{len(prereg)}**",
         f"- verdicts: **{len(verdicts)}**",
         f"- provisional: **{provisional}** | confirmed: **{confirmed}**"
-        f" | refuted: **{refuted}** | invalid: **{invalid}**",
+        f" | refuted: **{refuted}** | invalid: **{invalid}**"
+        f" | inconclusive: **{inconclusive}**",
         f"- refuted-to-provisional: **"
         f"{('n/a' if provisional == 0 else f'{refuted / provisional:.2f}')}**",
         f"- harness: **{'VOID' if void else 'ok'}**",

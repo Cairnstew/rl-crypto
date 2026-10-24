@@ -67,16 +67,44 @@ that judge it.
 
 New hypotheses declare `criteria_version: 2` plus exactly one
 `experiment.primary` config. Grid configs are diagnostics only. The verdict is
-the **pooled paired improvement** on the primary config with a time-block
-bootstrap CI; the lower bound must exceed zero at `alpha / trial_index`. The
-shuffled-label and shifted-label controls must both fail the same rule, or the
-run is `invalid`. Tickers are not votes: the per-ticker distribution is reported
-and a result carried by one ticker is flagged.
+the **pooled paired improvement** on the primary config against the
+**strongest of the constant / seasonal / persistence baselines** (chosen on an
+inner holdout of the training slice), with a time-block bootstrap CI.
+
+Controls are a **distribution**, not one shifted label. The lab pools several
+shifts of at least a week (none a multiple of 24 or 168 bars) and several
+block-permuted-label draws, then requires the real pooled improvement to exceed
+a pre-registered quantile (default 0.95) of that distribution; the control
+median is reported. A globally shuffled label that passes the same rule is
+still `invalid` — shifts and block permutations preserve a persistent target's
+own autocorrelation, so they define the null instead of voiding an honest run.
+`calibrate-controls` diagnoses the old failure by tabulating control
+improvement against shift length.
+
+Tickers are not votes: the per-ticker distribution is reported and a result
+carried by one ticker is flagged.
 
 `fold_rule` replaces the old `folds_beating_min` / `min_improvement_min`
 contradiction. The effective old rule was "every fold positive" (because
 `min_improvement_min: 0` already bound); v2 states it explicitly as
 `fold_rule: all_positive` (or `majority_positive` / `none`).
+
+### Outcome space and power
+
+A hypothesis declares `minimal_meaningful_effect` in criterion units and a
+`comparison` (`baseline` or `champion`). Before a pre-registration is written,
+the driver runs a cheap causal pilot on the pre-cutoff slice and estimates the
+design's **minimum detectable effect (MDE)** at that trial's alpha. If
+`MDE > minimal_meaningful_effect`, the run is blocked as `underpowered` and
+**does not consume a trial**. The preregistration records the pilot.
+
+The verdict has four non-blocked outcomes: `provisional`, `inconclusive`,
+`negative`, `invalid` (plus `harness-change`). A result is `provisional` only
+when the CI lower bound clears the MME. `negative` is claimed only when the CI
+upper bound is below the MME. A CI that still overlaps zero or the MME is
+`inconclusive` — it supports neither a positive nor a negative claim.
+`invalid` and `negative` both consume a family trial; infrastructure blocks and
+`underpowered` blocks do not.
 
 The final holdout is a **timestamp**, frozen once per lineage by a
 `holdout_freeze` ledger entry (`holdout_start`). `promote --apply` refuses to
@@ -111,7 +139,8 @@ verdict never writes anything.
 
 | Path | Meaning |
 | ---- | ------- |
-| `experiments/ledger.jsonl` | append-only JSONL; pre-registrations, results, holdout touches, verdicts, blocks |
+| `experiments/ledger.jsonl` | append-only JSONL; pre-registrations, results, holdout touches, verdicts, blocks, notes |
+| `experiments/canary.jsonl` | append-only canary verdicts keyed by protected hash; never counted as trials |
 | `experiments/hypotheses.json` | source of truth for the queue; edit this, not the markdown |
 | `experiments/hypotheses.md` | generated from the queue + ledger |
 | `experiments/SCOREBOARD.md` | generated from the ledger; never hand-edit |
@@ -199,7 +228,15 @@ Each entry needs:
   rows" and is the only kind that needs no target. Entries without
   `criteria_version` keep the old v1 interpretation forever.
 - `run_type`: `experiment` (default) or `harness-change`.
-- `canary`: set on `H0-canary`; a provisional canary voids the harness.
+- `minimal_meaningful_effect`: the smallest pooled improvement worth acting on,
+  in criterion units. Required for a v2 improvement hypothesis; the
+  pre-registration is blocked as `underpowered` when the design's MDE exceeds it.
+- `comparison`: `baseline` (default) or `champion`. A champion comparison is
+  reported and its MDE is computed over the retrained deployed bundle; the
+  promotion gate remains authoritative for an actual write.
+- `canary`: set on `H0-canary`; a provisional canary voids the harness. Canary
+  verdicts are written to `experiments/canary.jsonl`, never the ledger, and do
+  not consume trials.
 - `depends_on`: hypothesis ids that must have a completed verdict first.
 
 A verdict closes the hypothesis (`select_hypothesis` skips it). To re-open it

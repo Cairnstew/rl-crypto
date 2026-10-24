@@ -275,12 +275,17 @@ claimed):
 - No more than a stated fraction of tickers carry the result (report the
   per-ticker distribution; a result driven by one or two tickers is flagged,
   not promoted).
-- Sanity: shuffled-label and shifted-label controls on the candidate's best
-  config must score near baseline. If the control also "wins", the pipeline is
-  leaking and the run is void.
+- Sanity: the control **distribution** — several >=1-week shifts (none a
+  multiple of 24 or 168) and block-permuted labels — is the null. The candidate
+  must exceed a pre-registered quantile of it, and a globally shuffled label
+  that wins still voids the run. Shift/permutation controls may carry a
+  persistent target's own autocorrelation; that is the null, not a leak.
+- Baselines: the bar is the **strongest** of constant, hour-of-week seasonal and
+  last-completed-label persistence, chosen on an inner training holdout.
 
-If the bar is not met: record a `negative` entry and stop. Do not run more
-configs to find one that passes.
+If the bar is not met: record `negative` (CI upper bound below the minimal
+meaningful effect) or `inconclusive` (the CI still overlaps zero or the MME)
+and stop. Do not run more configs to find one that passes.
 
 If met: run `promote` as a DRY RUN against the final holdout (once, recorded).
 Only a passing dry run makes the candidate **provisional**.
@@ -317,13 +322,17 @@ meets the same sign and rough magnitude as the backtest. Until then it is
 **refuted**, and treat that as evidence the evaluation protocol has a hole;
 file it as a risk, not just a failed run.
 
-Status lifecycle: `preregistered -> negative | provisional -> confirmed |
-refuted`. Only `confirmed` changes the champion on the scoreboard.
+Status lifecycle: `preregistered -> negative | inconclusive | provisional ->
+confirmed | refuted`. `invalid` is a measurement fault, not a result. Only
+`confirmed` changes the champion on the scoreboard. `negative` and `invalid`
+consume a family trial; infrastructure blocks and `underpowered`
+pre-registration blocks do not. Canaries are recorded in
+`experiments/canary.jsonl` and never consume a trial.
 
 ## Phase 7: Report (single reply)
 
-1. **Outcome**: one line (negative / provisional / confirmed / refuted /
-   blocked) for the hypothesis id.
+1. **Outcome**: one line (negative / inconclusive / invalid / provisional /
+   confirmed / refuted / blocked / underpowered) for the hypothesis id.
 2. **Table**: candidate vs champion vs constant baseline vs momentum, per
    target, with fold counts, CI, and the significance level used.
 3. **Economics**: after-cost and zero-cost, trades per ticker, per-ticker

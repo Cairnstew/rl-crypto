@@ -54,7 +54,8 @@
       },
       "depends_on": [],
       "evidence": "",
-      "notes": "Canary: a provisional outcome voids the harness and blocks further runs until harness-clear."
+      "notes": "Canary: a provisional outcome voids the harness and blocks further runs until harness-clear.",
+      "comparison": "baseline"
     },
     {
       "id": "H0-canary-leak",
@@ -109,7 +110,8 @@
       },
       "depends_on": [],
       "evidence": "",
-      "notes": "Positive canary: the lab injects a feature equal to the realised fwd_return. It must come out invalid (leak detector / controls), and a provisional outcome voids the harness exactly as the null canary does."
+      "notes": "Positive canary: the lab injects a feature equal to the realised fwd_return. It must come out invalid (leak detector / controls), and a provisional outcome voids the harness exactly as the null canary does.",
+      "comparison": "baseline"
     },
     {
       "id": "H0",
@@ -140,7 +142,8 @@
       },
       "criteria": {
         "kind": "diagnostic"
-      }
+      },
+      "comparison": "baseline"
     },
     {
       "id": "H1",
@@ -210,7 +213,9 @@
           "horizon": 1
         }
       },
-      "notes": "Blocked until the shifted-label null is fixed or a new H1 lineage is opened with a stated difference. Merge/account for d598641 first; do not silently re-test the same panel idea (trial_index would be wrong)."
+      "notes": "Blocked until the shifted-label null is fixed or a new H1 lineage is opened with a stated difference. Merge/account for d598641 first; do not silently re-test the same panel idea (trial_index would be wrong).",
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H2",
@@ -272,7 +277,9 @@
           "modelSet": "reference",
           "horizon": 1
         }
-      }
+      },
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H3",
@@ -336,7 +343,9 @@
           "modelSet": "reference",
           "horizon": 1
         }
-      }
+      },
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H4",
@@ -404,7 +413,9 @@
           "horizon": 1
         }
       },
-      "notes": "Declares --policy hysteresis; the evaluator must charge costs on every position change."
+      "notes": "Declares --policy hysteresis; the evaluator must charge costs on every position change.",
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H5",
@@ -476,7 +487,9 @@
           "horizon": 1
         }
       },
-      "notes": "Declares --regime-conditioned; direction is gated by the skilful activity targets."
+      "notes": "Declares --regime-conditioned; direction is gated by the skilful activity targets.",
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H6",
@@ -539,7 +552,9 @@
           "horizon": 1
         }
       },
-      "notes": "Declares --cross-sectional; ranking replaces the absolute-direction estimand."
+      "notes": "Declares --cross-sectional; ranking replaces the absolute-direction estimand.",
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H7",
@@ -599,7 +614,9 @@
           "modelSet": "reference",
           "horizon": 4
         }
-      }
+      },
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H8",
@@ -657,7 +674,9 @@
           "modelSet": "reference",
           "horizon": 1
         }
-      }
+      },
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H9",
@@ -724,7 +743,9 @@
           "horizon": 1
         }
       },
-      "notes": "Declares --model-class boosted; only after H1 or H2, with the family trial counter."
+      "notes": "Declares --model-class boosted; only after H1 or H2, with the family trial counter.",
+      "minimal_meaningful_effect": 0.002,
+      "comparison": "baseline"
     },
     {
       "id": "H10",
@@ -786,7 +807,9 @@
           "modelSet": "reference",
           "horizon": 1
         }
-      }
+      },
+      "minimal_meaningful_effect": 0.01,
+      "comparison": "baseline"
     }
   ]
 }

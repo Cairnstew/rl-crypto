@@ -776,6 +776,25 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
     model_values = [r["model"] for r in records if r["model"] is not None]
     baseline_values = [r["baseline"] for r in records if r["baseline"] is not None]
     beats = [bool(r["beats"]) for r in records]
+    baseline_modes = [str(r.get("baseline_mode")) for r in records if r.get("baseline_mode")]
+    baselines: dict[str, float | None] = {}
+    for mode in ("constant", "seasonal", "persistence"):
+        values = [
+            float(r["baselines"][mode])
+            for r in records
+            if isinstance(r.get("baselines"), Mapping)
+            and isinstance(r["baselines"].get(mode), int | float)
+        ]
+        baselines[mode] = float(np.mean(values)) if values else None
+    skill_vs: dict[str, float | None] = {}
+    for mode in ("constant", "seasonal", "persistence"):
+        values = [
+            float(r["skill_vs"][mode])
+            for r in records
+            if isinstance(r.get("skill_vs"), Mapping)
+            and isinstance(r["skill_vs"].get(mode), int | float)
+        ]
+        skill_vs[mode] = float(np.mean(values)) if values else None
     return {
         "target": records[0]["target"],
         "kind": records[0]["kind"],
@@ -784,6 +803,9 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
         "n": sum(int(r["n"]) for r in records),
         "model_mean": float(np.mean(model_values)) if model_values else None,
         "baseline_mean": float(np.mean(baseline_values)) if baseline_values else None,
+        "baseline_mode": baseline_modes[-1] if baseline_modes else None,
+        "baselines": baselines,
+        "skill_vs": skill_vs,
         "mean_improvement": float(np.mean(improvements)) if improvements else None,
         "min_improvement": float(np.min(improvements)) if improvements else None,
         "folds_beating": sum(beats),
@@ -887,6 +909,48 @@ def paired_target_rows(
             {
                 "timestamp": sample.timestamp,
                 "improvement": float(baseline_loss - model_loss),
+            }
+        )
+    return out
+
+
+def paired_between_bundles(
+    candidate: Tier1Bundle,
+    champion: Tier1Bundle,
+    target: str,
+    test: Sequence[Sample],
+    *,
+    horizon: int = 1,
+) -> list[dict[str, Any]]:
+    """Per-row loss difference between two fitted bundles (champion - candidate).
+
+    Used by the power pilot for a ``comparison: champion`` hypothesis: the
+    improvement is over the deployed bundle retrained on the same training
+    slice, not over a constant baseline.
+    """
+    candidate_model = candidate.targets.get(target)
+    champion_model = champion.targets.get(target)
+    if candidate_model is None or champion_model is None:
+        return []
+    kind = TARGET_KINDS[target]
+    space = str(getattr(candidate_model, "metric_space", "raw"))
+    out: list[dict[str, Any]] = []
+    for sample in test:
+        truth = sample.targets.get(target)
+        if truth is None:
+            continue
+        candidate_prediction = candidate_model.predict_row(sample.features)
+        champion_prediction = champion_model.predict_row(sample.features)
+        if candidate_prediction is None or champion_prediction is None:
+            continue
+        candidate_loss = _row_loss(kind, float(truth), float(candidate_prediction), space)
+        champion_loss = _row_loss(kind, float(truth), float(champion_prediction), space)
+        if candidate_loss is None or champion_loss is None:
+            continue
+        out.append(
+            {
+                "timestamp": sample.timestamp,
+                "improvement": float(champion_loss - candidate_loss),
             }
         )
     return out
@@ -1402,6 +1466,12 @@ def evaluate_control_ticker(
     inject_correlation: float | None = None,
     inject_feature: str | None = None,
     lookahead_correlation: float | None = None,
+    structural: bool = True,
+    economics: bool = False,
+    threshold: float = 0.55,
+    position: str = "long-only",
+    fee_bps: float = 10.0,
+    slippage_bps: float = 5.0,
 ) -> dict[str, Any]:
     """One walk-forward pass with an optional planted signal and control.
 
@@ -1479,13 +1549,17 @@ def evaluate_control_ticker(
             prefix_samples = inject_leaky_feature(prefix_samples, leak_feature)
         return prefix_samples
 
-    structural = structural_checks(
-        rows,
-        config,
-        [target],
-        seed=seed,
-        extra_features=extra,
-        build=pipeline,
+    structural_result = (
+        structural_checks(
+            rows,
+            config,
+            [target],
+            seed=seed,
+            extra_features=extra,
+            build=pipeline,
+        )
+        if structural
+        else {"ok": True, "skipped": True}
     )
     if mode is not None:
         samples = transform_targets(
@@ -1499,6 +1573,9 @@ def evaluate_control_ticker(
     splits = walk_forward(samples, folds=folds, horizon=config.horizon, targets=[target])
     paired: list[dict[str, Any]] = []
     fold_improvements: list[float | None] = []
+    economics_model: list[float] = []
+    economics_momentum: list[float] = []
+    economics_returns: list[float] = []
     for train, test in splits:
         bundle = train_tier1(
             train,
@@ -1514,13 +1591,41 @@ def evaluate_control_ticker(
         paired.extend(rows_out)
         values = [float(row["improvement"]) for row in rows_out]
         fold_improvements.append(float(np.mean(values)) if values else None)
+        if economics and mode is None:
+            probabilities, expected, momentum, _always, returns = _policy_components(
+                bundle, test, position=position
+            )
+            economics_model.extend(
+                _positions_for(
+                    probabilities, expected, threshold=threshold, position=position
+                )
+            )
+            economics_momentum.extend(momentum)
+            economics_returns.extend(returns)
+    economics_block: dict[str, Any] | None = None
+    if economics and mode is None and economics_returns:
+        economics_block = {
+            "model": _pnl_metrics(
+                economics_model,
+                economics_returns,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            ),
+            "momentum": _pnl_metrics(
+                economics_momentum,
+                economics_returns,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            ),
+        }
     return {
         "ticker": ticker,
         "paired_rows": paired,
         "fold_improvements": fold_improvements,
         "planted": planted,
         "lookahead": lookahead_meta,
-        "structural": structural,
+        "structural": structural_result,
+        "economics": economics_block,
         "purge": validate_splits(
             samples, splits, targets=[target], horizon=config.horizon
         ),
@@ -1905,6 +2010,7 @@ def _controls_for(
                 shift_bars=run_shift,
                 block_bars=run_block,
                 baseline=baseline,
+                structural=False,
                 leak_feature=leak_feature,
             )
             for ticker in tickers

@@ -47,11 +47,13 @@ from pathlib import Path
 from typing import Any
 
 from rl_crypto.experiments import (
+    CANARY_FILENAME,
     FAMILY_TRIAL_CAP_DEFAULT,
     PROTECTED_FILES,
     SPENDING_SCHEDULE,
     Hypothesis,
     alpha_for_trial,
+    append_canary,
     append_entry,
     bootstrap_resolution,
     build_preregistration,
@@ -73,6 +75,7 @@ from rl_crypto.experiments import (
     load_queue,
     paired_rule,
     protected_digest,
+    read_canary,
     read_ledger,
     render_hypotheses,
     render_scoreboard,
@@ -1439,6 +1442,44 @@ def _record_holdout(
     )
 
 
+def record_verdict(
+    ctx: Context,
+    prereg: Mapping[str, Any],
+    artifact: str | None,
+    verdict: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write a verdict to the ledger, or to the canary record when it is one.
+
+    Canaries are harness checks, not trials: keeping them out of the ledger is
+    what stops them from consuming family alpha or appearing in trial counts.
+    The run's pre-registration and results stay in the ledger as provenance.
+    """
+    payload = {
+        "kind": "verdict",
+        "run_id": ctx.run_id,
+        "hypothesis_id": prereg.get("hypothesis_id"),
+        "title": prereg.get("title"),
+        "family": prereg.get("family"),
+        "lineage": prereg.get("lineage"),
+        "trial_index": prereg.get("trial_index"),
+        "criteria_version": criteria_version(prereg.get("criteria")),
+        "run_type": ctx.run_type,
+        "canary": bool(ctx.hypothesis and ctx.hypothesis.canary),
+        "canary_kind": (ctx.hypothesis.canary_kind if ctx.hypothesis else "null"),
+        "holdout_start": ctx.holdout_start,
+        "outcome": verdict.get("outcome"),
+        "passed": verdict.get("passed"),
+        "reasons": verdict.get("reasons") or [],
+        "metrics": verdict.get("metrics") or {},
+        "prereg_id": prereg.get("id"),
+        "protected_hash": (prereg.get("protected") or {}).get("hash"),
+        "artifact": artifact,
+    }
+    if payload["canary"]:
+        return append_canary(ctx.repo / "experiments" / CANARY_FILENAME, payload)
+    return append_entry(ctx.ledger, payload)
+
+
 def _evaluate_harness_change(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any]:
     """A protected-file change is recorded, never scoreboard-eligible."""
     return {
@@ -1657,32 +1698,7 @@ def _evaluate_mechanical_v2(
             blocked["infra_kind"] = verdict.get("infra_kind") or "evaluation"
         append_entry(ctx.ledger, blocked)
     else:
-        append_entry(
-            ctx.ledger,
-            {
-                "kind": "verdict",
-                "run_id": ctx.run_id,
-                "hypothesis_id": prereg.get("hypothesis_id"),
-                "title": prereg.get("title"),
-                "family": prereg.get("family"),
-                "lineage": prereg.get("lineage"),
-                "trial_index": prereg.get("trial_index"),
-                "criteria_version": criteria_version(prereg.get("criteria")),
-                "run_type": ctx.run_type,
-                "canary": bool(ctx.hypothesis and ctx.hypothesis.canary),
-                "canary_kind": (
-                    ctx.hypothesis.canary_kind if ctx.hypothesis else "null"
-                ),
-                "holdout_start": ctx.holdout_start,
-                "outcome": verdict.get("outcome"),
-                "passed": verdict.get("passed"),
-                "reasons": verdict.get("reasons") or [],
-                "metrics": verdict.get("metrics") or {},
-                "prereg_id": prereg.get("id"),
-                "protected_hash": (prereg.get("protected") or {}).get("hash"),
-                "artifact": artifact,
-            },
-        )
+        record_verdict(ctx, prereg, artifact, verdict)
     if (
         verdict.get("passed")
         and ctx.config.get("promotion", {}).get("apply")
@@ -1797,32 +1813,11 @@ def evaluate_mechanical(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, An
             blocked["infra_kind"] = kind
         append_entry(ctx.ledger, blocked)
     else:
-        append_entry(
-            ctx.ledger,
-            {
-                "kind": "verdict",
-                "run_id": ctx.run_id,
-                "hypothesis_id": prereg.get("hypothesis_id"),
-                "title": prereg.get("title"),
-                "family": prereg.get("family"),
-                "lineage": prereg.get("lineage"),
-                "trial_index": prereg.get("trial_index"),
-                "criteria_version": criteria_version(prereg.get("criteria")),
-                "run_type": ctx.run_type,
-                "canary": bool(ctx.hypothesis and ctx.hypothesis.canary),
-                "canary_kind": (
-                    ctx.hypothesis.canary_kind if ctx.hypothesis else "null"
-                ),
-                "holdout_start": ctx.holdout_start,
-                "outcome": verdict.get("outcome"),
-                "passed": verdict.get("passed"),
-                "reasons": verdict.get("reasons") or [],
-                "metrics": verdict.get("metrics") or {},
-                "prereg_id": prereg.get("id"),
-                "protected_hash": (prereg.get("protected") or {}).get("hash"),
-                "artifact": ctx.artifacts.get("lab-sweep")
-                or ctx.artifacts.get("lab-evaluate"),
-            },
+        record_verdict(
+            ctx,
+            prereg,
+            ctx.artifacts.get("lab-sweep") or ctx.artifacts.get("lab-evaluate"),
+            verdict,
         )
     return verdict
 
@@ -2408,7 +2403,11 @@ def build_report(
 
 def regenerate_records(ctx: Context) -> None:
     entries = read_ledger(ctx.ledger)
-    write_if_changed(ctx.repo / "experiments" / "SCOREBOARD.md", render_scoreboard(entries))
+    canaries = read_canary(ctx.repo / "experiments" / CANARY_FILENAME)
+    write_if_changed(
+        ctx.repo / "experiments" / "SCOREBOARD.md",
+        render_scoreboard(entries, canary_entries=canaries),
+    )
     queue = load_queue(ctx.queue_path)
     write_if_changed(
         ctx.repo / "experiments" / "hypotheses.md",
@@ -2602,11 +2601,21 @@ def cmd_status(args: argparse.Namespace) -> int:
         "next_hypothesis": next_hypothesis.id if next_hypothesis else None,
         "holdout_cutoffs": holdout_cutoffs(entries),
         "harness_void": harness_void(entries),
-        "canary": canary_status(entries),
-        "scoreboard": render_scoreboard(entries),
+        "canary": canary_status(
+            entries,
+            canary_entries=read_canary(root / "experiments" / CANARY_FILENAME),
+        ),
+        "scoreboard": render_scoreboard(
+            entries,
+            canary_entries=read_canary(root / "experiments" / CANARY_FILENAME),
+        ),
     }
     if args.render:
-        write_if_changed(root / "experiments" / "SCOREBOARD.md", render_scoreboard(entries))
+        canaries = read_canary(root / "experiments" / CANARY_FILENAME)
+        write_if_changed(
+            root / "experiments" / "SCOREBOARD.md",
+            render_scoreboard(entries, canary_entries=canaries),
+        )
         write_if_changed(
             root / "experiments" / "hypotheses.md",
             render_hypotheses(queue, entries),
@@ -2901,12 +2910,13 @@ def calibrate_null(
     jobs: int = 1,
     cutoff: str | None = None,
 ) -> dict[str, Any]:
-    """Empirical false-positive rate of the v2 rule under shuffled labels.
+    """Fitting-noise canary: the v2 rule under shuffled labels.
 
-    The null canary is the same mechanical procedure a real experiment uses:
-    labels are permuted, the model is refit, and the pooled paired improvement
-    is bootstrapped. Running it many times measures the provisional rate, which
-    should sit at or below the per-trial alpha spend.
+    This checks that the *whole fitting pipeline* cannot manufacture skill from
+    permuted labels. It is deliberately conservative and is **not** the
+    calibration of the CI rule: shuffling destroys the serial correlation that
+    makes the real paired-difference series hard, so its false-positive rate is
+    a lower bound. Use ``calibrate-coverage`` for the CI rule itself.
     """
     hypothesis = calibration_hypothesis(queue)
     if hypothesis is None:
@@ -3131,6 +3141,7 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
     space = str(payload["space"])
     alphas = {str(trial): float(alpha) for trial, alpha in payload["alphas"].items()}
     fold_rule = str(payload["fold_rule"])
+    economics = target == "fwd_direction"
 
     def run(mode: str | None) -> dict[str, Any]:
         per_ticker = {
@@ -3146,6 +3157,12 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                 plant_strength=strength,
                 plant_space=space,
                 plant_feature=plant_feature,
+                structural=False,
+                economics=economics and mode is None,
+                threshold=float(payload.get("threshold") or 0.55),
+                position=str(payload.get("position") or "long-only"),
+                fee_bps=float(payload.get("fee_bps") or 10.0),
+                slippage_bps=float(payload.get("slippage_bps") or 5.0),
             )
             for ticker in payload["tickers"]
         }
@@ -3180,7 +3197,16 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
             else 0.0
             for ticker, row in per_ticker.items()
         }
-        return {"pooled_by_trial": pooled_by_trial, "per_ticker_means": means}
+        economics_rows = {
+            ticker: row.get("economics")
+            for ticker, row in per_ticker.items()
+            if row.get("economics")
+        }
+        return {
+            "pooled_by_trial": pooled_by_trial,
+            "per_ticker_means": means,
+            "economics": economics_rows,
+        }
 
     candidate = run(None)
     control_runs = {str(mode): run(str(mode)) for mode in payload.get("controls") or []}
@@ -3210,19 +3236,54 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
             if control_passed:
                 passed = False
                 reasons.append(f"{mode} control also passed")
+        economics_detail: dict[str, Any] | None = None
+        economics_ok = True
+        if economics:
+            blocks = [
+                block for block in (candidate.get("economics") or {}).values() if block
+            ]
+            if blocks:
+                mean_return = sum(
+                    float((block.get("model") or {}).get("total_return") or 0.0)
+                    for block in blocks
+                ) / len(blocks)
+                mean_sharpe = sum(
+                    float((block.get("model") or {}).get("sharpe") or 0.0)
+                    for block in blocks
+                ) / len(blocks)
+                mean_momentum = sum(
+                    float((block.get("momentum") or {}).get("sharpe") or 0.0)
+                    for block in blocks
+                ) / len(blocks)
+                economics_ok = mean_return > 0.0 and mean_sharpe > mean_momentum
+                economics_detail = {
+                    "mean_total_return": mean_return,
+                    "mean_sharpe": mean_sharpe,
+                    "mean_momentum_sharpe": mean_momentum,
+                    "passed": economics_ok,
+                }
+            else:
+                economics_ok = False
+                economics_detail = {"passed": False, "reason": "no economics block"}
+            if not economics_ok:
+                reasons.append("after-cost economics gate failed")
         trials[trial] = {
-            "passed": bool(passed and resolved),
+            "passed": bool(passed and resolved and economics_ok),
+            "statistical_passed": bool(passed and resolved),
             "resolution_ok": resolved,
             "mean_improvement": pooled.get("mean_improvement"),
             "ci_low": pooled.get("ci_low"),
             "reasons": reasons,
             "per_ticker_positive": len(positive),
             "controls": control_detail,
+            "economics": economics_detail,
         }
     return {
         "seed": seed,
         "strength": strength,
         "effect": float(payload["effect"]),
+        "target": target,
+        "classification_economics": economics,
         "trials": trials,
     }
 
@@ -3322,6 +3383,10 @@ def calibrate_power(
                 (hypothesis.criteria or {}).get("require_multiple_tickers", True)
             ),
             "controls": list(controls),
+            "threshold": float(experiment.get("threshold") or 0.55),
+            "position": str(experiment.get("position") or "long-only"),
+            "fee_bps": float(experiment.get("feeBps") or 10.0),
+            "slippage_bps": float(experiment.get("slippageBps") or 5.0),
         }
         alpha_payload = {str(trial): alpha for trial, alpha in alphas.items()}
         # The observed comparison is the unplanted pooled paired improvement on
@@ -3577,6 +3642,8 @@ def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
                     float(payload["correlation"]) if lookahead else None
                 ),
                 inject_feature=feature,
+                baseline=str(payload.get("baseline") or "strongest"),
+                structural=mode is None,
             )
             for ticker in payload["tickers"]
         }
@@ -3983,6 +4050,7 @@ def calibrate_leaks(
         control_shifts=lab.DEFAULT_CONTROL_SHIFTS,
         control_replicates=4,
         control_quantile=0.95,
+        baseline="strongest",
     )
     for name, block in baseline_distribution.items():
         if name == "distribution":
@@ -4254,7 +4322,7 @@ def calibrate_baselines(
                     "ticker": ticker,
                     "target": target,
                     "metric": block.get("metric"),
-                    "model": block.get("model"),
+                    "model": block.get("model_mean"),
                     "baseline_mode": block.get("baseline_mode"),
                     "baselines": block.get("baselines"),
                     "skill_vs": block.get("skill_vs"),
@@ -4406,6 +4474,7 @@ def calibrate_controls(
                     seed=int(seed),
                     shift_bars=int(shift),
                     block_bars=int(block_bars),
+                    structural=False,
                 )
                 for ticker in tickers
             }
@@ -4510,6 +4579,74 @@ def cmd_calibrate_controls(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_calibrate_coverage(args: argparse.Namespace) -> int:
+    from rl_crypto.power import calibrate_coverage
+
+    alphas = [
+        float(part) for part in str(args.alphas).replace(",", " ").split() if part.strip()
+    ]
+    result = calibrate_coverage(
+        n_rows=int(args.rows),
+        block_bars=int(args.block_bars),
+        alphas=alphas,
+        draws=int(args.draws),
+        simulations=int(args.simulations),
+        autocorrelation=float(args.autocorrelation),
+        effect=float(args.effect),
+        seed=int(args.seed),
+    )
+    root = repo_root()
+    protected = protected_digest(root)
+    payload = {
+        "action": "calibrate-coverage",
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        **result,
+    }
+    run_dir = _calibration_dir(args, "calibrate-coverage")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-coverage.json", payload)
+    lines = [
+        "# CI coverage calibration",
+        "",
+        f"- protected hash: {payload['protected_hash']}",
+        f"- rows: {payload['n_rows']} | blocks: {payload['n_blocks']}"
+        f" | block bars: {payload['block_bars']}",
+        f"- block autocorrelation: {payload['autocorrelation']}"
+        f" | true effect: {payload['effect']}",
+        f"- simulations: {args.simulations} | bootstrap draws: {args.draws}",
+        "",
+        "| alpha | coverage | excludes zero |",
+        "| ----- | -------- | ------------- |",
+    ]
+    for row in payload["alphas"].values():
+        lines.append(
+            f"| {row['alpha']:.4g} | {row['coverage']:.4f} | "
+            f"{row['excludes_zero']:.4f} |"
+        )
+    uniformity = payload.get("p_value_uniformity") or {}
+    lines.extend(
+        [
+            "",
+            f"p-value uniformity: n={uniformity.get('n')} "
+            f"mean={uniformity.get('mean')} "
+            f"chi-square={uniformity.get('chi_square')}",
+            f"bins: {uniformity.get('counts')}",
+            "",
+            "Coverage should be at least 1 - alpha; at a zero effect the "
+            "exclude-zero rate should be at or below alpha.",
+        ]
+    )
+    (run_dir / "calibrate-coverage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-coverage.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = repo_root()
     config = load_config(root)
@@ -4577,6 +4714,154 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     print(f"\nforward scorer: {forward_state}")
     return 0
+
+
+def estimate_power(
+    root: Path,
+    config: Mapping[str, Any],
+    hypothesis: Hypothesis,
+    prereg: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Estimate the design's MDE at the pre-registered trial alpha.
+
+    A cheap causal pilot: train the pre-registered primary config on each
+    walk-forward fold of the pre-cutoff slice and collect the paired
+    improvement series. The time-block bootstrap's standard error gives the
+    smallest effect the design can detect at the target power. For a
+    ``comparison: champion`` hypothesis the series is candidate-vs-retrained-
+    champion instead of candidate-vs-baseline.
+    """
+    criteria = dict(prereg.get("criteria") or {})
+    experiment = dict(prereg.get("experiment") or {})
+    minimal = prereg.get("minimal_meaningful_effect")
+    if minimal is None:
+        return {"checked": False, "reason": "no minimal_meaningful_effect declared"}
+    if hypothesis.canary or str(criteria.get("kind")) == "diagnostic":
+        return {"checked": False, "reason": "canary/diagnostic does not need power"}
+    target = str(criteria.get("target") or "fwd_direction")
+    try:
+        feature_set, model_set, horizon_text = primary_config_name(experiment).split("+")
+        horizon = int(horizon_text.removeprefix("h"))
+    except (AttributeError, ValueError):
+        return {"checked": False, "reason": "primary config is not a feature+model+hN name"}
+    try:
+        import numpy as np
+
+        from rl_crypto.power import minimum_detectable_effect
+    except ImportError as exc:  # pragma: no cover - environment failure
+        return {"checked": False, "reason": f"power module unavailable: {exc}"}
+    lab = load_model_lab(root)
+    config_obj = lab.Config(
+        name=primary_config_name(experiment),
+        feature_names=lab.resolve_feature_names(feature_set),
+        model_names=lab.resolve_model_set(model_set),
+        horizon=horizon,
+    )
+    budgets = config.get("budgets") or {}
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    folds = int(experiment.get("folds") or budgets.get("folds", 4))
+    block_bars = int(budgets.get("bootstrapBlockBars", 24))
+    comparison = str(prereg.get("comparison") or "baseline")
+    alpha = alpha_for_trial(
+        float(criteria.get("alpha", 0.05)), int(prereg.get("trial_index") or 1)
+    )
+    baseline_values: list[float] = []
+    champion_values: list[float] = []
+    per_ticker: dict[str, Any] = {}
+    for ticker in tickers:
+        rows, _ = lab.filter_rows_before(
+            lab.load_ticker_rows(ticker), prereg.get("holdout_start")
+        )
+        samples = lab.build_samples(
+            rows, horizon=horizon, interval_seconds=lab.INTERVAL_SECONDS
+        )
+        splits = lab.walk_forward(
+            samples, folds=folds, horizon=horizon, targets=[target]
+        )
+        baseline_rows: list[dict[str, Any]] = []
+        champion_rows: list[dict[str, Any]] = []
+        champion = None
+        if comparison == "champion":
+            try:
+                champion = lab.load_bundle(
+                    lab.default_bundle_path(ticker, directory=root / "models")
+                )
+            except FileNotFoundError:
+                champion = None
+        for train, test in splits:
+            bundle = lab.train_tier1(
+                train,
+                horizon=horizon,
+                feature_names=config_obj.feature_names,
+                targets=[target],
+                model_names=config_obj.model_names,
+                holdout_fraction=0.0,
+            )
+            baseline_rows.extend(
+                lab.paired_target_rows(
+                    bundle, target, train, test, baseline="strongest", horizon=horizon
+                )
+            )
+            if champion is not None and target in champion.targets:
+                champion_model_names = {
+                    target: str(
+                        champion.targets[target].model.to_dict().get("kind")
+                        or "ridge"
+                    )
+                }
+                retrained = lab.train_tier1(
+                    train,
+                    horizon=champion.horizon,
+                    feature_names=champion.feature_names,
+                    targets=[target],
+                    model_names=champion_model_names,
+                    holdout_fraction=0.0,
+                )
+                champion_rows.extend(
+                    lab.paired_between_bundles(
+                        bundle, retrained, target, test, horizon=horizon
+                    )
+                )
+        baseline_values.extend(float(row["improvement"]) for row in baseline_rows)
+        champion_values.extend(float(row["improvement"]) for row in champion_rows)
+        per_ticker[ticker] = {
+            "n": len(baseline_rows),
+            "mean": (
+                float(np.mean([row["improvement"] for row in baseline_rows]))
+                if baseline_rows
+                else None
+            ),
+            "champion_n": len(champion_rows),
+            "champion_mean": (
+                float(np.mean([row["improvement"] for row in champion_rows]))
+                if champion_rows
+                else None
+            ),
+        }
+    baseline_power = minimum_detectable_effect(
+        baseline_values, alpha=alpha, block_bars=block_bars
+    )
+    champion_power = (
+        minimum_detectable_effect(champion_values, alpha=alpha, block_bars=block_bars)
+        if comparison == "champion" and champion_values
+        else None
+    )
+    chosen = champion_power if comparison == "champion" else baseline_power
+    mde = chosen.get("mde") if chosen else None
+    return {
+        "checked": True,
+        "comparison": comparison,
+        "target": target,
+        "alpha": alpha,
+        "minimal_meaningful_effect": float(minimal),
+        "baseline": baseline_power,
+        "champion": champion_power,
+        "mde": mde,
+        "underpowered": bool(
+            mde is not None and float(mde) > float(minimal)
+        ),
+        "per_ticker": per_ticker,
+    }
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -4660,7 +4945,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if ctx.run_type != "harness-change" and not args.force:
         current_hash = protected_digest(ctx.repo)["hash"]
-        reason = canary_gate(entries, current_hash)
+        reason = canary_gate(
+            entries,
+            current_hash,
+            canary_entries=read_canary(root / "experiments" / CANARY_FILENAME),
+        )
         if reason:
             record_infra("canary", reason, "canary-stale")
             if args.json:
@@ -4705,6 +4994,34 @@ def cmd_run(args: argparse.Namespace) -> int:
         feature_version=FEATURE_VERSION,
         protected=protected_digest(root),
     )
+    if run_type != "harness-change" and not args.force:
+        power_report = estimate_power(root, config, hypothesis, prereg)
+        prereg["power"] = power_report
+        _write_json(ctx.artifact("power.json"), power_report)
+        if power_report.get("underpowered"):
+            reason = (
+                "underpowered: the design's minimum detectable effect "
+                f"{power_report.get('mde')} exceeds the minimal meaningful effect "
+                f"{power_report.get('minimal_meaningful_effect')} at "
+                f"alpha={power_report.get('alpha')}; no trial is consumed"
+            )
+            append_entry(
+                ctx.ledger,
+                {
+                    "kind": "blocked",
+                    "run_id": run_id,
+                    "hypothesis_id": hypothesis.id,
+                    "stage": "preregister",
+                    "reason": reason,
+                    "underpowered": True,
+                    "power": power_report,
+                },
+            )
+            if args.json:
+                print(json.dumps({"outcome": "underpowered", "reason": reason}, indent=2))
+            else:
+                print(reason)
+            return 2
     cap_reason = family_cap_reason(config, prereg)
     if cap_reason and not args.force:
         reason = cap_reason
@@ -5343,6 +5660,22 @@ def build_parser() -> argparse.ArgumentParser:
     auditor.add_argument("--timeout", type=float, default=None)
     auditor.add_argument("--json", action="store_true")
     auditor.set_defaults(func=cmd_auditor_check)
+
+    cal_coverage = sub.add_parser(
+        "calibrate-coverage",
+        help="offline: CI coverage under known-zero block-autocorrelated draws",
+    )
+    cal_coverage.add_argument("--rows", type=int, default=600)
+    cal_coverage.add_argument("--block-bars", type=int, default=24)
+    cal_coverage.add_argument("--alphas", default="0.01,0.05,0.1,0.2")
+    cal_coverage.add_argument("--draws", type=int, default=1000)
+    cal_coverage.add_argument("--simulations", type=int, default=400)
+    cal_coverage.add_argument("--autocorrelation", type=float, default=0.8)
+    cal_coverage.add_argument("--effect", type=float, default=0.0)
+    cal_coverage.add_argument("--seed", type=int, default=0)
+    cal_coverage.add_argument("--run-dir", default=None)
+    cal_coverage.add_argument("--json", action="store_true")
+    cal_coverage.set_defaults(func=cmd_calibrate_coverage)
 
     cal_null = sub.add_parser(
         "calibrate-null",

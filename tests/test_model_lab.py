@@ -772,3 +772,36 @@ def test_evaluate_target_reports_skill_against_all_three_baselines():
     assert set(record["skill_vs"]) == {"constant", "seasonal", "persistence"}
     assert record["baseline_mode"] in {"constant", "seasonal", "persistence"}
     assert set(record["baselines"]) == {"constant", "seasonal", "persistence"}
+
+
+def test_control_ticker_reports_after_cost_economics_for_classification(tmp_path, monkeypatch):
+    from .conftest import make_dataset_rows
+
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    _write_archive(tmp_path, make_dataset_rows(280, wiggle=0.05))
+    config = lab.Config(
+        name="econ",
+        feature_names=lab.resolve_feature_names("all"),
+        model_names=lab.MODEL_SETS["reference"],
+        horizon=1,
+    )
+    result = lab.evaluate_control_ticker(
+        "ETH/USD",
+        config,
+        "fwd_direction",
+        None,
+        folds=3,
+        holdout_start=None,
+        seed=2,
+        shift_bars=169,
+        economics=True,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+    )
+    economics = result["economics"]
+    assert economics is not None
+    assert economics["model"]["bars"] > 0
+    assert "momentum" in economics
+    assert result["structural"]["ok"] is True

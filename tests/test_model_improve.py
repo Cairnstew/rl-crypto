@@ -1040,13 +1040,21 @@ def test_canary_provisional_is_converted_to_invalid_and_voids_the_harness(tmp_pa
     )
     verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
     assert verdict["outcome"] == "invalid"
-    from rl_crypto.experiments import harness_void, read_ledger
+    from rl_crypto.experiments import (
+        CANARY_FILENAME,
+        harness_void,
+        read_canary,
+        read_ledger,
+    )
 
     entries = read_ledger(ctx.ledger)
     assert harness_void(entries) is not None
-    recorded = [entry for entry in entries if entry["kind"] == "verdict"][-1]
+    canaries = read_canary(ctx.repo / "experiments" / CANARY_FILENAME)
+    recorded = canaries[-1]
     assert recorded["canary"] is True
     assert recorded["canary_kind"] == "null"
+    # The canary verdict is not a ledger verdict and never counts as a trial.
+    assert not [entry for entry in entries if entry.get("kind") == "verdict"]
 
 
 def test_scoreboard_renders_old_entries_and_adds_new_counts():
@@ -1703,11 +1711,21 @@ def resolve_model_set(spec):
     return {"fwd_direction": "logistic"}
 
 
-def evaluate_control_ticker(ticker, config, target, mode, *, folds, holdout_start, seed, shift_bars):
+def evaluate_control_ticker(
+    ticker, config, target, mode, *, folds, holdout_start, seed, shift_bars, **kwargs
+):
     return {
         "ticker": ticker,
         "paired_rows": [{"timestamp": "t", "improvement": 0.01} for _ in range(100)],
         "fold_improvements": [0.01] * folds,
+        "economics": (
+            {
+                "model": {"total_return": 0.1, "sharpe": 1.0, "trades": 100},
+                "momentum": {"sharpe": 0.1},
+            }
+            if mode is None
+            else None
+        ),
     }
 
 
@@ -1783,6 +1801,7 @@ def build_samples(rows, horizon, interval_seconds):
 def evaluate_control_ticker(
     ticker, config, target, mode, *, folds, holdout_start, seed, shift_bars,
     leak_feature=None, plant_strength=0.0, plant_space="raw", plant_feature=None,
+    **kwargs,
 ):
     control = mode is not None
     value = -0.001 if control or plant_strength == 0.0 else plant_strength
@@ -1791,6 +1810,14 @@ def evaluate_control_ticker(
         "paired_rows": [{"timestamp": "t", "improvement": value} for _ in range(100)],
         "fold_improvements": [value] * folds,
         "planted": {"strength": plant_strength, "effect": plant_strength ** 2},
+        "economics": (
+            {
+                "model": {"total_return": 0.1, "sharpe": 1.0, "trades": 100},
+                "momentum": {"sharpe": 0.1},
+            }
+            if mode is None
+            else None
+        ),
     }
 
 
@@ -2043,11 +2070,17 @@ def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path,
     verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
     assert verdict["outcome"] == "invalid"
     assert any("leak" in reason for reason in verdict["reasons"])
-    from rl_crypto.experiments import harness_void, read_ledger
+    from rl_crypto.experiments import (
+        CANARY_FILENAME,
+        harness_void,
+        read_canary,
+        read_ledger,
+    )
 
     entries = read_ledger(ctx.ledger)
     assert harness_void(entries) is None
-    recorded = [entry for entry in entries if entry["kind"] == "verdict"][-1]
+    canaries = read_canary(ctx.repo / "experiments" / CANARY_FILENAME)
+    recorded = canaries[-1]
     assert recorded["canary"] is True
     assert recorded["canary_kind"] == "positive"
 

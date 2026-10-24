@@ -654,7 +654,9 @@ def test_v2_no_signal_fails_and_real_signal_passes():
         {"criteria": _v2_criteria()},
         _v2_payload(pooled=_paired(0.001, -0.002, 0.004)),
     )
-    assert no_signal["outcome"] == "negative"
+    # A CI that still overlaps zero cannot support a negative claim; only a CI
+    # entirely below the MME does.
+    assert no_signal["outcome"] == "inconclusive"
     assert any("CI lower bound" in reason for reason in no_signal["reasons"])
 
     signal = evaluate_criteria(
@@ -687,7 +689,7 @@ def test_v2_fold_rule_and_single_ticker_flag_are_explicit():
             pooled=_paired(0.02, 0.01, 0.03, folds=[0.01, 0.02, -0.01, 0.02])
         ),
     )
-    assert one_bad_fold["outcome"] == "negative"
+    assert one_bad_fold["outcome"] == "inconclusive"
     assert any("folds are positive" in reason for reason in one_bad_fold["reasons"])
 
     carried = evaluate_criteria(
@@ -702,7 +704,7 @@ def test_v2_fold_rule_and_single_ticker_flag_are_explicit():
     payload = _v2_payload(pooled=_paired(0.02, 0.01, 0.03), tickers=("BTC/USD", "ETH/USD"))
     payload["results"][1]["paired"] = _paired(-0.01, -0.02, -0.001)
     single = evaluate_criteria({"criteria": _v2_criteria()}, payload)
-    assert single["outcome"] == "negative"
+    assert single["outcome"] == "inconclusive"
     assert single["metrics"]["carried_by_one_ticker"] is True
     assert carried["outcome"] == "provisional"
 
@@ -718,7 +720,7 @@ def test_v2_requires_controls_and_alpha_matches_the_lab():
         {"criteria": _v2_criteria(alpha=0.01)},
         _v2_payload(pooled=_paired(0.02, 0.01, 0.03, alpha=0.05)),
     )
-    assert wrong_alpha["outcome"] == "negative"
+    assert wrong_alpha["outcome"] == "inconclusive"
     assert any("pre-registered alpha" in reason for reason in wrong_alpha["reasons"])
 
 
@@ -973,7 +975,7 @@ def test_v2_economics_is_the_pooled_portfolio_not_the_first_row():
         "trades": 200,
     }
     bad = evaluate_criteria({"criteria": _v2_criteria()}, payload)
-    assert bad["outcome"] == "negative"
+    assert bad["outcome"] == "inconclusive"
     assert any("total return" in reason for reason in bad["reasons"])
 
 
@@ -1101,10 +1103,251 @@ def test_v2_control_distribution_gates_on_a_pre_registered_quantile():
         }
 
     below = evaluate_criteria(prereg, payload(0.005, 0.001, [0.0] * 18 + [0.01, 0.02]))
-    assert below["outcome"] == "negative"
+    assert below["outcome"] == "inconclusive"
     assert any("control quantile" in reason for reason in below["reasons"])
     assert below["metrics"]["control_distribution"]["median"] == pytest.approx(0.001)
 
     above = evaluate_criteria(prereg, payload(0.03, 0.02, [0.0] * 18 + [0.01, 0.02]))
     assert above["outcome"] == "provisional"
     assert above["metrics"]["control_distribution"]["quantile_value"] == pytest.approx(0.01)
+
+
+def _outcome_prereg(mme):
+    return {
+        "run_id": "r",
+        "hypothesis_id": "H",
+        "family": "f",
+        "lineage": "H",
+        "trial_index": 1,
+        "holdout_start": "2026-01-01T00:00:00Z",
+        "minimal_meaningful_effect": mme,
+        "criteria": {
+            "kind": "improvement",
+            "criteria_version": 2,
+            "target": "fwd_volume_ratio",
+            "primary": "all+reference+h1",
+            "alpha": 0.05,
+            "fold_rule": "all_positive",
+            "require_controls": True,
+            "require_multiple_tickers": False,
+        },
+        "experiment": {
+            "tickers": ["BTC/USD"],
+            "targets": ["fwd_volume_ratio"],
+            "maxConfigs": 1,
+            "folds": 4,
+        },
+    }
+
+
+def _outcome_payload(mean, ci_low, ci_high):
+    negative = {
+        "mean_improvement": -0.01,
+        "ci_low": -0.02,
+        "ci_high": 0.0,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [-0.01] * 4,
+        "resolution_ok": True,
+    }
+    pooled = {
+        "mean_improvement": mean,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [mean] * 4,
+        "resolution_ok": True,
+    }
+    return {
+        "primary": "all+reference+h1",
+        "results": [{"ticker": "BTC/USD", "paired": pooled}],
+        "pooled": pooled,
+        "controls": {
+            "shuffle": {"pooled": dict(negative)},
+            "shift": {"pooled": dict(negative)},
+        },
+        "purge": {"ok": True, "violations": []},
+        "structural": {
+            "ok": True,
+            "truncation": {"ok": True, "violations": []},
+            "perturbation": {"ok": True, "violations": []},
+        },
+    }
+
+
+def test_outcome_inconclusive_when_the_ci_overlaps_zero_and_the_mme():
+    verdict = evaluate_criteria(
+        _outcome_prereg(0.01), _outcome_payload(0.012, -0.002, 0.03)
+    )
+    assert verdict["outcome"] == "inconclusive"
+    assert verdict["passed"] is False
+
+
+def test_negative_only_when_the_ci_upper_bound_is_below_the_mme():
+    verdict = evaluate_criteria(
+        _outcome_prereg(0.01), _outcome_payload(0.002, -0.004, 0.008)
+    )
+    assert verdict["outcome"] == "negative"
+
+
+def test_provisional_requires_the_ci_lower_bound_to_clear_the_mme():
+    verdict = evaluate_criteria(
+        _outcome_prereg(0.01), _outcome_payload(0.03, 0.012, 0.05)
+    )
+    assert verdict["outcome"] == "provisional"
+    assert verdict["passed"] is True
+
+    weak = evaluate_criteria(
+        _outcome_prereg(0.01), _outcome_payload(0.02, 0.002, 0.04)
+    )
+    assert weak["outcome"] == "inconclusive"
+
+
+def test_hypothesis_declares_mme_and_comparison_and_prereg_records_power():
+    hypothesis = Hypothesis.from_dict(
+        {
+            "id": "Hx",
+            "title": "x",
+            "family": "f",
+            "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_direction"], "maxConfigs": 1, "folds": 4},
+            "criteria": {
+                "kind": "improvement",
+                "criteria_version": 2,
+                "target": "fwd_direction",
+                "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+            },
+            "minimal_meaningful_effect": 0.002,
+            "comparison": "champion",
+        }
+    )
+    assert hypothesis.minimal_meaningful_effect == 0.002
+    assert hypothesis.comparison == "champion"
+    assert hypothesis.as_dict()["minimal_meaningful_effect"] == 0.002
+
+
+def test_invalid_and_negative_consume_a_trial_but_infra_blocks_do_not(tmp_path):
+    from rl_crypto.experiments import append_entry
+
+    ledger = tmp_path / "ledger.jsonl"
+
+    def prereg(run, outcome=None):
+        append_entry(
+            ledger,
+            {
+                "kind": "preregister",
+                "run_id": run,
+                "hypothesis_id": "H",
+                "family": "f",
+                "lineage": "H",
+                "trial_index": 1,
+                "criteria_version": 2,
+                "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_return"], "maxConfigs": 1, "folds": 4},
+                "criteria": {"kind": "improvement", "target": "fwd_return"},
+            },
+        )
+        if outcome is None:
+            return
+        append_entry(
+            ledger,
+            {"kind": "results", "run_id": run, "hypothesis_id": "H", "lab": True},
+        )
+        append_entry(
+            ledger,
+            {"kind": "verdict", "run_id": run, "hypothesis_id": "H", "outcome": outcome},
+        )
+
+    prereg("negative-run", "negative")
+    prereg("invalid-run", "invalid")
+    prereg("infra-run")
+    append_entry(
+        ledger,
+        {
+            "kind": "blocked",
+            "run_id": "infra-run",
+            "hypothesis_id": "H",
+            "stage": "role",
+            "reason": "role researcher failed",
+            "infra": True,
+            "infra_kind": "role-error",
+        },
+    )
+    # An underpowered block is recorded before any pre-registration is written.
+    append_entry(
+        ledger,
+        {
+            "kind": "blocked",
+            "run_id": "underpowered-run",
+            "hypothesis_id": "H",
+            "stage": "preregister",
+            "reason": "underpowered: MDE > minimal meaningful effect",
+            "underpowered": True,
+        },
+    )
+    # A canary pre-registration never counts, even if it reaches a result.
+    append_entry(
+        ledger,
+        {
+            "kind": "preregister",
+            "run_id": "canary-run",
+            "hypothesis_id": "H0-canary",
+            "family": "canary",
+            "lineage": "H0-canary",
+            "trial_index": 1,
+            "criteria_version": 2,
+            "canary": True,
+            "experiment": {"tickers": ["BTC/USD"], "targets": ["fwd_return"], "maxConfigs": 1, "folds": 4},
+            "criteria": {"kind": "improvement", "target": "fwd_return"},
+        },
+    )
+    append_entry(
+        ledger,
+        {"kind": "results", "run_id": "canary-run", "hypothesis_id": "H0-canary", "lab": True},
+    )
+
+    counts = trial_counts(read_ledger(ledger))
+    assert counts["family"]["f"] == 2  # negative + invalid
+    assert counts["hypothesis"]["H"] == 2
+    assert counts["family"].get("canary", 0) == 0
+
+
+def test_canary_verdicts_live_in_their_own_file(tmp_path):
+    from rl_crypto.experiments import (
+        CANARY_FILENAME,
+        append_canary,
+        canary_status,
+        read_canary,
+        read_ledger,
+    )
+
+    root = tmp_path
+    (root / "experiments").mkdir()
+    ledger = root / "experiments" / "ledger.jsonl"
+    canary_path = root / "experiments" / CANARY_FILENAME
+    append_canary(
+        canary_path,
+        {
+            "hypothesis_id": "H0-canary",
+            "canary": True,
+            "canary_kind": "null",
+            "outcome": "negative",
+            "passed": False,
+            "protected_hash": "a" * 64,
+            "at": "2026-10-24T10:00:00Z",
+        },
+    )
+    append_canary(
+        canary_path,
+        {
+            "hypothesis_id": "H0-canary-leak",
+            "canary": True,
+            "canary_kind": "positive",
+            "outcome": "invalid",
+            "passed": False,
+            "protected_hash": "a" * 64,
+            "at": "2026-10-24T10:01:00Z",
+        },
+    )
+    assert read_ledger(ledger) == []
+    status = canary_status([], current_hash="a" * 64, canary_entries=read_canary(canary_path))
+    assert status["pass"] is True
