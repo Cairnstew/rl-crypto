@@ -54,6 +54,8 @@ from rl_crypto.experiments import (
     append_entry,
     bootstrap_resolution,
     build_preregistration,
+    canary_gate,
+    canary_status,
     criteria_version,
     evaluate_criteria,
     git_state,
@@ -2554,6 +2556,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "next_hypothesis": next_hypothesis.id if next_hypothesis else None,
         "holdout_cutoffs": holdout_cutoffs(entries),
         "harness_void": harness_void(entries),
+        "canary": canary_status(entries),
         "scoreboard": render_scoreboard(entries),
     }
     if args.render:
@@ -2855,6 +2858,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         else:
             print(message)
         return 2
+
+    if ctx.run_type != "harness-change" and not args.force:
+        current_hash = protected_digest(ctx.repo)["hash"]
+        reason = canary_gate(entries, current_hash)
+        if reason:
+            record_infra("canary", reason, "canary-stale")
+            if args.json:
+                print(json.dumps({"outcome": "blocked", "reason": reason}, indent=2))
+            else:
+                print(reason)
+            return 2
 
     ctx.holdout_start = resolve_or_compute_holdout(root, config, hypothesis, entries)
     if criteria_version(hypothesis.criteria) >= 2 and not ctx.holdout_start:

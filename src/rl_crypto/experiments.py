@@ -673,6 +673,99 @@ def harness_void(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     return void
 
 
+def _canary_hash(entry: Mapping[str, Any]) -> str | None:
+    direct = entry.get("protected_hash")
+    if direct:
+        return str(direct)
+    protected = entry.get("protected") or {}
+    if isinstance(protected, Mapping) and protected.get("hash"):
+        return str(protected["hash"])
+    return None
+
+
+def canary_status(
+    entries: Sequence[Mapping[str, Any]], *, current_hash: str | None = None
+) -> dict[str, Any]:
+    """Freshness of the two harness canaries against the current contract.
+
+    A canary result is only meaningful for the measurement code that produced
+    it: a pass at an older ``PROTECTED_FILES`` hash proves nothing about the
+    code now running. ``null`` must come out ``negative`` (shuffled labels did
+    not produce skill) and ``positive`` must come out ``invalid`` (the leak was
+    detected). Both must be at ``current_hash`` when one is supplied.
+    """
+    kinds: dict[str, dict[str, Any]] = {}
+    latest_at: str | None = None
+    for entry in entries:
+        if entry.get("kind") != "verdict" or not entry.get("canary"):
+            continue
+        kind = str(entry.get("canary_kind") or "null")
+        at = str(entry.get("at") or "")
+        if latest_at is None or at >= latest_at:
+            latest_at = at
+        kinds[kind] = {
+            "outcome": entry.get("outcome"),
+            "passed": entry.get("passed"),
+            "at": at,
+            "hash": _canary_hash(entry),
+            "run_id": entry.get("run_id"),
+        }
+
+    def ok(name: str) -> bool:
+        block = kinds.get(name)
+        if not block:
+            return False
+        if current_hash and block.get("hash") != current_hash:
+            return False
+        if not current_hash and not block.get("hash"):
+            return False
+        if name == "null":
+            return block.get("outcome") == "negative" and not block.get("passed")
+        return block.get("outcome") == "invalid"
+
+    hashes = {block.get("hash") for block in kinds.values() if block.get("hash")}
+    hash_value = current_hash or (next(iter(hashes)) if len(hashes) == 1 else None)
+    passed = ok("null") and ok("positive") and bool(hash_value)
+    return {
+        "pass": passed,
+        "hash": hash_value,
+        "date": (latest_at or "")[:10],
+        "at": latest_at,
+        "kinds": kinds,
+        "missing": [name for name in ("null", "positive") if name not in kinds],
+        "stale": [
+            name
+            for name, block in kinds.items()
+            if current_hash and block.get("hash") != current_hash
+        ],
+    }
+
+
+def canary_gate(
+    entries: Sequence[Mapping[str, Any]], current_hash: str | None
+) -> str | None:
+    """Why an experiment run may not proceed, or ``None`` when fresh."""
+    if not current_hash:
+        return "cannot hash the protected measurement files; refusing to run"
+    status = canary_status(entries, current_hash=current_hash)
+    if status["pass"]:
+        return None
+    missing = status.get("missing") or []
+    stale = status.get("stale") or []
+    detail = []
+    if missing:
+        detail.append("missing " + ", ".join(missing))
+    if stale:
+        detail.append("stale at current hash: " + ", ".join(stale))
+    if not detail:
+        detail.append("a canary did not produce its required outcome")
+    return (
+        "canary-freshness: "
+        + "; ".join(detail)
+        + f" (current protected hash {current_hash[:12]})"
+    )
+
+
 def completed_hypotheses(entries: Sequence[Mapping[str, Any]]) -> set[str]:
     out: set[str] = set()
     for entry in entries:
@@ -1439,6 +1532,15 @@ def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
     refuted = outcomes.count("refuted")
     invalid = outcomes.count("invalid")
     void = harness_void(entries)
+    canary = canary_status(entries)
+    if canary["pass"]:
+        canary_line = f"- canary: **pass @ {canary['hash']} {canary['date']}**"
+    elif canary["hash"]:
+        canary_line = (
+            f"- canary: **MISSING/STALE @ {canary['hash']} {canary['date']}**"
+        )
+    else:
+        canary_line = "- canary: **MISSING**"
     lines = [
         "# Model-improvement scoreboard",
         "",
@@ -1452,6 +1554,7 @@ def render_scoreboard(entries: Sequence[Mapping[str, Any]]) -> str:
         f"- refuted-to-provisional: **"
         f"{('n/a' if provisional == 0 else f'{refuted / provisional:.2f}')}**",
         f"- harness: **{'VOID' if void else 'ok'}**",
+        canary_line,
         "",
         "A negative verdict is a completed experiment: it closes that hypothesis",
         "lineage. Re-running it needs new data, a new feature class, or a fixed",

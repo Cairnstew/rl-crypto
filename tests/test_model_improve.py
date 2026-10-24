@@ -292,7 +292,34 @@ def _repo(tmp_path: Path, hypothesis: dict) -> Path:
     return root
 
 
-def _env(monkeypatch: pytest.MonkeyPatch, root: Path, tmp_path: Path, *, fake_opencode: bool):
+def _seed_canaries(root: Path) -> None:
+    """Record both canaries as passing at the fixture's current contract hash."""
+    current = tool.protected_digest(root)["hash"]
+    for kind, outcome in (("null", "negative"), ("positive", "invalid")):
+        tool.append_entry(
+            root / "experiments" / "ledger.jsonl",
+            {
+                "kind": "verdict",
+                "run_id": f"canary-{kind}",
+                "hypothesis_id": f"H0-canary-{kind}",
+                "canary": True,
+                "canary_kind": kind,
+                "outcome": outcome,
+                "passed": False,
+                "protected_hash": current,
+                "at": "2026-10-24T00:00:00Z",
+            },
+        )
+
+
+def _env(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    tmp_path: Path,
+    *,
+    fake_opencode: bool,
+    canaries: bool = True,
+):
     fake_lab = tmp_path / "fake_lab.py"
     fake_lab.write_text(FAKE_LAB, encoding="utf-8")
     monkeypatch.setenv("RL_CRYPTO_ROOT", str(root))
@@ -303,6 +330,8 @@ def _env(monkeypatch: pytest.MonkeyPatch, root: Path, tmp_path: Path, *, fake_op
         bin_dir.mkdir(exist_ok=True)
         _executable(bin_dir / "opencode", FAKE_OPENCODE)
         monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    if canaries:
+        _seed_canaries(root)
 
 
 # --------------------------------------------------------------------------- config/preflight
@@ -363,13 +392,59 @@ def test_plan_shows_frozen_criteria_without_writing_the_ledger(
     tmp_path, monkeypatch, capsys
 ):
     root = _repo(tmp_path, _hypothesis())
-    _env(monkeypatch, root, tmp_path, fake_opencode=False)
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
     rc = tool.main(["plan", "--executor", "mechanical", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["hypothesis"]["id"] == "H0"
     assert payload["preregister"]["criteria"]["kind"] == "diagnostic"
     assert (root / "experiments" / "ledger.jsonl").read_text() == ""
+
+
+def test_experiment_run_refuses_without_fresh_canaries(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path, _hypothesis())
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "blocked"
+    assert "canary-freshness" in payload["reason"]
+    entries = [
+        json.loads(line)
+        for line in (root / "experiments" / "ledger.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert [entry["kind"] for entry in entries] == ["blocked"]
+    assert entries[0]["infra"] is True
+    assert entries[0]["infra_kind"] == "canary-stale"
+
+    # A harness-change run may proceed while the contract itself is in flux.
+    rc = tool.main(
+        [
+            "run",
+            "--executor",
+            "mechanical",
+            "--run-type",
+            "harness-change",
+            "--no-worktree",
+            "--no-commit",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ]
+    )
+    assert rc == 0
 
 
 # --------------------------------------------------------------------------- run: mechanical
@@ -398,7 +473,7 @@ def test_mechanical_diagnostic_run_records_prereg_results_and_verdict(
     entries = [
         json.loads(line)
         for line in (root / "experiments" / "ledger.jsonl").read_text().splitlines()
-        if line.strip()
+        if line.strip() and not json.loads(line).get("canary")
     ]
     assert [entry["kind"] for entry in entries] == [
         "holdout_freeze",
@@ -538,7 +613,7 @@ def test_researcher_stop_blocks_with_exit_code_2(tmp_path, monkeypatch, capsys):
     entries = [
         json.loads(line)
         for line in (root / "experiments" / "ledger.jsonl").read_text().splitlines()
-        if line.strip()
+        if line.strip() and not json.loads(line).get("canary")
     ]
     assert [entry["kind"] for entry in entries] == [
         "holdout_freeze",
@@ -996,7 +1071,7 @@ def test_v2_improvement_run_uses_one_primary_config_and_a_frozen_cutoff(tmp_path
     entries = [
         json.loads(line)
         for line in (root / "experiments" / "ledger.jsonl").read_text().splitlines()
-        if line.strip()
+        if line.strip() and not json.loads(line).get("canary")
     ]
     kinds = [entry["kind"] for entry in entries]
     assert kinds[0] == "holdout_freeze"

@@ -166,6 +166,92 @@ def test_legacy_infrastructure_blocks_are_classified_from_stage_and_reason():
     )
 
 
+def _canary(entries, *, kind, outcome, at, protected_hash, run_id=None):
+    return append_entry(
+        entries,
+        {
+            "kind": "verdict",
+            "run_id": run_id or f"run-{kind}",
+            "hypothesis_id": f"H0-canary-{kind}",
+            "canary": True,
+            "canary_kind": kind,
+            "outcome": outcome,
+            "passed": outcome == "provisional",
+            "protected_hash": protected_hash,
+            "at": at,
+        },
+    )
+
+
+def test_canary_freshness_requires_both_canaries_at_the_current_hash(tmp_path):
+    from rl_crypto.experiments import canary_gate, canary_status
+
+    ledger = tmp_path / "ledger.jsonl"
+    _canary(
+        ledger,
+        kind="null",
+        outcome="negative",
+        at="2026-10-24T10:00:00Z",
+        protected_hash="a" * 64,
+    )
+    _canary(
+        ledger,
+        kind="positive",
+        outcome="invalid",
+        at="2026-10-24T10:01:00Z",
+        protected_hash="a" * 64,
+    )
+    entries = read_ledger(ledger)
+    status = canary_status(entries, current_hash="a" * 64)
+    assert status["pass"] is True
+    assert status["hash"] == "a" * 64
+    assert canary_gate(entries, "a" * 64) is None
+
+    # A stale pair proves nothing about the contract now running.
+    stale = canary_gate(entries, "b" * 64)
+    assert stale is not None and "stale" in stale
+    # A positive canary that failed to detect the leak is not a pass.
+    ledger2 = tmp_path / "ledger2.jsonl"
+    _canary(
+        ledger2,
+        kind="null",
+        outcome="negative",
+        at="2026-10-24T10:00:00Z",
+        protected_hash="a" * 64,
+    )
+    _canary(
+        ledger2,
+        kind="positive",
+        outcome="negative",
+        at="2026-10-24T10:01:00Z",
+        protected_hash="a" * 64,
+    )
+    assert canary_status(read_ledger(ledger2), current_hash="a" * 64)["pass"] is False
+
+
+def test_scoreboard_shows_the_canary_hash_and_date():
+    entries = [
+        {
+            "kind": "verdict",
+            "canary": True,
+            "canary_kind": "null",
+            "outcome": "negative",
+            "protected_hash": "c" * 64,
+            "at": "2026-10-24T09:00:00Z",
+        },
+        {
+            "kind": "verdict",
+            "canary": True,
+            "canary_kind": "positive",
+            "outcome": "invalid",
+            "protected_hash": "c" * 64,
+            "at": "2026-10-24T09:01:00Z",
+        },
+    ]
+    rendered = render_scoreboard(entries)
+    assert f"canary: **pass @ {'c' * 64} 2026-10-24**" in rendered
+
+
 def test_holdout_touches_are_counted_per_lineage(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     append_entry(ledger, {"kind": "holdout", "lineage": "H1/t1", "holdout_touched": True})
