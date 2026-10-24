@@ -529,3 +529,13 @@ def test_harness_void_is_cleared_by_a_later_human_entry(tmp_path):
     assert harness_void(read_ledger(ledger)) is not None
     append_entry(ledger, {"kind": "harness_clear", "reason": "fixed"})
     assert harness_void(read_ledger(ledger)) is None
+
+
+def test_the_canary_is_the_first_runnable_hypothesis_for_the_schedule():
+    root = Path(__file__).resolve().parents[1]
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    selected = select_hypothesis(queue, [], capabilities=set())
+    assert selected is not None
+    assert selected.id == "H0-canary"
+    assert selected.canary is True
+    assert selected.needs == ()
