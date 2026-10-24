@@ -3489,11 +3489,12 @@ def _leak_job(payload: Mapping[str, Any]) -> dict[str, Any]:
     lab = load_model_lab(root)
     experiment = payload["experiment"]
     feature = str(payload["feature"])
+    extra = () if payload.get("correlation") is None else (feature,)
     feature_names = tuple(
         dict.fromkeys(
             (
                 *lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
-                feature,
+                *extra,
             )
         )
     )
