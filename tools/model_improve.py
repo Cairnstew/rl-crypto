@@ -3067,11 +3067,12 @@ def _power_job(payload: Mapping[str, Any]) -> dict[str, Any]:
     lab = load_model_lab(root)
     experiment = payload["experiment"]
     plant_feature = str(payload["plant_feature"])
+    extra = () if float(payload.get("strength") or 0.0) == 0.0 else (plant_feature,)
     feature_names = tuple(
         dict.fromkeys(
             (
                 *lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
-                plant_feature,
+                *extra,
             )
         )
     )
