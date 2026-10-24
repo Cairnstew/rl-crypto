@@ -31,6 +31,33 @@ from .types import Outlook
 DIRECTION_BULL = 0.55
 DIRECTION_BEAR = 0.45
 
+#: Targets whose domain is non-negative, with the floor applied at serve time.
+#: A linear model is unbounded; a realised spread is not.
+NON_NEGATIVE_TARGETS: tuple[str, ...] = ("fwd_volatility",)
+
+
+def _clip_domain(
+    points: dict[str, float | None],
+) -> tuple[dict[str, float | None], list[str]]:
+    """Withhold a prediction that lands outside its target's physical domain.
+
+    ``fwd_volatility`` is a standard deviation: a negative fit is not a small
+    number whose sign carries meaning, it is outside the target's domain. It is
+    reported as ``None`` — an honest gap — rather than clipped to ``0.0``, which
+    would fabricate a spread no asset has. The caller says why.
+    """
+    adjusted = dict(points)
+    notes: list[str] = []
+    for target in NON_NEGATIVE_TARGETS:
+        value = adjusted.get(target)
+        if value is not None and value < 0.0:
+            adjusted[target] = None
+            notes.append(
+                f"{target}: prediction outside the target domain (negative) "
+                f"reported as None (the domain is non-negative)"
+            )
+    return adjusted, notes
+
 
 def _composite(
     bundle: Tier1Bundle,
@@ -79,14 +106,18 @@ def compose_outlook(
     generated_at: str | None = None,
 ) -> Outlook:
     """Run every Tier-1 model on ``feature_row`` and fuse the results."""
-    points, probabilities = bundle.predict(feature_row.values)
+    raw_points, probabilities = bundle.predict(feature_row.values)
+    points, domain_notes = _clip_domain(raw_points)
     signal, confidence, withheld = _composite(bundle, points, probabilities)
 
     notes = [
         f"{target}: prediction skipped (required feature missing)"
         for target, value in points.items()
-        if value is None and target not in probabilities
+        # A domain-withheld value is ``None`` too; only a ``None`` straight from
+        # the model means an input was missing.
+        if value is None and raw_points.get(target) is None and target not in probabilities
     ]
+    notes.extend(domain_notes)
     if withheld:
         notes.append(withheld)
     if bundle.dropped_features:
@@ -108,4 +139,4 @@ def compose_outlook(
     )
 
 
-__all__ = ["DIRECTION_BEAR", "DIRECTION_BULL", "compose_outlook"]
+__all__ = ["DIRECTION_BEAR", "DIRECTION_BULL", "NON_NEGATIVE_TARGETS", "compose_outlook"]

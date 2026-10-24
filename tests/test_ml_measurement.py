@@ -13,18 +13,19 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import pytest
 
 from rl_crypto.cache import merge_candles, read_jsonl
-from rl_crypto.features import build_feature_table, feature_row
+from rl_crypto.features import FeatureRow, build_feature_table, feature_row
 from rl_crypto.ml.store import load_bundle, save_bundle
 from rl_crypto.ml.tier1 import (
     baseline_for,
     train_tier1,
     usable_features,
 )
-from rl_crypto.ml.tier2 import compose_outlook
+from rl_crypto.ml.tier2 import _clip_domain, compose_outlook
 from rl_crypto.models import DatasetRow
 from rl_crypto.samples import build_samples
 from rl_crypto.targets import forward_return, forward_volatility
@@ -277,6 +278,52 @@ def test_outlook_notes_the_features_it_ignored() -> None:
     row = build_feature_table_row(bundle)
     outlook = compose_outlook(bundle, ticker="ETH/USD", feature_row=row)
     assert any("excluded as constant" in note for note in outlook.notes)
+
+
+def test_negative_volatility_prediction_is_clipped_to_its_domain() -> None:
+    """A ridge fit is unbounded; a standard deviation is not.
+
+    Serving a negative spread would publish a physically impossible number, so
+    it is withheld as ``None`` and reported rather than passed through.
+    """
+    points, notes = _clip_domain({"fwd_volatility": -0.0011, "fwd_return": -0.002})
+    # An honest gap, not a fabricated zero: no asset has zero volatility.
+    assert points["fwd_volatility"] is None
+    # A signed target keeps its sign: only the non-negative domain is enforced.
+    assert points["fwd_return"] == -0.002
+    assert any("domain" in note and "fwd_volatility" in note for note in notes)
+
+
+def test_clip_domain_leaves_valid_and_missing_predictions_alone() -> None:
+    points, notes = _clip_domain({"fwd_volatility": 0.0018, "fwd_volume_ratio": -0.4})
+    assert points == {"fwd_volatility": 0.0018, "fwd_volume_ratio": -0.4}
+    assert notes == []
+
+    points, notes = _clip_domain({"fwd_volatility": None})
+    assert points == {"fwd_volatility": None}
+    assert notes == []
+
+
+def test_compose_outlook_reports_a_clipped_spread() -> None:
+    """The clip is visible in the outlook notes, not silent."""
+
+    class _Bundle:
+        feature_version_mismatch = False
+        dropped_features: tuple[str, ...] = ()
+        horizon = 1
+        targets: ClassVar[dict[str, object]] = {}
+
+        @staticmethod
+        def predict(values):
+            return {"fwd_volatility": -0.0005}, {}
+
+    row = FeatureRow(timestamp="2026-10-23T20:00:00Z", values={"vol_3": 0.001})
+    outlook = compose_outlook(_Bundle(), ticker="ETH/USD", feature_row=row)  # type: ignore[arg-type]
+
+    assert outlook.predictions["fwd_volatility"] is None
+    assert any("domain" in note for note in outlook.notes)
+    # The gap is reported for the real reason, not as a missing feature.
+    assert not any("required feature missing" in note for note in outlook.notes)
 
 
 # --------------------------------------------------------------------------- parity
