@@ -1130,6 +1130,55 @@ def _resolution_block(pooled: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def wilson_interval(
+    successes: int, trials: int, *, z: float = 1.959963984540054
+) -> tuple[float, float]:
+    """Two-sided Wilson score interval for a binomial rate.
+
+    Used by the calibration commands: with 300 null draws, the empirical
+    false-positive rate must be compared with the nominal alpha with its own
+    uncertainty, not as a point estimate.
+    """
+    n = max(0, int(trials))
+    if n == 0:
+        return (0.0, 1.0)
+    k = min(max(0, int(successes)), n)
+    p = k / n
+    denominator = 1.0 + z * z / n
+    centre = (p + z * z / (2.0 * n)) / denominator
+    half = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n)) / denominator
+    low = max(0.0, centre - half)
+    high = min(1.0, centre + half)
+    return (0.0 if low < 1e-12 else low, 1.0 if high > 1.0 - 1e-12 else high)
+
+
+def calibration_verdict(
+    successes: int, trials: int, nominal_alpha: float
+) -> dict[str, Any]:
+    """Compare an empirical rate with a nominal alpha using its own CI."""
+    low, high = wilson_interval(successes, trials)
+    rate = (successes / trials) if trials else 0.0
+    return {
+        "successes": int(successes),
+        "trials": int(trials),
+        "rate": rate,
+        "ci_low": low,
+        "ci_high": high,
+        "nominal_alpha": float(nominal_alpha),
+        "exceeds": low > float(nominal_alpha),
+    }
+
+
+def paired_rule(
+    pooled: Mapping[str, Any] | None,
+    *,
+    alpha: float,
+    fold_rule: str,
+) -> tuple[bool, list[str]]:
+    """Public alias for the v2 paired rule (used by calibration commands)."""
+    return _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+
+
 def _paired_rule(
     pooled: Mapping[str, Any] | None,
     *,

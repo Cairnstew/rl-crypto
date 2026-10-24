@@ -1632,6 +1632,122 @@ def test_lab_timeout_is_an_infra_block_and_does_not_consume_a_trial(tmp_path, mo
     assert tool.trial_counts(entries)["family"] == {}
 
 
+FAKE_NULL_LAB = '''\
+"""Minimal model_lab surface for the null-calibration test (no numpy)."""
+
+
+class Config:
+    def __init__(self, name, feature_names, model_names, horizon):
+        self.name = name
+        self.feature_names = feature_names
+        self.model_names = model_names
+        self.horizon = horizon
+
+
+def resolve_feature_names(spec):
+    return ("ret_1",)
+
+
+def resolve_model_set(spec):
+    return {"fwd_direction": "logistic"}
+
+
+def evaluate_control_ticker(ticker, config, target, mode, *, folds, holdout_start, seed, shift_bars):
+    return {
+        "ticker": ticker,
+        "paired_rows": [{"timestamp": "t", "improvement": 0.01} for _ in range(100)],
+        "fold_improvements": [0.01] * folds,
+    }
+
+
+def bootstrap_pooled(rows_by_ticker, *, alpha, seed, block_bars, bootstrap_samples):
+    good = seed % 2 == 0
+    return {
+        "n": 100,
+        "blocks": 30,
+        "alpha": alpha,
+        "mean_improvement": 0.01 if good else -0.01,
+        "ci_low": 0.001 if good else -0.02,
+        "ci_high": 0.02,
+        "resolution_ok": True,
+    }
+
+
+def pool_fold_improvements(folds_by_ticker, folds):
+    return [0.01] * folds
+'''
+
+
+def _null_hypothesis() -> dict:
+    hypothesis = _hypothesis("H0-canary")
+    hypothesis["family"] = "canary"
+    hypothesis["canary"] = True
+    hypothesis["canary_kind"] = "null"
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    return hypothesis
+
+
+def test_null_calibration_measures_the_empirical_rate_without_touching_the_ledger(
+    tmp_path, monkeypatch
+):
+    root = _repo(tmp_path, _null_hypothesis())
+    (root / "tools" / "model_lab.py").write_text(FAKE_NULL_LAB, encoding="utf-8")
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    ledger_before = (root / "experiments" / "ledger.jsonl").read_text()
+    payload = tool.calibrate_null(
+        root,
+        config=tool.load_config(root),
+        queue=tool.load_queue(root / "experiments" / "hypotheses.json"),
+        entries=tool.read_ledger(root / "experiments" / "ledger.jsonl"),
+        seeds=10,
+        trials=(1, 5, 10),
+        alpha_family=0.05,
+    )
+    assert payload["seeds"] == 10
+    assert payload["trials"]["1"]["successes"] == 5  # even seeds pass
+    assert payload["trials"]["1"]["nominal_alpha"] == pytest.approx(0.025)
+    assert payload["trials"]["1"]["rate"] == pytest.approx(0.5)
+    assert payload["calibration_failure"] is True
+    assert (root / "experiments" / "ledger.jsonl").read_text() == ledger_before
+
+
+def test_calibrate_null_cli_writes_under_the_run_dir(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path, _null_hypothesis())
+    (root / "tools" / "model_lab.py").write_text(FAKE_NULL_LAB, encoding="utf-8")
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    run_dir = tmp_path / "calibration"
+    rc = tool.main(
+        [
+            "calibrate-null",
+            "--seeds",
+            "6",
+            "--jobs",
+            "1",
+            "--run-dir",
+            str(run_dir),
+            "--json",
+        ]
+    )
+    assert rc == 1  # the fake null is deliberately over-alpha
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action"] == "calibrate-null"
+    artifact = Path(payload["run_dir"])
+    assert artifact.parent == run_dir
+    assert (artifact / "calibrate-null.json").exists()
+    assert (artifact / "calibrate-null.md").exists()
+    assert (root / "experiments" / "ledger.jsonl").read_text() == ""
+
+
 def test_positive_canary_leak_is_invalid_and_does_not_void_the_harness(tmp_path, monkeypatch):
     hypothesis = _hypothesis("H0-canary-leak")
     hypothesis["family"] = "canary"

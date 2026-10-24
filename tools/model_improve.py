@@ -54,6 +54,7 @@ from rl_crypto.experiments import (
     append_entry,
     bootstrap_resolution,
     build_preregistration,
+    calibration_verdict,
     canary_gate,
     canary_status,
     criteria_version,
@@ -66,6 +67,7 @@ from rl_crypto.experiments import (
     iso,
     load_json,
     load_queue,
+    paired_rule,
     protected_digest,
     read_ledger,
     render_hypotheses,
@@ -2711,6 +2713,313 @@ def cmd_harness_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- calibration
+
+
+_MODEL_LAB_CACHE: dict[str, Any] = {}
+
+
+def load_model_lab(root: Path) -> Any:
+    """Load ``tools/model_lab.py`` with its repo root anchored to ``root``.
+
+    Calibration is offline and must not import the lab's ``ROOT`` from a
+    different checkout. The module is cached under a private name so a test
+    fixture and the real repo cannot shadow each other.
+    """
+    import importlib.util
+
+    cache_key = str(root.resolve())
+    cached = _MODEL_LAB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    name = "rl_crypto_model_lab_calibration"
+    path = root / "tools" / "model_lab.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:  # pragma: no cover - impossible
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    previous = os.environ.get("RL_CRYPTO_ROOT")
+    os.environ["RL_CRYPTO_ROOT"] = str(root)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            os.environ.pop("RL_CRYPTO_ROOT", None)
+        else:
+            os.environ["RL_CRYPTO_ROOT"] = previous
+    setattr(module, "ROOT", root)  # noqa: B010 - script module, not a package
+    _MODEL_LAB_CACHE[cache_key] = module
+    return module
+
+
+def calibration_hypothesis(queue: Sequence[Hypothesis]) -> Hypothesis | None:
+    for hypothesis in queue:
+        if hypothesis.canary and hypothesis.canary_kind == "null":
+            return hypothesis
+    for hypothesis in queue:
+        if hypothesis.canary:
+            return hypothesis
+    return None
+
+
+def calibration_cutoff(
+    root: Path,
+    config: Mapping[str, Any],
+    hypothesis: Hypothesis,
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[str | None, str]:
+    existing = resolve_holdout_start(entries, hypothesis.stable_lineage)
+    if existing:
+        return existing, "ledger"
+    override = os.environ.get("RL_MODEL_IMPROVE_HOLDOUT_START")
+    if override:
+        return override, "environment"
+    configured = (config.get("holdout") or {}).get("start")
+    if configured:
+        return str(configured), "config"
+    return default_holdout_start(root, hypothesis.experiment.get("tickers") or []), "computed"
+
+
+def _null_seed_job(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """One independent null draw (shuffled labels) and its per-trial verdicts."""
+    root = Path(str(payload["root"]))
+    lab = load_model_lab(root)
+    experiment = payload["experiment"]
+    config = lab.Config(
+        name=payload["config_name"],
+        feature_names=lab.resolve_feature_names(str(experiment.get("featureSet") or "all")),
+        model_names=lab.resolve_model_set(str(experiment.get("modelSet") or "reference")),
+        horizon=int(experiment.get("horizon") or 1),
+    )
+    seed = int(payload["seed"])
+    target = str(payload["target"])
+    folds = int(payload["folds"])
+    per_ticker = {
+        ticker: lab.evaluate_control_ticker(
+            ticker,
+            config,
+            target,
+            "shuffle",
+            folds=folds,
+            holdout_start=payload.get("holdout_start"),
+            seed=seed,
+            shift_bars=int(payload.get("shift_bars") or 24),
+        )
+        for ticker in payload["tickers"]
+    }
+    rows_by_ticker = {
+        ticker: list(row.get("paired_rows") or [])
+        for ticker, row in per_ticker.items()
+    }
+    folds_by_ticker = {
+        ticker: list(row.get("fold_improvements") or [])
+        for ticker, row in per_ticker.items()
+    }
+    outcomes: dict[str, Any] = {}
+    for trial, alpha in payload["alphas"].items():
+        pooled = lab.bootstrap_pooled(
+            rows_by_ticker,
+            alpha=float(alpha),
+            seed=seed,
+            block_bars=int(payload["block_bars"]),
+            bootstrap_samples=int(payload["bootstrap_samples"]),
+        )
+        pooled["fold_improvements"] = lab.pool_fold_improvements(
+            folds_by_ticker, folds
+        )
+        pooled["target"] = target
+        resolved = pooled.get("resolution_ok") is True
+        passed, reasons = paired_rule(
+            pooled, alpha=float(alpha), fold_rule=str(payload["fold_rule"])
+        )
+        outcomes[str(trial)] = {
+            "passed": bool(passed and resolved),
+            "resolution_ok": resolved,
+            "reasons": reasons,
+            "mean_improvement": pooled.get("mean_improvement"),
+            "ci_low": pooled.get("ci_low"),
+            "ci_high": pooled.get("ci_high"),
+            "blocks": pooled.get("blocks"),
+        }
+    return {"seed": seed, "trials": outcomes}
+
+
+def calibrate_null(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    entries: Sequence[Mapping[str, Any]],
+    seeds: int,
+    trials: Sequence[int] = (1, 5, 10),
+    alpha_family: float = 0.05,
+    jobs: int = 1,
+    cutoff: str | None = None,
+) -> dict[str, Any]:
+    """Empirical false-positive rate of the v2 rule under shuffled labels.
+
+    The null canary is the same mechanical procedure a real experiment uses:
+    labels are permuted, the model is refit, and the pooled paired improvement
+    is bootstrapped. Running it many times measures the provisional rate, which
+    should sit at or below the per-trial alpha spend.
+    """
+    hypothesis = calibration_hypothesis(queue)
+    if hypothesis is None:
+        raise SystemExit("no canary hypothesis in experiments/hypotheses.json")
+    experiment = dict(hypothesis.experiment or {})
+    tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
+    if not tickers:
+        raise SystemExit("the null canary hypothesis has no tickers")
+    computed_cutoff, cutoff_source = calibration_cutoff(
+        root, config, hypothesis, entries
+    )
+    cutoff = cutoff or computed_cutoff
+    if cutoff and cutoff != computed_cutoff:
+        cutoff_source = "cli"
+    target = str(
+        (hypothesis.criteria or {}).get("target")
+        or experiment.get("targets", ["fwd_direction"])[0]
+    )
+    budgets = config.get("budgets") or {}
+    alphas = {
+        int(trial): alpha_for_trial(alpha_family, int(trial))
+        for trial in sorted({int(t) for t in trials})
+    }
+    payload_base = {
+        "root": str(root),
+        "experiment": experiment,
+        "config_name": primary_config_name(experiment),
+        "target": target,
+        "folds": int(experiment.get("folds") or budgets.get("folds", 4)),
+        "tickers": tickers,
+        "holdout_start": cutoff,
+        "shift_bars": int(experiment.get("shiftBars") or 24),
+        "block_bars": int(budgets.get("bootstrapBlockBars", 24)),
+        "bootstrap_samples": int(budgets.get("bootstrapSamples", 10000)),
+        "fold_rule": str((hypothesis.criteria or {}).get("fold_rule", "all_positive")),
+        "alphas": {str(trial): alpha for trial, alpha in alphas.items()},
+    }
+    jobs = max(1, min(int(jobs), int(seeds)))
+    draws: list[dict[str, Any]] = []
+    if jobs == 1:
+        draws = [
+            _null_seed_job({**payload_base, "seed": seed})
+            for seed in range(int(seeds))
+        ]
+    else:  # pragma: no cover - exercised by the real calibration run
+        import concurrent.futures
+        import multiprocessing
+
+        context = multiprocessing.get_context("fork")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs, mp_context=context
+        ) as pool:
+            draws = list(
+                pool.map(
+                    _null_seed_job,
+                    [{**payload_base, "seed": seed} for seed in range(int(seeds))],
+                )
+            )
+    table: dict[str, Any] = {}
+    failure = False
+    insufficient = 0
+    for trial, alpha in alphas.items():
+        key = str(trial)
+        passed = sum(1 for draw in draws if draw["trials"][key]["passed"])
+        insufficient += sum(
+            1 for draw in draws if not draw["trials"][key]["resolution_ok"]
+        )
+        verdict = calibration_verdict(passed, len(draws), alpha)
+        verdict["trial"] = trial
+        table[key] = verdict
+        failure = failure or bool(verdict["exceeds"])
+    protected = protected_digest(root)
+    return {
+        "action": "calibrate-null",
+        "seeds": int(seeds),
+        "target": target,
+        "tickers": tickers,
+        "frozen_cutoff": cutoff,
+        "cutoff_source": cutoff_source,
+        "alpha_family": float(alpha_family),
+        "spending_schedule": SPENDING_SCHEDULE,
+        "bootstrap_samples": payload_base["bootstrap_samples"],
+        "bootstrap_blocks": payload_base["block_bars"],
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "trials": table,
+        "insufficient_resolution_draws": insufficient,
+        "calibration_failure": bool(failure),
+        "draws": draws,
+    }
+
+
+def _calibration_dir(args: argparse.Namespace, action: str) -> Path:
+    if getattr(args, "run_dir", None):
+        base = Path(args.run_dir).expanduser().resolve()
+    else:
+        base = default_run_root()
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = base / f"{stamp}-{action}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def cmd_calibrate_null(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    payload = calibrate_null(
+        root,
+        config=config,
+        queue=queue,
+        entries=entries,
+        seeds=int(args.seeds),
+        trials=[int(t) for t in str(args.trials).replace(",", " ").split() if t.strip()],
+        alpha_family=float(args.alpha),
+        jobs=int(args.jobs),
+        cutoff=args.cutoff,
+    )
+    run_dir = _calibration_dir(args, "calibrate-null")
+    payload["run_dir"] = str(run_dir)
+    _write_json(run_dir / "calibrate-null.json", payload)
+    lines = [
+        "# Null calibration",
+        "",
+        f"- seeds: {payload['seeds']}",
+        f"- target: {payload['target']}",
+        f"- tickers: {', '.join(payload['tickers'])}",
+        f"- frozen cutoff: {payload['frozen_cutoff']} ({payload['cutoff_source']})",
+        f"- protected hash: {payload['protected_hash']}",
+        f"- date: {payload['date']}",
+        "",
+        "| trial | nominal alpha | empirical rate | 95% CI | exceeds |",
+        "| ----- | ------------- | -------------- | ------ | ------- |",
+    ]
+    for key, row in payload["trials"].items():
+        lines.append(
+            f"| {key} | {row['nominal_alpha']:.6f} | {row['rate']:.4f} | "
+            f"[{row['ci_low']:.4f}, {row['ci_high']:.4f}] | "
+            f"{'YES' if row['exceeds'] else 'no'} |"
+        )
+    lines.append("")
+    lines.append(
+        "Calibration: "
+        + ("FAILED" if payload["calibration_failure"] else "ok")
+        + f" (insufficient-resolution draws: {payload['insufficient_resolution_draws']})"
+    )
+    (run_dir / "calibrate-null.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload["markdown"] = str(run_dir / "calibrate-null.md")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0 if not payload["calibration_failure"] else 1
+    print("\n".join(lines))
+    print(f"\nartifact: {run_dir}")
+    return 0 if not payload["calibration_failure"] else 1
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = repo_root()
     config = load_config(root)
@@ -3544,6 +3853,21 @@ def build_parser() -> argparse.ArgumentParser:
     auditor.add_argument("--timeout", type=float, default=None)
     auditor.add_argument("--json", action="store_true")
     auditor.set_defaults(func=cmd_auditor_check)
+
+    cal_null = sub.add_parser(
+        "calibrate-null",
+        help="offline: empirical false-positive rate of the v2 rule under shuffled labels",
+    )
+    cal_null.add_argument("--seeds", type=int, default=300)
+    cal_null.add_argument("--trials", default="1,5,10")
+    cal_null.add_argument("--alpha", type=float, default=0.05)
+    cal_null.add_argument("--jobs", type=int, default=1)
+    cal_null.add_argument(
+        "--cutoff", default=None, help="pin the holdout cutoff instead of computing it"
+    )
+    cal_null.add_argument("--run-dir", default=None)
+    cal_null.add_argument("--json", action="store_true")
+    cal_null.set_defaults(func=cmd_calibrate_null)
 
     verify = sub.add_parser("verify", help="forward-test status and bundle freshness")
     verify.add_argument("--run-dir", default=None)

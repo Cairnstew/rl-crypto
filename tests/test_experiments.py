@@ -183,6 +183,20 @@ def _canary(entries, *, kind, outcome, at, protected_hash, run_id=None):
     )
 
 
+def test_binomial_calibration_uses_its_own_uncertainty():
+    from rl_crypto.experiments import calibration_verdict, wilson_interval
+
+    low, high = wilson_interval(0, 300)
+    assert low == 0.0
+    assert 0.0 < high < 0.02
+    ok = calibration_verdict(6, 300, 0.025)
+    assert ok["rate"] == pytest.approx(0.02)
+    assert ok["exceeds"] is False
+    failed = calibration_verdict(60, 300, 0.025)
+    assert failed["rate"] == pytest.approx(0.2)
+    assert failed["exceeds"] is True
+
+
 def test_canary_freshness_requires_both_canaries_at_the_current_hash(tmp_path):
     from rl_crypto.experiments import canary_gate, canary_status
 
