@@ -24,6 +24,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -53,6 +54,25 @@ RUN_TYPES = frozenset({"experiment", "harness-change"})
 
 #: Criteria written before this hardening keep the old interpretation forever.
 CRITERIA_VERSION = 2
+
+#: Alpha spending across a hypothesis family. Trial ``i`` spends
+#: ``alpha / (i * (i + 1))``; the series sums to ``alpha`` over every trial, so a
+#: family of any length cannot exceed its declared false-positive budget. The
+#: old rule (``alpha / trial_index``) has a divergent sum and a family that runs
+#: ten trials silently spends ~2.9x alpha.
+SPENDING_SCHEDULE = "alpha/(i*(i+1))"
+
+#: How many trials a family may run before it must be retired and a new family
+#: (with its own error budget) opened. The cap bounds the smallest per-trial
+#: alpha, which in turn bounds the bootstrap resolution required below.
+FAMILY_TRIAL_CAP_DEFAULT = 10
+
+#: Minimum number of time blocks for a percentile CI. Eight blocks made the
+#: interval anti-conservative: the effective sample size of a block bootstrap is
+#: the number of blocks, and eight is too few for a 2.5% tail. Twenty-four is
+#: six blocks per fold at the default four folds, and matches the default
+#: 24-bar block width used by the lab.
+MIN_BOOTSTRAP_BLOCKS = 24
 
 #: Files whose content defines the measurement contract. A normal experiment run
 #: may not edit them: doing so would let an implementer move the goalposts it is
@@ -118,6 +138,47 @@ def criteria_version(criteria: Mapping[str, Any] | None) -> int:
         return int(criteria.get("criteria_version") or 1)
     except (TypeError, ValueError):
         return 1
+
+
+def alpha_for_trial(alpha: float, trial_index: int) -> float:
+    """Per-trial alpha under the declared family spending schedule."""
+    index = max(1, int(trial_index or 1))
+    return float(alpha) / (index * (index + 1))
+
+
+def smallest_alpha(alpha: float, family_cap: int) -> float:
+    """The smallest per-trial alpha reachable before the family-size cap."""
+    return alpha_for_trial(alpha, max(1, int(family_cap)))
+
+
+def required_bootstrap_samples(alpha_trial: float) -> int:
+    """Resamples needed to resolve the two-sided ``alpha_trial`` tail quantile.
+
+    A percentile bootstrap can only resolve quantiles at ``1 / B`` resolution, so
+    a two-sided tail of ``alpha/2`` needs at least ``B * alpha/2 >= 2`` order
+    statistics to place both the lower and upper bound. Below that the CI is a
+    smoothed guess, not a measured quantile. The floor keeps ordinary CIs stable.
+    """
+    tail = max(float(alpha_trial), 1e-12) / 2.0
+    return max(1000, math.ceil(2.0 / tail))
+
+
+def bootstrap_resolution(
+    alpha: float, family_cap: int, bootstrap_samples: int
+) -> dict[str, Any]:
+    """Whether the configured resample count can resolve the capped tail."""
+    smallest = smallest_alpha(alpha, family_cap)
+    required = required_bootstrap_samples(smallest)
+    return {
+        "schedule": SPENDING_SCHEDULE,
+        "family_cap": int(family_cap),
+        "alpha_family": float(alpha),
+        "smallest_alpha": smallest,
+        "required_samples": required,
+        "configured_samples": int(bootstrap_samples),
+        "ok": int(bootstrap_samples) >= required,
+        "min_blocks": MIN_BOOTSTRAP_BLOCKS,
+    }
 
 
 def protected_digest(root: Path) -> dict[str, Any]:
@@ -542,6 +603,20 @@ def build_preregistration(
         "lineage": lineage or hypothesis.stable_lineage,
         "trial_index": counts["family"].get(hypothesis.family, 0) + 1,
         "hypothesis_trial_index": counts["hypothesis"].get(hypothesis.id, 0) + 1,
+        "spending_schedule": (
+            SPENDING_SCHEDULE
+            if criteria_version(hypothesis.criteria) >= 2
+            else "fixed-alpha"
+        ),
+        "alpha_family": float(hypothesis.criteria.get("alpha", 0.05)),
+        "alpha_trial": (
+            alpha_for_trial(
+                float(hypothesis.criteria.get("alpha", 0.05)),
+                counts["family"].get(hypothesis.family, 0) + 1,
+            )
+            if criteria_version(hypothesis.criteria) >= 2
+            else float(hypothesis.criteria.get("alpha", 0.05))
+        ),
         "trigger": trigger,
         "seed": seed,
         "run_type": run_type or hypothesis.run_type,
@@ -807,6 +882,22 @@ def evaluate_criteria(
     }
 
 
+def _resolution_block(pooled: Mapping[str, Any] | None) -> str | None:
+    """A blocked reason when the bootstrap cannot resolve the requested tail."""
+    if not isinstance(pooled, Mapping):
+        return None
+    if pooled.get("resolution_ok") is True:
+        return None
+    if pooled.get("insufficient"):
+        detail = pooled.get("resolution_reason") or "too few blocks or resamples"
+        return f"insufficient-resolution: {detail}"
+    if "resolution_ok" not in pooled:
+        # A payload produced before the resolution check existed is not
+        # retroactively invalid; only an explicit failure blocks.
+        return None
+    return None
+
+
 def _paired_rule(
     pooled: Mapping[str, Any] | None,
     *,
@@ -877,13 +968,18 @@ def _evaluate_criteria_v2(
     """
     criteria = dict(prereg.get("criteria") or {})
     kind = str(criteria.get("kind", "improvement"))
-    alpha = float(criteria.get("alpha", 0.05))
+    alpha_family = float(criteria.get("alpha", 0.05))
+    trial_index = int(prereg.get("trial_index") or 1)
+    alpha = alpha_for_trial(alpha_family, trial_index)
     fold_rule = str(criteria.get("fold_rule", "all_positive"))
     reasons: list[str] = []
     metrics: dict[str, Any] = {
         "criteria_version": 2,
         "alpha": alpha,
-        "trials_in_family": int(prereg.get("trial_index") or 1),
+        "alpha_family": alpha_family,
+        "alpha_trial": alpha,
+        "spending_schedule": SPENDING_SCHEDULE,
+        "trials_in_family": trial_index,
         "fold_rule": fold_rule,
         "rows": len(lab_payload.get("results") or []),
         "summary": lab_payload.get("summary") or {},
@@ -939,6 +1035,14 @@ def _evaluate_criteria_v2(
     if lab_payload.get("canary"):
         # The canary is deliberately run with shuffled labels: it must fail.
         pooled = lab_payload.get("pooled")
+        blocked = _resolution_block(pooled)
+        if blocked is not None:
+            return {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": [blocked],
+                "metrics": {**metrics, "pooled": pooled},
+            }
         passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
         metrics["canary"] = True
         metrics["pooled"] = pooled
@@ -958,6 +1062,14 @@ def _evaluate_criteria_v2(
 
     pooled = lab_payload.get("pooled")
     metrics["pooled"] = pooled
+    blocked = _resolution_block(pooled)
+    if blocked is not None:
+        return {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": [blocked],
+            "metrics": metrics,
+        }
     passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
     reasons.extend(rule_reasons)
 

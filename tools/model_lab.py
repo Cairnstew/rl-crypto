@@ -64,6 +64,15 @@ LAB_DIR = Path(
 INTERVAL_SECONDS = DEFAULT_INTERVAL_SECONDS
 BARS_PER_YEAR = 365.0 * 24.0 * 3600.0 / INTERVAL_SECONDS
 
+#: Minimum time blocks for a percentile CI. The effective sample size of a
+#: block bootstrap is the number of blocks; eight is too few for a 2.5% tail.
+#: Twenty-four is six blocks per fold at the default four folds.
+MIN_BOOTSTRAP_BLOCKS = 24
+
+#: A percentile bootstrap resolves quantiles at ``1 / B``; a two-sided tail of
+#: ``alpha / 2`` needs at least two order statistics in that tail.
+RESOLUTION_ORDER_STATS = 2
+
 MODEL_SETS: dict[str, dict[str, str]] = {
     "reference": {
         "fwd_return": "ridge",
@@ -527,17 +536,44 @@ def bootstrap_pooled(
         "ci_high": None,
         "per_ticker": per_ticker,
     }
+    # Resolution: can B draws place the required order statistics in both
+    # tails? Below that the boundary is interpolated noise, not a quantile.
+    tail = max(float(alpha), 1e-12) / 2.0
+    required_samples = max(
+        1000, math.ceil(RESOLUTION_ORDER_STATS / tail)
+    )
+    result["tail"] = tail
+    result["required_samples"] = required_samples
+    result["resolution_ok"] = (
+        int(bootstrap_samples) >= required_samples
+        and len(blocks) >= MIN_BOOTSTRAP_BLOCKS
+        and len(pooled_values) >= 60
+    )
+    result["min_blocks"] = MIN_BOOTSTRAP_BLOCKS
     # Too few blocks makes the percentile interval anti-conservative; refuse to
     # manufacture a CI from a handful of blocks.
-    if len(blocks) < 8 or len(pooled_values) < 60:
+    if len(blocks) < MIN_BOOTSTRAP_BLOCKS or len(pooled_values) < 60:
         result["insufficient"] = True
+        result["resolution_reason"] = (
+            f"only {len(blocks)} time blocks (need {MIN_BOOTSTRAP_BLOCKS})"
+        )
         return result
+    if int(bootstrap_samples) < required_samples:
+        result["insufficient"] = True
+        result["resolution_reason"] = (
+            f"{bootstrap_samples} resamples cannot resolve alpha={alpha:g} "
+            f"(need {required_samples})"
+        )
+        return result
+    # Resample block means and counts, not the flattened rows: the statistic is
+    # identical and a 10k-draw CI over hundreds of blocks stays cheap.
+    sums = np.asarray([float(np.sum(block)) for block in blocks], dtype=float)
+    counts = np.asarray([len(block) for block in blocks], dtype=float)
     rng = np.random.default_rng(int(seed))
-    means = np.empty(int(bootstrap_samples), dtype=float)
-    for index in range(int(bootstrap_samples)):
-        picks = rng.integers(0, len(blocks), size=len(blocks))
-        sampled = [blocks[pick] for pick in picks]
-        means[index] = float(np.mean([value for block in sampled for value in block]))
+    picks = rng.integers(0, len(blocks), size=(int(bootstrap_samples), len(blocks)))
+    drawn_sums = sums[picks].sum(axis=1)
+    drawn_counts = counts[picks].sum(axis=1)
+    means = drawn_sums / drawn_counts
     result["ci_low"] = float(np.quantile(means, alpha / 2.0))
     result["ci_high"] = float(np.quantile(means, 1.0 - alpha / 2.0))
     return result

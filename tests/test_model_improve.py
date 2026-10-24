@@ -890,7 +890,7 @@ def test_canary_provisional_is_converted_to_invalid_and_voids_the_harness(tmp_pa
         "ci_low": 0.01,
         "ci_high": 0.03,
         "n": 100,
-        "alpha": 0.05,
+        "alpha": 0.025,
         "fold_improvements": [0.01, 0.02, 0.01, 0.02],
     }
     monkeypatch.setattr(
@@ -1232,7 +1232,8 @@ def test_second_run_of_a_lineage_cannot_touch_the_holdout(tmp_path, monkeypatch)
         "ci_low": 0.01,
         "ci_high": 0.03,
         "n": 100,
-        "alpha": 0.05,
+        # trial_index 2 => alpha / (2*3) under the spending schedule.
+        "alpha": 0.05 / 6.0,
         "fold_improvements": [0.01, 0.02, 0.01, 0.02],
     }
     monkeypatch.setattr(
@@ -1310,7 +1311,7 @@ def test_promotion_is_only_attempted_after_the_statistical_rule_passes(tmp_path,
         "ci_low": 0.01,
         "ci_high": 0.03,
         "n": 100,
-        "alpha": 0.05,
+        "alpha": 0.025,
         "fold_improvements": [0.01, 0.02, 0.01, 0.02],
     }
     null = {**pooled, "mean_improvement": -0.01, "ci_low": -0.02, "fold_improvements": [-0.01] * 4}
@@ -1425,3 +1426,59 @@ def test_cli_blocks_a_no_new_information_rerun(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["outcome"] == "blocked"
     assert "no-new-information" in payload["reason"]
+
+
+def test_family_trial_cap_is_configurable_and_blocks_past_it(tmp_path):
+    ctx = _ctx(tmp_path)
+    assert tool.family_cap(ctx.config) == 10
+    ok = {"family": "features", "trial_index": 10}
+    over = {"family": "features", "trial_index": 11}
+    assert tool.family_cap_reason(ctx.config, ok) is None
+    reason = tool.family_cap_reason(ctx.config, over)
+    assert reason and "trial cap (10)" in reason
+
+    ctx.config["budgets"]["maxTrialsPerFamily"] = 4
+    assert tool.family_cap_reason(ctx.config, {"family": "features", "trial_index": 4}) is None
+    assert tool.family_cap_reason(ctx.config, {"family": "features", "trial_index": 5})
+
+
+def test_v2_run_is_blocked_when_bootstrap_resolution_is_insufficient(tmp_path, monkeypatch):
+    hypothesis = _hypothesis("H1")
+    hypothesis["family"] = "features"
+    hypothesis["criteria"] = {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": True,
+        "require_multiple_tickers": False,
+        "requires_promote": False,
+    }
+    ctx = _ctx(tmp_path, hypothesis)
+    ctx.config["budgets"]["bootstrapSamples"] = 1000
+    ctx.prereg = {
+        "id": "e1",
+        "run_id": ctx.run_id,
+        "hypothesis_id": "H1",
+        "family": "features",
+        "lineage": "H1",
+        "trial_index": 1,
+        "criteria_version": 2,
+        "holdout_start": "2026-06-01T00:00:00Z",
+        "criteria": hypothesis["criteria"],
+        "experiment": hypothesis["experiment"],
+    }
+    monkeypatch.setattr(
+        tool,
+        "run_primary_evaluate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not run the lab before resolution is checked")
+        ),
+    )
+    verdict = tool._evaluate_mechanical_v2(ctx, ctx.prereg)
+    assert verdict["outcome"] == "blocked"
+    assert any("insufficient-resolution" in reason for reason in verdict["reasons"])
+    blocked = [entry for entry in tool.read_ledger(ctx.ledger) if entry["kind"] == "blocked"]
+    assert blocked and "insufficient-resolution" in blocked[-1]["reason"]

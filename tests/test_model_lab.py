@@ -139,10 +139,10 @@ def test_bootstrap_ci_is_deterministic_and_separates_signal_from_noise():
         "ETH/USD": [{"timestamp": str(i), "improvement": 0.015} for i in range(60)],
     }
     first = lab.bootstrap_pooled(
-        signal, alpha=0.05, seed=7, block_bars=6, bootstrap_samples=300
+        signal, alpha=0.05, seed=7, block_bars=4, bootstrap_samples=1000
     )
     second = lab.bootstrap_pooled(
-        signal, alpha=0.05, seed=7, block_bars=6, bootstrap_samples=300
+        signal, alpha=0.05, seed=7, block_bars=4, bootstrap_samples=1000
     )
     assert first == second
     assert first["ci_low"] > 0
@@ -159,7 +159,7 @@ def test_bootstrap_ci_is_deterministic_and_separates_signal_from_noise():
         ]
     }
     null = lab.bootstrap_pooled(
-        noise, alpha=0.05, seed=7, block_bars=6, bootstrap_samples=300
+        noise, alpha=0.05, seed=7, block_bars=4, bootstrap_samples=1000
     )
     assert null["ci_low"] < 0
 
@@ -236,7 +236,7 @@ def test_the_old_fold_rule_passes_pure_noise_more_often_than_the_pooled_ci():
             ]
         }
         pooled = lab.bootstrap_pooled(
-            rows, alpha=0.05, seed=7, block_bars=24, bootstrap_samples=300
+            rows, alpha=0.05, seed=7, block_bars=24, bootstrap_samples=1000
         )
         if pooled["ci_low"] is not None and pooled["ci_low"] > 0 and pooled["mean_improvement"] > 0:
             new_passes += 1
@@ -261,7 +261,7 @@ def test_the_pooled_rule_passes_a_real_signal():
         ],
     }
     pooled = lab.bootstrap_pooled(
-        rows, alpha=0.05, seed=7, block_bars=8, bootstrap_samples=300
+        rows, alpha=0.05, seed=7, block_bars=4, bootstrap_samples=1000
     )
     assert pooled["mean_improvement"] > 0
     assert pooled["ci_low"] > 0

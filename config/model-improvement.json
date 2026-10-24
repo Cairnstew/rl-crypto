@@ -21,8 +21,9 @@
     "maxCostUsdPerRun": 5.0,
     "maxTokensPerRun": 2000000,
     "maxWallClockSeconds": 7200,
-    "bootstrapSamples": 1000,
-    "bootstrapBlockBars": 24
+    "bootstrapSamples": 10000,
+    "bootstrapBlockBars": 24,
+    "maxTrialsPerFamily": 10
   },
   "promotion": {
     "apply": false,
@@ -32,10 +33,14 @@
     "start": null
   },
   "noNewInformation": {
-    "minNewBars": 24
+    "minNewBars": 168
   },
   "scope": {
-    "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
+    "tickers": [
+      "BTC/USD",
+      "ETH/USD",
+      "SOL/USD"
+    ],
     "targets": [
       "fwd_direction",
       "fwd_return",
@@ -48,5 +53,8 @@
     "slippageBps": 5.0
   },
   "seed": 0,
-  "staleHours": 6
+  "staleHours": 6,
+  "statistics": {
+    "spendingSchedule": "alpha/(i*(i+1))"
+  }
 }

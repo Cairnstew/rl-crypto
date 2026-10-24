@@ -311,7 +311,7 @@ def test_rendering_is_deterministic_and_mentions_negative_results():
 # --------------------------------------------------------------------------- criteria v2
 
 
-def _paired(mean: float, ci_low: float, ci_high: float, *, n: int = 100, folds=None, alpha=0.05):
+def _paired(mean: float, ci_low: float, ci_high: float, *, n: int = 100, folds=None, alpha=0.025):
     return {
         "mean_improvement": mean,
         "ci_low": ci_low,
@@ -539,3 +539,114 @@ def test_the_canary_is_the_first_runnable_hypothesis_for_the_schedule():
     assert selected.id == "H0-canary"
     assert selected.canary is True
     assert selected.needs == ()
+
+
+# --------------------------------------------------------------------------- alpha spending
+
+
+def test_alpha_spending_schedule_sums_to_the_family_alpha():
+    from rl_crypto.experiments import (
+        SPENDING_SCHEDULE,
+        alpha_for_trial,
+        smallest_alpha,
+    )
+
+    assert SPENDING_SCHEDULE == "alpha/(i*(i+1))"
+    family_alpha = 0.05
+    total = sum(alpha_for_trial(family_alpha, index) for index in range(1, 10_000))
+    assert total == pytest.approx(family_alpha, abs=1e-4)
+    assert alpha_for_trial(family_alpha, 1) == pytest.approx(family_alpha / 2)
+    assert alpha_for_trial(family_alpha, 5) == pytest.approx(family_alpha / 30)
+    assert alpha_for_trial(family_alpha, 10) == pytest.approx(family_alpha / 110)
+    # The capped family never spends more than the declared alpha.
+    assert sum(alpha_for_trial(family_alpha, i) for i in range(1, 11)) < family_alpha
+    assert smallest_alpha(family_alpha, 10) == pytest.approx(family_alpha / 110)
+
+
+def test_bootstrap_resolution_requires_the_capped_tail_to_be_resolvable():
+    from rl_crypto.experiments import (
+        MIN_BOOTSTRAP_BLOCKS,
+        bootstrap_resolution,
+        required_bootstrap_samples,
+        smallest_alpha,
+    )
+
+    # alpha / (N(N+1)) at the default cap of 10 leaves a 2.27e-4 tail.
+    smallest = smallest_alpha(0.05, 10)
+    required = required_bootstrap_samples(smallest)
+    assert required >= 8_800
+    assert MIN_BOOTSTRAP_BLOCKS >= 24
+    assert bootstrap_resolution(0.05, 10, 1_000)["ok"] is False
+    assert bootstrap_resolution(0.05, 10, required)["ok"] is True
+    # A cap of 3 is reachable with fewer resamples; the check is not fixed.
+    assert bootstrap_resolution(0.05, 3, 1_000)["ok"] is True
+
+
+def test_v2_blocks_when_the_bootstrap_cannot_resolve_the_tail():
+    pooled = {
+        "mean_improvement": 0.02,
+        "ci_low": 0.01,
+        "ci_high": 0.03,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [0.01, 0.02, 0.01, 0.02],
+        "insufficient": True,
+        "resolution_reason": "only 10 time blocks (need 24)",
+    }
+    verdict = evaluate_criteria({"criteria": _v2_criteria()}, _v2_payload(pooled=pooled))
+    assert verdict["outcome"] == "blocked"
+    assert any(reason.startswith("insufficient-resolution") for reason in verdict["reasons"])
+
+
+def test_preregistration_records_the_schedule_and_per_trial_alpha(tmp_path):
+    from rl_crypto.experiments import SPENDING_SCHEDULE
+
+    _candles(tmp_path, rows=7)
+    hypothesis = _hypothesis(
+        id="H9",
+        family="alpha-test",
+        criteria={
+            **_v2_criteria(),
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        },
+    )
+    entries = [
+        {"kind": "preregister", "hypothesis_id": f"H{index}", "family": "alpha-test"}
+        for index in range(4)
+    ]
+    prereg = build_preregistration(
+        hypothesis,
+        run_id="20260101T000000Z-h9",
+        root=tmp_path,
+        entries=entries,
+        seed=0,
+        holdout_start="2026-01-02T00:00:00Z",
+    )
+    assert prereg["trial_index"] == 5
+    assert prereg["spending_schedule"] == SPENDING_SCHEDULE
+    assert prereg["alpha_family"] == pytest.approx(0.05)
+    assert prereg["alpha_trial"] == pytest.approx(0.05 / 30)
+
+
+def test_power_at_trial_1_5_10_declines_with_the_spending_schedule():
+    """A fixed effect loses power as the family spends its alpha; the test
+    records the three points the schedule is designed around."""
+    from statistics import NormalDist
+
+    from rl_crypto.experiments import alpha_for_trial
+
+    normal = NormalDist()
+    effect = 0.0026
+    se = 0.001  # sigma=0.02, n=400 paired rows
+
+    def power(trial: int) -> float:
+        alpha = alpha_for_trial(0.05, trial)
+        critical = normal.inv_cdf(1.0 - alpha / 2.0)
+        z = effect / se
+        return 1.0 - (normal.cdf(critical - z) - normal.cdf(-critical - z))
+
+    powers = {trial: power(trial) for trial in (1, 5, 10)}
+    assert powers[1] > powers[5] > powers[10] > 0.05
+    # At the cap the required per-trial alpha is tiny, so the effect must be
+    # larger to retain the same power; that is the cost of the guarantee.
+    assert powers[1] > 0.6

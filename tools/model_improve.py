@@ -46,9 +46,13 @@ from pathlib import Path
 from typing import Any
 
 from rl_crypto.experiments import (
+    FAMILY_TRIAL_CAP_DEFAULT,
     PROTECTED_FILES,
+    SPENDING_SCHEDULE,
     Hypothesis,
+    alpha_for_trial,
     append_entry,
+    bootstrap_resolution,
     build_preregistration,
     criteria_version,
     evaluate_criteria,
@@ -106,14 +110,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "maxCostUsdPerRun": 5.0,
         "maxTokensPerRun": 2_000_000,
         "maxWallClockSeconds": 7200,
-        "bootstrapSamples": 1000,
+        # At the default family cap (10 trials) the smallest per-trial alpha is
+        # 0.05/110; resolving its 2.27e-4 tail needs ~8,800 draws.
+        "bootstrapSamples": 10000,
         "bootstrapBlockBars": 24,
+        "maxTrialsPerFamily": 10,
     },
     "review": {"enabled": True, "require": False},
     "team": {"maxLeadTurns": 3},
     "promotion": {"apply": False, "requiresPromoteDryRun": True},
     "holdout": {"start": None},
-    "noNewInformation": {"minNewBars": 24},
+    "noNewInformation": {"minNewBars": 168},
+    "statistics": {"spendingSchedule": SPENDING_SCHEDULE},
     "scope": {
         "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
         "targets": [
@@ -1119,9 +1127,43 @@ def primary_config_name(experiment: Mapping[str, Any]) -> str:
 
 
 def adjusted_alpha(criteria: Mapping[str, Any], trial_index: int) -> float:
+    """The pre-hardening rule, kept only for criteria written before v2.
+
+    ``alpha / trial_index`` sums to a divergent series, so a long family spends
+    far more than its declared alpha. New criteria use :func:`alpha_for_trial`.
+    """
     alpha = float(criteria.get("alpha", 0.05))
     trials = max(1, int(trial_index or 1))
     return alpha / trials
+
+
+def trial_alpha(criteria: Mapping[str, Any], trial_index: int) -> float:
+    """The per-trial alpha an entry is judged at, by its criteria version."""
+    alpha = float(criteria.get("alpha", 0.05))
+    if criteria_version(criteria) >= 2:
+        return alpha_for_trial(alpha, trial_index)
+    return adjusted_alpha(criteria, trial_index)
+
+
+def family_cap(config: Mapping[str, Any]) -> int:
+    return int(
+        (config.get("budgets") or {}).get(
+            "maxTrialsPerFamily", FAMILY_TRIAL_CAP_DEFAULT
+        )
+    )
+
+
+def family_cap_reason(config: Mapping[str, Any], prereg: Mapping[str, Any]) -> str | None:
+    """Why this preregistration exceeds its family's trial budget, or ``None``."""
+    cap = family_cap(config)
+    trial = int(prereg.get("trial_index") or 1)
+    if trial > cap:
+        family = prereg.get("family") or prereg.get("hypothesis_id") or "?"
+        return (
+            f"family {family!r} is at its trial cap ({cap}); retire it and open "
+            "a new family with a fresh alpha budget"
+        )
+    return None
 
 
 def _common_lab_args(ctx: Context, experiment: Mapping[str, Any]) -> list[str]:
@@ -1129,7 +1171,7 @@ def _common_lab_args(ctx: Context, experiment: Mapping[str, Any]) -> list[str]:
     budgets = ctx.config.get("budgets") or {}
     criteria = (ctx.prereg or {}).get("criteria") or {}
     trial_index = int((ctx.prereg or {}).get("trial_index") or 1)
-    alpha = adjusted_alpha(criteria, trial_index) if criteria_version(criteria) >= 2 else 0.05
+    alpha = trial_alpha(criteria, trial_index) if criteria_version(criteria) >= 2 else 0.05
     args = [
         "--tickers",
         *[str(t) for t in experiment.get("tickers") or scope.get("tickers") or []],
@@ -1369,6 +1411,38 @@ def _evaluate_mechanical_v2(
     criteria = dict(prereg.get("criteria") or {})
     experiment = dict(prereg.get("experiment") or {})
     canary = bool(ctx.hypothesis and ctx.hypothesis.canary)
+    if criteria_version(criteria) >= 2 and criteria.get("kind") != "diagnostic":
+        budget = ctx.config.get("budgets") or {}
+        resolution = bootstrap_resolution(
+            float(criteria.get("alpha", 0.05)),
+            family_cap(ctx.config),
+            int(budget.get("bootstrapSamples", 1000)),
+        )
+        if not resolution["ok"]:
+            reason = (
+                "insufficient-resolution: "
+                f"alpha={resolution['alpha_family']:g} at family cap "
+                f"{resolution['family_cap']} leaves alpha_trial="
+                f"{resolution['smallest_alpha']:.3g}; need "
+                f"{resolution['required_samples']} bootstrap resamples, "
+                f"configured {resolution['configured_samples']}"
+            )
+            append_entry(
+                ctx.ledger,
+                {
+                    "kind": "blocked",
+                    "run_id": ctx.run_id,
+                    "hypothesis_id": prereg.get("hypothesis_id"),
+                    "stage": "evaluation",
+                    "reason": reason,
+                },
+            )
+            return {
+                "passed": False,
+                "outcome": "blocked",
+                "reasons": [reason],
+                "metrics": {"resolution": resolution},
+            }
     # The statistical rule is judged before the holdout is read; a dry run is
     # only attempted once the candidate has cleared it.
     stat_prereg = prereg
@@ -2398,6 +2472,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
         feature_version=FEATURE_VERSION,
         protected=protected_digest(root),
     )
+    cap_reason = family_cap_reason(config, prereg)
+    if cap_reason:
+        print(cap_reason, file=sys.stderr)
+        return 2
     payload = {
         "run_id": run_id,
         "executor": executor,
@@ -2735,7 +2813,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         root,
         hypothesis,
         entries,
-        min_new_bars=int((config.get("noNewInformation") or {}).get("minNewBars", 24)),
+        min_new_bars=int((config.get("noNewInformation") or {}).get("minNewBars", 168)),
     )
     if new_info_reason and not args.force:
         if args.json:
@@ -2757,6 +2835,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         feature_version=FEATURE_VERSION,
         protected=protected_digest(root),
     )
+    cap_reason = family_cap_reason(config, prereg)
+    if cap_reason and not args.force:
+        reason = cap_reason
+        append_entry(
+            ctx.ledger,
+            {
+                "kind": "blocked",
+                "run_id": run_id,
+                "hypothesis_id": hypothesis.id,
+                "stage": "preregister",
+                "reason": reason,
+            },
+        )
+        if args.json:
+            print(json.dumps({"outcome": "blocked", "reason": reason}, indent=2))
+        else:
+            print(reason)
+        return 2
+
     if not args.force and (hypothesis.criteria or {}).get("kind") == "diagnostic":
         prior_preregs = [
             entry
