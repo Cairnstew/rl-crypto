@@ -1019,9 +1019,9 @@
 {"close": 0.09279, "high": 0.093, "low": 0.09212, "open": 0.09266, "ticker": "DOGE/USD", "timestamp": "2026-09-24T12:00:00Z", "volume": 16139230.9}
 {"close": 0.09421, "high": 0.09457, "low": 0.09277, "open": 0.09282, "ticker": "DOGE/USD", "timestamp": "2026-09-24T13:00:00Z", "volume": 7395335.1}
 {"close": 0.09424, "high": 0.0962, "low": 0.09323, "open": 0.09419, "ticker": "DOGE/USD", "timestamp": "2026-09-24T14:00:00Z", "volume": 19998104.4}
-{"close": 0.09562305, "high": 0.095925, "low": 0.093971, "open": 0.0942168, "ticker": "DOGE/USD", "timestamp": "2026-09-24T15:00:00Z", "volume": 7546322.875429755}
-{"close": 0.0963957, "high": 0.09746475, "low": 0.09501594999999999, "open": 0.09565, "ticker": "DOGE/USD", "timestamp": "2026-09-24T16:00:00Z", "volume": 21311240.275765814}
-{"close": 0.0958856, "high": 0.0963557, "low": 0.095455, "open": 0.0963557, "ticker": "DOGE/USD", "timestamp": "2026-09-24T17:00:00Z", "volume": 12938593.728232086}
+{"close": 0.09564, "high": 0.09595, "low": 0.09396, "open": 0.09421, "ticker": "DOGE/USD", "timestamp": "2026-09-24T15:00:00Z", "volume": 8604789.4}
+{"close": 0.09639, "high": 0.09753, "low": 0.09502, "open": 0.09565, "ticker": "DOGE/USD", "timestamp": "2026-09-24T16:00:00Z", "volume": 27288626.0}
+{"close": 0.0959, "high": 0.09636, "low": 0.09544, "open": 0.09636, "ticker": "DOGE/USD", "timestamp": "2026-09-24T17:00:00Z", "volume": 18854427.5}
 {"close": 0.096669, "high": 0.09688975, "low": 0.09518285, "open": 0.0958507, "ticker": "DOGE/USD", "timestamp": "2026-09-24T18:00:00Z", "volume": 8545137.313167935}
 {"close": 0.09621185, "high": 0.09668215, "low": 0.095995, "open": 0.09667714999999999, "ticker": "DOGE/USD", "timestamp": "2026-09-24T19:00:00Z", "volume": 7595991.702951649}
 {"close": 0.0957588, "high": 0.0963277, "low": 0.09562925, "open": 0.09618114999999999, "ticker": "DOGE/USD", "timestamp": "2026-09-24T20:00:00Z", "volume": 6261365.7156885}
@@ -1739,4 +1739,7 @@
 {"close": 0.07748965, "high": 0.07767784999999999, "low": 0.07726745, "open": 0.0774379, "ticker": "DOGE/USD", "timestamp": "2026-10-24T12:00:00Z", "volume": 1254077.985172185}
 {"close": 0.0774604, "high": 0.07761765000000001, "low": 0.07725915, "open": 0.0774947, "ticker": "DOGE/USD", "timestamp": "2026-10-24T13:00:00Z", "volume": 1863855.990333445}
 {"close": 0.0761039, "high": 0.0775623, "low": 0.07541600000000001, "open": 0.0774755, "ticker": "DOGE/USD", "timestamp": "2026-10-24T14:00:00Z", "volume": 15968212.900822956}
-{"close": 0.07564585, "high": 0.0761034, "low": 0.074684, "open": 0.0760943, "ticker": "DOGE/USD", "timestamp": "2026-10-24T15:00:00Z", "volume": 15644976.912895974}
+{"close": 0.07563235, "high": 0.0761034, "low": 0.074684, "open": 0.0760943, "ticker": "DOGE/USD", "timestamp": "2026-10-24T15:00:00Z", "volume": 15659669.756764546}
+{"close": 0.0763803, "high": 0.07643585, "low": 0.07542689999999999, "open": 0.07558365, "ticker": "DOGE/USD", "timestamp": "2026-10-24T16:00:00Z", "volume": 5513550.531016755}
+{"close": 0.07640215, "high": 0.07647395, "low": 0.07611265, "open": 0.07637585, "ticker": "DOGE/USD", "timestamp": "2026-10-24T17:00:00Z", "volume": 1266085.67082539}
+{"close": 0.07659384999999999, "high": 0.0766025, "low": 0.07633265, "open": 0.07638175, "ticker": "DOGE/USD", "timestamp": "2026-10-24T18:00:00Z", "volume": 1010187.975986965}
