@@ -270,3 +270,150 @@ def test_the_pooled_rule_passes_a_real_signal():
 def test_promote_apply_refuses_without_a_frozen_cutoff():
     with pytest.raises(SystemExit, match="requires --holdout-start"):
         lab.main(["promote", "--candidate", "candidate.json", "--apply"])
+
+
+def _stamped_samples(n: int = 200) -> list[Sample]:
+    return [
+        Sample(timestamp=f"2026-01-01T{i:06d}:00:00Z", features={}, targets={})
+        for i in range(n)
+    ]
+
+
+def test_walk_forward_purges_a_single_bar_for_a_one_bar_target():
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(samples, folds=2, horizon=1, targets=("fwd_return",))
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 1 <= samples.index(test[0])
+
+
+def test_walk_forward_purges_the_volatility_span_not_just_the_horizon():
+    """``fwd_volatility`` reads two bars at horizon 1; one-bar purge would leak."""
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(samples, folds=2, horizon=1, targets=("fwd_volatility",))
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 2 <= samples.index(test[0])
+
+
+def test_walk_forward_uses_the_widest_target_reach():
+    samples = _stamped_samples(200)
+    splits = lab.walk_forward(
+        samples, folds=2, horizon=1, targets=("fwd_return", "fwd_volatility")
+    )
+    assert splits
+    for train, test in splits:
+        assert samples.index(train[-1]) + 2 <= samples.index(test[0])
+
+
+def test_reference_volatility_is_scored_in_log_space():
+    from rl_crypto.ml.tier1 import train_tier1
+    from rl_crypto.samples import build_samples
+
+    from .conftest import make_dataset_rows
+
+    samples = build_samples(make_dataset_rows(160, wiggle=0.03))
+    bundle = train_tier1(
+        samples,
+        targets=("fwd_volatility",),
+        model_names=lab.MODEL_SETS["reference"],
+        holdout_fraction=0.2,
+    )
+    model = bundle.targets["fwd_volatility"]
+    assert model.metric_space == "log"
+    assert model.predict_row(samples[-1].features) is not None
+    assert model.predict_row(samples[-1].features) > 0
+
+
+def test_parse_thresholds_and_cost_levels():
+    assert lab._parse_thresholds("0.5,0.55 0.6") == [0.5, 0.55, 0.6]
+    assert lab._parse_thresholds(None) is None
+    assert lab._parse_cost_levels("10:5,0:0") == [(10.0, 5.0), (0.0, 0.0)]
+    assert lab._parse_cost_levels("10/5") == [(10.0, 5.0)]
+    assert lab._parse_cost_levels(None) is None
+    with pytest.raises(SystemExit):
+        lab._parse_thresholds("0")
+    with pytest.raises(SystemExit):
+        lab._parse_cost_levels("10")
+
+
+def _write_archive(root, rows):
+    import json
+
+    directory = root / "data" / "eth-usd"
+    directory.mkdir(parents=True)
+    lines = [
+        json.dumps(
+            {
+                "ticker": row.ticker,
+                "timestamp": row.timestamp,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+        )
+        for row in rows
+    ]
+    (directory / "candles.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_evaluate_grid_fits_each_fold_once(tmp_path, monkeypatch):
+    from .conftest import make_dataset_rows
+
+    monkeypatch.setattr(lab, "ROOT", tmp_path)
+    _write_archive(tmp_path, make_dataset_rows(240, wiggle=0.03))
+    config = lab.Config(
+        name="grid",
+        feature_names=lab.resolve_feature_names("all"),
+        model_names=lab.MODEL_SETS["baseline"],
+        horizon=1,
+    )
+
+    calls = {"n": 0}
+    real_train = lab.train_tier1
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real_train(*args, **kwargs)
+
+    monkeypatch.setattr(lab, "train_tier1", spy)
+
+    result = lab.evaluate_ticker(
+        "ETH/USD",
+        config,
+        ("fwd_return", "fwd_direction"),
+        folds=3,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        thresholds=[0.5, 0.55, 0.9],
+        cost_levels=[(10.0, 5.0), (0.0, 0.0)],
+    )
+
+    assert calls["n"] == result["folds"] == 3
+    assert len(result["economic_grid"]) == 3 * 2
+
+    headline = result["economic"]
+    cell = next(
+        row
+        for row in result["economic_grid"]
+        if row["threshold"] == 0.55
+        and row["fee_bps"] == 10.0
+        and row["slippage_bps"] == 5.0
+    )
+    assert headline["model"] == cell["model"]
+
+    by_key = {
+        (row["threshold"], row["fee_bps"], row["slippage_bps"]): row
+        for row in result["economic_grid"]
+    }
+    free = by_key[(0.55, 0.0, 0.0)]["model"]["total_return"]
+    costly = by_key[(0.55, 10.0, 5.0)]["model"]["total_return"]
+    assert free >= costly
+
+    low = by_key[(0.5, 10.0, 5.0)]["model"]["trades"]
+    high = by_key[(0.9, 10.0, 5.0)]["model"]["trades"]
+    assert high <= low

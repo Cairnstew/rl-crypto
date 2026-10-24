@@ -136,6 +136,8 @@ def compose_outlook(
         confidence=confidence,
         features=dict(feature_row.values),
         notes=tuple(notes),
+        bundle_trained_at=getattr(bundle, "trained_at", None),
+        feature_version=getattr(bundle, "feature_version", None),
     )
 
 

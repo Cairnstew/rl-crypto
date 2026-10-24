@@ -18,17 +18,18 @@ from typing import ClassVar
 import pytest
 
 from rl_crypto.cache import merge_candles, read_jsonl
-from rl_crypto.features import FeatureRow, build_feature_table, feature_row
+from rl_crypto.features import FEATURE_NAMES, FeatureRow, build_feature_table, feature_row
 from rl_crypto.ml.store import load_bundle, save_bundle
 from rl_crypto.ml.tier1 import (
     baseline_for,
+    chronological_split,
     train_tier1,
     usable_features,
 )
 from rl_crypto.ml.tier2 import _clip_domain, compose_outlook
 from rl_crypto.models import DatasetRow
-from rl_crypto.samples import build_samples
-from rl_crypto.targets import forward_return, forward_volatility
+from rl_crypto.samples import Sample, build_samples
+from rl_crypto.targets import forward_return, forward_volatility, label_purge
 
 from .conftest import make_dataset_rows
 
@@ -383,3 +384,71 @@ def build_feature_table_row(bundle):
     row = latest_complete(rows, names=bundle.feature_names)
     assert row is not None, "expected a complete inference row"
     return row
+
+# --------------------------------------------------------------------------- purge
+
+
+def _ordered_samples(n: int) -> list[Sample]:
+    """Ordered samples with distinct timestamps, for split-boundary assertions."""
+    return [
+        Sample(timestamp=f"2026-01-01T{i:05d}:00:00Z", features={}, targets={})
+        for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "horizon", "expected_purge"),
+    [
+        ("fwd_return", 1, 1),
+        ("fwd_direction", 1, 1),
+        ("fwd_volume_ratio", 1, 1),
+        ("fwd_volatility", 1, 2),
+        ("fwd_volatility", 4, 4),
+    ],
+)
+def test_chronological_split_purges_each_targets_true_reach(
+    target: str, horizon: int, expected_purge: int
+) -> None:
+    """The last training label must end before the holdout begins.
+
+    ``fwd_volatility`` is the case a flat ``horizon`` purge gets wrong: at
+    ``horizon=1`` its realised span is two bars, so one bar of the holdout would
+    be read by a training label.
+    """
+    samples = _ordered_samples(100)
+    train, holdout, n_holdout = chronological_split(
+        samples, target=target, horizon=horizon, holdout_fraction=0.2
+    )
+
+    assert n_holdout == 20
+    assert len(holdout) == 20
+    assert len(train) == 100 - 20 - expected_purge
+    assert samples.index(train[-1]) + expected_purge < samples.index(holdout[0])
+
+
+def test_label_purge_for_volatility_is_never_below_two() -> None:
+    assert label_purge("fwd_volatility", 1) == 2
+    assert label_purge("fwd_volatility", 0) == 2
+    assert label_purge("fwd_volatility", 3) == 3
+    assert label_purge("fwd_return", 1) == 1
+
+
+def test_trainer_fits_volatility_on_the_purged_split() -> None:
+    """The fitted row count proves the volatility purge reached the trainer."""
+    rows = make_dataset_rows(200, wiggle=0.02)
+    samples = build_samples(rows)
+    bundle = train_tier1(samples, targets=("fwd_volatility",), holdout_fraction=0.2)
+    model = bundle.targets["fwd_volatility"]
+    assert model.holdout is not None
+    n_usable = len(
+        [
+            s
+            for s in samples
+            if s.features_complete(FEATURE_NAMES)
+            and s.targets.get("fwd_volatility") is not None
+        ]
+    )
+    n_holdout = model.holdout.n_samples
+    assert n_holdout == int(n_usable * 0.2)
+    # Two bars are purged at horizon 1, not one.
+    assert model.n_samples == n_usable - n_holdout - 2

@@ -137,3 +137,61 @@ def jsonl(text: str) -> dict:
     import json
 
     return json.loads(text)
+
+def test_run_pipeline_trains_from_the_committed_config(tmp_path, monkeypatch):
+    """Feature set, estimators and horizon come from config/training.json.
+
+    Without this, `promote --apply` is cosmetic: the next scheduled retrain
+    would overwrite the bundle with code defaults.
+    """
+    import json
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "training.json").write_text(
+        json.dumps(
+            {
+                "schema": "rl-crypto/training/1",
+                "feature_names": [],
+                "horizon": 1,
+                "model_names": {},
+                "tickers": {
+                    "ETH/USD": {
+                        "feature_names": ["ret_1", "ret_3"],
+                        "model_names": {"fwd_return": "mean"},
+                        "horizon": 1,
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_dataset",
+        lambda *a, **k: Dataset(
+            ticker="ETH/USD", interval="1h", rows=make_dataset_rows(120, wiggle=0.04)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_unified",
+        lambda *a, **k: UnifiedRecord(ticker="ETH/USD", market_ok=True, news_ok=True, price=101.0),
+    )
+
+    captured: dict = {}
+    real_train = runner.train_tier1
+
+    def spy(samples, **kwargs):
+        captured.update(kwargs)
+        return real_train(samples, **kwargs)
+
+    monkeypatch.setattr(runner, "train_tier1", spy)
+
+    _, summary, exit_code = runner.run_pipeline(_args(tmp_path))
+
+    assert exit_code == 0
+    assert captured["feature_names"] == ("ret_1", "ret_3")
+    assert captured["model_names"] == {"fwd_return": "mean"}
+    assert captured["horizon"] == 1
+    assert summary["training_config"]["source"] == "ticker:ETH/USD"
+    assert summary["training_config"]["features"] == 2

@@ -49,6 +49,7 @@ from rl_crypto.export import write_json
 from rl_crypto.ml import attach_predictions, outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, save_bundle
 from rl_crypto.ml.tier1 import train_tier1
+from rl_crypto.ml.training_config import load_training_config
 from rl_crypto.models import Dataset, DatasetRow, UnifiedRecord, to_iso, utcnow
 from rl_crypto.tickers import parse_tickers
 from rl_crypto.unify import build_unified
@@ -157,9 +158,20 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
     # full, continuously-growing clean history. The archive is stored at the
     # run's timeframe, so the feature/target windows are measured in that same
     # interval rather than assuming the 1h default.
+    #
+    # Feature set, per-target estimators and horizon come from the committed
+    # config, not from code defaults: `promote --apply` edits that file, so a
+    # promoted candidate survives the next scheduled retrain.
+    training = load_training_config(root).for_ticker(ticker)
+    horizon = training.horizon if training.horizon is not None else args.horizon
     train_rows = load_candles(archive_path, ticker=ticker)
-    samples = build_samples(train_rows, horizon=args.horizon, interval_seconds=cadence)
-    bundle = train_tier1(samples, horizon=args.horizon)
+    samples = build_samples(train_rows, horizon=horizon, interval_seconds=cadence)
+    bundle = train_tier1(
+        samples,
+        horizon=horizon,
+        feature_names=training.feature_names,
+        model_names=training.model_names or None,
+    )
 
     # Live snapshot (market + live news) fused with an outlook from the newest
     # archived bar.
@@ -189,7 +201,12 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "ticker": ticker,
         "generated_at": to_iso(now),
         "timeframe": args.timeframe,
-        "horizon": args.horizon,
+        "horizon": horizon,
+        "training_config": {
+            "source": training.source,
+            "features": len(training.feature_names),
+            "model_names": dict(training.model_names),
+        },
         "feature_version": bundle.feature_version,
         "fetch_window": {"start": to_iso(start), "end": to_iso(now)},
         "archive": {

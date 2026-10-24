@@ -1,0 +1,7 @@
+{
+  "schema": "rl-crypto/training/1",
+  "feature_names": [],
+  "horizon": 1,
+  "model_names": {},
+  "tickers": {}
+}
