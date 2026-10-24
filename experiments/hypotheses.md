@@ -4,6 +4,7 @@
 
 | id | order | family | status | needs | trials | last verdict | mechanism |
 | -- | ----- | ------ | ------ | ----- | ------ | ------------ | --------- |
+| H0-canary | -1 | canary | open | — | 0 | — | The full pipeline run on shuffled labels must be negative; if it produces skill, the measurement is leaking and the harness is void. |
 | H0 | 0 | diagnostic | done (diagnostic) | — | 4 | diagnostic | Establish the current out-of-sample baseline on the committed archive before any change, so later claims have a control. |
 | H1 | 1 | model-class | blocked | code | 1 | — | One model trained on all tickers with per-ticker normalisation and ticker-time purged folds should reduce variance against the ~1,700-bar per-ticker sample limit. |
 | H2 | 2 | data | blocked | data | 0 | — | Backfill more bars per ticker and re-run the best current config to separate the data effect from the model effect. |

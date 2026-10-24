@@ -7,6 +7,56 @@
   ],
   "hypotheses": [
     {
+      "id": "H0-canary",
+      "title": "Shuffled-label canary",
+      "family": "canary",
+      "order": -1,
+      "status": "open",
+      "needs": [],
+      "run_type": "experiment",
+      "canary": true,
+      "mechanism": "The full pipeline run on shuffled labels must be negative; if it produces skill, the measurement is leaking and the harness is void.",
+      "experiment": {
+        "action": "evaluate",
+        "tickers": [
+          "BTC/USD",
+          "ETH/USD",
+          "SOL/USD"
+        ],
+        "targets": [
+          "fwd_direction"
+        ],
+        "featureSet": "all",
+        "modelSet": "reference",
+        "horizon": 1,
+        "folds": 4,
+        "maxConfigs": 1,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
+      },
+      "criteria": {
+        "kind": "improvement",
+        "criteria_version": 2,
+        "target": "fwd_direction",
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        },
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": false,
+        "requires_promote": false
+      },
+      "depends_on": [],
+      "evidence": "",
+      "notes": "Canary: a provisional outcome voids the harness and blocks further runs until harness-clear."
+    },
+    {
       "id": "H0",
       "title": "Baseline diagnosis",
       "family": "diagnostic",
@@ -75,7 +125,12 @@
         "folds": 4,
         "extraLabArgs": [
           "--panel"
-        ]
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -88,6 +143,16 @@
           "total_return_min": 0.0,
           "sharpe_above_momentum": true,
           "trades_min": 100
+        },
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
         }
       },
       "notes": "Blocked until the shifted-label null is fixed or a new H1 lineage is opened with a stated difference. Merge/account for d598641 first; do not silently re-test the same panel idea (trial_index would be wrong)."
@@ -123,7 +188,12 @@
           1
         ],
         "maxConfigs": 2,
-        "folds": 4
+        "folds": 4,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -136,6 +206,16 @@
           "total_return_min": 0.0,
           "sharpe_above_momentum": true,
           "trades_min": 100
+        },
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
         }
       }
     },
@@ -172,7 +252,12 @@
           1
         ],
         "maxConfigs": 6,
-        "folds": 4
+        "folds": 4,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -185,6 +270,16 @@
           "total_return_min": 0.0,
           "sharpe_above_momentum": true,
           "trades_min": 100
+        },
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
         }
       }
     },
@@ -224,7 +319,12 @@
         "extraLabArgs": [
           "--policy",
           "hysteresis"
-        ]
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -237,6 +337,16 @@
           "total_return_min": 0.0,
           "sharpe_above_momentum": true,
           "trades_min": 100
+        },
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
         }
       },
       "notes": "Declares --policy hysteresis; the evaluator must charge costs on every position change."
@@ -281,7 +391,12 @@
         "folds": 4,
         "extraLabArgs": [
           "--regime-conditioned"
-        ]
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -294,6 +409,16 @@
           "total_return_min": 0.0,
           "sharpe_above_momentum": true,
           "trades_min": 100
+        },
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
         }
       },
       "notes": "Declares --regime-conditioned; direction is gated by the skilful activity targets."
@@ -333,7 +458,12 @@
         "folds": 4,
         "extraLabArgs": [
           "--cross-sectional"
-        ]
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -342,7 +472,17 @@
         "folds_beating_min": 3,
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
-        "economic": null
+        "economic": null,
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "notes": "Declares --cross-sectional; ranking replaces the absolute-direction estimand."
     },
@@ -379,7 +519,12 @@
           4
         ],
         "maxConfigs": 4,
-        "folds": 4
+        "folds": 4,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 4
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -388,7 +533,17 @@
         "folds_beating_min": 3,
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
-        "economic": null
+        "economic": null,
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 4
+        }
       }
     },
     {
@@ -422,7 +577,12 @@
           1
         ],
         "maxConfigs": 4,
-        "folds": 4
+        "folds": 4,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -431,7 +591,17 @@
         "folds_beating_min": 3,
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
-        "economic": null
+        "economic": null,
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       }
     },
     {
@@ -473,7 +643,12 @@
         "extraLabArgs": [
           "--model-class",
           "boosted"
-        ]
+        ],
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -482,7 +657,17 @@
         "folds_beating_min": 3,
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
-        "economic": null
+        "economic": null,
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "notes": "Declares --model-class boosted; only after H1 or H2, with the family trial counter."
     },
@@ -521,7 +706,12 @@
           1
         ],
         "maxConfigs": 8,
-        "folds": 4
+        "folds": 4,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       },
       "criteria": {
         "kind": "improvement",
@@ -530,7 +720,17 @@
         "folds_beating_min": 3,
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
-        "economic": null
+        "economic": null,
+        "criteria_version": 2,
+        "alpha": 0.05,
+        "fold_rule": "all_positive",
+        "require_controls": true,
+        "require_multiple_tickers": true,
+        "primary": {
+          "featureSet": "all",
+          "modelSet": "reference",
+          "horizon": 1
+        }
       }
     }
   ]

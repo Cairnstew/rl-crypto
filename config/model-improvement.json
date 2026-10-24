@@ -2,6 +2,9 @@
   "schema": "rl-crypto/model-improvement/1",
   "executor": "auto",
   "model": "opencode/deepseek-v4.1-flash-free",
+  "models": {
+    "auditor": "opencode/claude-haiku-4-5"
+  },
   "review": {
     "enabled": true,
     "require": false
@@ -15,11 +18,21 @@
     "roleTimeoutSeconds": 1800,
     "labTimeoutSeconds": 3600,
     "maxRolesPerRun": 6,
-    "maxCostUsdPerRun": 5.0
+    "maxCostUsdPerRun": 5.0,
+    "maxTokensPerRun": 2000000,
+    "maxWallClockSeconds": 7200,
+    "bootstrapSamples": 1000,
+    "bootstrapBlockBars": 24
   },
   "promotion": {
     "apply": false,
     "requiresPromoteDryRun": true
+  },
+  "holdout": {
+    "start": null
+  },
+  "noNewInformation": {
+    "minNewBars": 24
   },
   "scope": {
     "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
