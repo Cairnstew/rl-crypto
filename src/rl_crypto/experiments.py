@@ -100,11 +100,8 @@ DEFAULT_CRITERIA_V2: dict[str, Any] = {
     "fold_rule": "all_positive",
     "require_controls": True,
     "require_multiple_tickers": True,
-    "economic": {
-        "total_return_min": 0.0,
-        "sharpe_above_momentum": True,
-        "trades_min": 100,
-    },
+    # Economics is not a default v2 gate: a pooled paired CI is the verdict,
+    # and promotion has its own after-cost gate. A hypothesis may opt in.
     "requires_promote": False,
 }
 
