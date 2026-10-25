@@ -39,7 +39,7 @@
       },
       "criteria": {
         "kind": "improvement",
-        "criteria_version": 2,
+        "criteria_version": 3,
         "target": "fwd_direction",
         "primary": {
           "featureSet": "all",
@@ -95,7 +95,7 @@
       },
       "criteria": {
         "kind": "improvement",
-        "criteria_version": 2,
+        "criteria_version": 3,
         "target": "fwd_direction",
         "primary": {
           "featureSet": "all",
@@ -150,7 +150,7 @@
       "title": "Pooled panel model",
       "family": "model-class",
       "order": 1,
-      "status": "blocked",
+      "status": "open",
       "needs": [
         "code"
       ],
@@ -202,7 +202,7 @@
           "sharpe_above_momentum": true,
           "trades_min": 100
         },
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -214,15 +214,22 @@
         }
       },
       "notes": "Blocked until the shifted-label null is fixed or a new H1 lineage is opened with a stated difference. Merge/account for d598641 first; do not silently re-test the same panel idea (trial_index would be wrong).",
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "design": {
+        "kind": "panel",
+        "tickers": 3,
+        "barsPerTicker": 1700,
+        "tickerCorrelation": 0.5
+      },
+      "minimal_meaningful_effect_justification": ""
     },
     {
       "id": "H2",
       "title": "Longer history",
       "family": "data",
       "order": 2,
-      "status": "blocked",
+      "status": "open",
       "needs": [
         "data"
       ],
@@ -267,7 +274,7 @@
           "sharpe_above_momentum": true,
           "trades_min": 100
         },
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -278,15 +285,22 @@
           "horizon": 1
         }
       },
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "design": {
+        "kind": "history",
+        "tickers": 3,
+        "barsPerTicker": 8760,
+        "tickerCorrelation": 0.5
+      },
+      "minimal_meaningful_effect_justification": ""
     },
     {
       "id": "H3",
       "title": "Cross-asset features",
       "family": "features",
       "order": 3,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -333,7 +347,7 @@
           "sharpe_above_momentum": true,
           "trades_min": 100
         },
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -344,15 +358,18 @@
           "horizon": 1
         }
       },
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H4",
       "title": "Cost-aware policy",
       "family": "policy",
       "order": 4,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -402,7 +419,7 @@
           "sharpe_above_momentum": true,
           "trades_min": 100
         },
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -414,15 +431,18 @@
         }
       },
       "notes": "Declares --policy hysteresis; the evaluator must charge costs on every position change.",
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H5",
       "title": "Regime conditioning",
       "family": "composition",
       "order": 5,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -476,7 +496,7 @@
           "sharpe_above_momentum": true,
           "trades_min": 100
         },
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -488,15 +508,18 @@
         }
       },
       "notes": "Declares --regime-conditioned; direction is gated by the skilful activity targets.",
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H6",
       "title": "Cross-sectional relative direction",
       "family": "composition",
       "order": 6,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -541,7 +564,7 @@
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
         "economic": null,
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -553,15 +576,18 @@
         }
       },
       "notes": "Declares --cross-sectional; ranking replaces the absolute-direction estimand.",
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H7",
       "title": "Lower-frequency horizons",
       "family": "horizon",
       "order": 7,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -604,7 +630,7 @@
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
         "economic": null,
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -615,15 +641,18 @@
           "horizon": 4
         }
       },
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H8",
       "title": "New data classes",
       "family": "data",
       "order": 8,
-      "status": "blocked",
+      "status": "deferred-underpowered",
       "needs": [
         "approval"
       ],
@@ -664,7 +693,7 @@
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
         "economic": null,
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -675,15 +704,18 @@
           "horizon": 1
         }
       },
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H9",
       "title": "Stronger model classes",
       "family": "model-class",
       "order": 9,
-      "status": "open",
+      "status": "deferred-underpowered",
       "needs": [
         "code"
       ],
@@ -732,7 +764,7 @@
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
         "economic": null,
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -744,8 +776,11 @@
         }
       },
       "notes": "Declares --model-class boosted; only after H1 or H2, with the family trial counter.",
-      "minimal_meaningful_effect": 0.002,
-      "comparison": "baseline"
+      "minimal_meaningful_effect": null,
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "",
+      "status_reason": "Pilot and design-scaled MDEs are both far above the economics-derived minimal meaningful effect at the 1h horizon and 15 bps/side round-trip cost.",
+      "reevaluate_when": "Re-run `plan` after a longer horizon, a lower-cost execution assumption, or more history brings the design-scaled MDE at or below the MME."
     },
     {
       "id": "H10",
@@ -797,7 +832,7 @@
         "mean_improvement_min": 0.0,
         "min_improvement_min": 0.0,
         "economic": null,
-        "criteria_version": 2,
+        "criteria_version": 3,
         "alpha": 0.05,
         "fold_rule": "all_positive",
         "require_controls": true,
@@ -809,7 +844,8 @@
         }
       },
       "minimal_meaningful_effect": 0.01,
-      "comparison": "baseline"
+      "comparison": "baseline",
+      "minimal_meaningful_effect_justification": "A 1% RMSE improvement in activity is a modest, non-tradable monitoring gain; it is not an economics-derived target."
     }
   ]
 }
