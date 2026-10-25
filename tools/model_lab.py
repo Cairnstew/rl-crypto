@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 
 from rl_crypto.backtest import pnl_metrics
+from rl_crypto.baselines import har_rv_predictions as fitted_har_rv_predictions
 from rl_crypto.cache import candles_path, load_candles, slug_for, summary_path
 from rl_crypto.features import (
     DEFAULT_INTERVAL_SECONDS,
@@ -80,6 +81,12 @@ RESOLUTION_ORDER_STATS = 2
 #: Baselines compared for every target. EWMA and HAR are volatility baselines:
 #: they predict a forward realised-volatility label from a causal volatility
 #: proxy (the trailing realised vol already in the feature row).
+#:
+#: ``har_rv`` (fitted HAR on trailing 1/24/168-bar realised variance, see
+#: ``rl_crypto.baselines``) is accepted by ``baseline_predictions`` on request
+#: (``--baseline har_rv``) but is deliberately *not* in this default tuple: adding
+#: it would change the strongest-baseline choice, and with it every verdict that
+#: was computed against the old set. ``tools/baseline_report.py`` compares it.
 BASELINE_MODES: tuple[str, ...] = (
     "constant",
     "seasonal",
@@ -685,6 +692,26 @@ def baseline_predictions(
                 value = _from_space(float(value), space)
             out.append(float(value))
         return out
+    if mode == "har_rv":
+        combined = list(train) + list(test)
+        fitted = fitted_har_rv_predictions(
+            [sample.features.get("ret_1") for sample in combined],
+            [sample.targets.get(target) for sample in combined],
+            len(train),
+        )
+        if fitted is None:
+            return baseline_predictions(
+                "har", kind, train, test, target, space=space, horizon=horizon
+            )
+        # A row whose 168-bar regressor window is incomplete gets the same
+        # deterministic rolling-mean fallback as ``har``.
+        fallback = baseline_predictions(
+            "har", kind, train, test, target, space=space, horizon=horizon
+        )
+        return [
+            float(value) if value is not None else fallback[index]
+            for index, value in enumerate(fitted)
+        ]
     raise SystemExit(f"unknown baseline {mode!r}")
 
 
