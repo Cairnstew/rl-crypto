@@ -1352,7 +1352,9 @@ def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
                 "perturbation invariance failed: the holdout changed fitted "
                 f"parameters{(' at ' + str(path)) if path else ''}"
             )
-        return "structural causality check failed: " + "; ".join(details)
+        if details:
+            return "structural causality check failed: " + "; ".join(details)
+        return "structural causality check failed"
     return None
 
 
