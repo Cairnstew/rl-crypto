@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from rl_crypto.power import (
     block_bootstrap_means,
@@ -85,3 +86,90 @@ def test_p_value_uniformity_counts_every_value():
     assert report["n"] == 5
     assert sum(report["counts"]) == 5
     assert report["expected"] == 0.5
+
+
+def test_student_t_quantile_matches_published_values():
+    from rl_crypto.power import student_t_quantile
+
+    assert student_t_quantile(0.975, 10) == pytest.approx(2.228, abs=0.002)
+    assert student_t_quantile(0.95, 20) == pytest.approx(1.725, abs=0.002)
+    assert student_t_quantile(0.5, 5) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_effective_sample_interval_refuses_a_short_persistent_series():
+    from rl_crypto.power import effective_sample_t_interval
+
+    rng = np.random.default_rng(0)
+    rho = 0.95
+    series = np.zeros(300)
+    innovations = rng.standard_normal(300)
+    for index in range(300):
+        previous = series[index - 1] if index else 0.0
+        series[index] = rho * previous + np.sqrt(1 - rho * rho) * innovations[index]
+    interval = effective_sample_t_interval(series, alpha=0.05)
+    assert interval["sufficient"] is False
+    assert interval["ci_low"] is None
+    assert interval["raw_blocks"] < interval["min_effective_blocks"]
+
+
+def test_effective_sample_interval_covers_an_iid_series():
+    from rl_crypto.power import effective_sample_t_interval
+
+    rng = np.random.default_rng(1)
+    series = rng.normal(0.0, 1.0, 600)
+    interval = effective_sample_t_interval(series, alpha=0.05)
+    assert interval["sufficient"] is True
+    assert interval["ci_low"] < 0.0 < interval["ci_high"]
+
+
+def test_coverage_grid_refuses_the_underidentified_cells_and_claims_nothing():
+    from rl_crypto.power import calibrate_coverage
+
+    result = calibrate_coverage(
+        n_rows=300,
+        block_counts=(12, 24),
+        alphas=(0.05,),
+        simulations=80,
+        autocorrelation=0.95,
+        seed=0,
+    )
+    assert result["claim"] == "supported"
+    assert result["failing_cells"] == []
+    assert result["refused_cells"]
+    assert all(
+        row["status"] == "insufficient-blocks" for row in result["refused_cells"]
+    )
+
+
+def test_economic_mme_requires_a_large_edge_at_hourly_volatility():
+    from rl_crypto.power import economic_minimal_meaningful_effect
+
+    result = economic_minimal_meaningful_effect(
+        "fwd_direction",
+        sigma=0.005,
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        threshold=0.55,
+        simulations=5000,
+        seed=0,
+    )
+    assert result is not None
+    assert result["round_trip_cost"] == pytest.approx(0.003)
+    assert result["required_edge"] == pytest.approx(0.003 / (0.005 * np.sqrt(2 / np.pi)))
+    assert result["edge"] >= result["threshold_edge"]
+    assert result["minimal_meaningful_effect"] > 0.2
+
+
+def test_economic_mme_for_return_is_an_rmse_improvement():
+    from rl_crypto.power import economic_minimal_meaningful_effect
+
+    result = economic_minimal_meaningful_effect(
+        "fwd_return",
+        sigma=0.02,
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        threshold=0.55,
+    )
+    assert result is not None
+    assert result["metric"] == "rmse"
+    assert 0.0 < result["minimal_meaningful_effect"] < 0.02

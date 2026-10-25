@@ -1351,3 +1351,97 @@ def test_canary_verdicts_live_in_their_own_file(tmp_path):
     assert read_ledger(ledger) == []
     status = canary_status([], current_hash="a" * 64, canary_entries=read_canary(canary_path))
     assert status["pass"] is True
+
+
+def test_criteria_v2_keeps_the_legacy_interval_and_v3_uses_the_corrected_one():
+    pooled = {
+        **_paired(0.02, 0.01, 0.03),
+        "legacy_percentile_ci_low": -0.005,
+        "legacy_percentile_ci_high": 0.04,
+        "resolution_ok": True,
+        "legacy_resolution_ok": True,
+    }
+    v2 = evaluate_criteria(
+        {"criteria": _v2_criteria(criteria_version=2)},
+        _v2_payload(pooled=pooled),
+    )
+    assert v2["outcome"] != "provisional"
+    assert any("bootstrap CI lower bound" in reason for reason in v2["reasons"])
+
+    v3 = evaluate_criteria(
+        {"criteria": _v2_criteria(criteria_version=3)},
+        _v2_payload(pooled=pooled),
+    )
+    assert v3["outcome"] == "provisional"
+
+
+def test_deferred_underpowered_is_a_valid_status_with_a_reevaluation_condition():
+    hypothesis = _hypothesis(
+        status="deferred-underpowered",
+        status_reason="the pilot effect is far below the economics MME",
+        reevaluate_when="a longer horizon lowers the MME",
+    )
+    assert hypothesis.status == "deferred-underpowered"
+    assert "horizon" in hypothesis.reevaluate_when
+    assert hypothesis.as_dict()["status_reason"]
+
+
+def test_v3_non_economic_mme_requires_a_justification(tmp_path):
+    hypothesis = _hypothesis(
+        id="H10",
+        status="open",
+        needs=["code"],
+        criteria={
+            **_v2_criteria(criteria_version=3),
+            "target": "fwd_volume_ratio",
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        },
+        minimal_meaningful_effect=0.01,
+    )
+    _candles(tmp_path)
+    with pytest.raises(ValueError, match="justification"):
+        build_preregistration(
+            hypothesis,
+            run_id="r1",
+            root=tmp_path,
+            entries=[],
+            holdout_start="2026-01-01T04:00:00Z",
+        )
+    justified = Hypothesis.from_dict(
+        {
+            **hypothesis.as_dict(),
+            "minimal_meaningful_effect_justification": "non-tradable monitoring gain",
+        }
+    )
+    prereg = build_preregistration(
+        justified,
+        run_id="r2",
+        root=tmp_path,
+        entries=[],
+        holdout_start="2026-01-01T04:00:00Z",
+    )
+    assert prereg["minimal_meaningful_effect_justification"] == (
+        "non-tradable monitoring gain"
+    )
+
+
+def test_champion_comparison_is_required_by_the_hypothesis():
+    criteria = _v2_criteria(
+        criteria_version=3,
+        require_multiple_tickers=False,
+        require_controls=False,
+    )
+    payload = {
+        "results": [{"ticker": "BTC/USD", "paired": _paired(0.02, 0.01, 0.03)}],
+        "pooled": _paired(0.02, 0.01, 0.03),
+        "pooled_economics": {
+            "model": {"total_return": 0.10, "sharpe": 1.5, "trades": 200},
+            "momentum": {"total_return": 0.02, "sharpe": 0.4, "trades": 200},
+        },
+        "comparison": "baseline",
+    }
+    verdict = evaluate_criteria(
+        {"criteria": criteria, "comparison": "champion"}, payload
+    )
+    assert verdict["outcome"] == "blocked"
+    assert any("champion comparison" in reason for reason in verdict["reasons"])

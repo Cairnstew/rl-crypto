@@ -28,13 +28,19 @@ import math
 import os
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "rl-crypto/experiments/1"
-HYPOTHESIS_STATUSES = frozenset({"open", "blocked", "done", "retired"})
+HYPOTHESIS_STATUSES = frozenset({
+    "open",
+    "blocked",
+    "done",
+    "retired",
+    "deferred-underpowered",
+})
 ENTRY_KINDS = frozenset(
     {
         "preregister",
@@ -57,8 +63,11 @@ CAPABILITY_NEEDS = frozenset({"code", "data", "approval", "tooling"})
 CANARY_FILENAME = "canary.jsonl"
 RUN_TYPES = frozenset({"experiment", "harness-change"})
 
-#: Criteria written before this hardening keep the old interpretation forever.
-CRITERIA_VERSION = 2
+#: Criteria interpretation version. Version 2 keeps the percentile block
+#: bootstrap it was written against; version 3 uses the corrected
+#: effective-sample t interval. Ledger entries carry their own version, so an
+#: old entry is never retroactively re-judged.
+CRITERIA_VERSION = 3
 
 #: Alpha spending across a hypothesis family. Trial ``i`` spends
 #: ``alpha / (i * (i + 1))``; the series sums to ``alpha`` over every trial, so a
@@ -93,6 +102,7 @@ INFRA_BLOCK_STAGES = frozenset(
 INFRA_REASON_MARKERS = (
     "no lab result was produced",
     "insufficient-resolution",
+    "insufficient-blocks",
     "timeout",
     "timed out",
     "credential",
@@ -234,7 +244,15 @@ def required_bootstrap_samples(alpha_trial: float) -> int:
 def bootstrap_resolution(
     alpha: float, family_cap: int, bootstrap_samples: int
 ) -> dict[str, Any]:
-    """Whether the configured resample count can resolve the capped tail."""
+    """Whether the configured resample count can resolve the legacy tail.
+
+    The active verdict no longer uses a bootstrap quantile (it uses the
+    effective-sample t interval), so this check is informational: the legacy
+    percentile comparison still needs enough resamples, while the gate itself
+    blocks on ``insufficient-blocks`` from the lab.
+    """
+    from .power import MIN_EFFECTIVE_BLOCKS
+
     smallest = smallest_alpha(alpha, family_cap)
     required = required_bootstrap_samples(smallest)
     return {
@@ -245,7 +263,8 @@ def bootstrap_resolution(
         "required_samples": required,
         "configured_samples": int(bootstrap_samples),
         "ok": int(bootstrap_samples) >= required,
-        "min_blocks": MIN_BOOTSTRAP_BLOCKS,
+        "min_blocks": MIN_EFFECTIVE_BLOCKS,
+        "legacy_min_blocks": MIN_BOOTSTRAP_BLOCKS,
     }
 
 
@@ -402,6 +421,14 @@ class Hypothesis:
     #: "baseline" compares against the strongest baseline; "champion" against
     #: the retrained deployed bundle.
     comparison: str = "baseline"
+    #: Why a hypothesis is deferred or blocked in plain language.
+    status_reason: str = ""
+    #: The condition under which a deferred hypothesis is re-evaluated.
+    reevaluate_when: str = ""
+    #: A one-line justification for a hand-set non-economic MME.
+    minimal_meaningful_effect_justification: str = ""
+    #: Design scaling assumptions for a panel/history hypothesis.
+    design: dict[str, Any] = field(default_factory=dict)
 
     @property
     def needs_code(self) -> bool:
@@ -439,7 +466,13 @@ class Hypothesis:
             "canary": self.canary,
             "canary_kind": self.canary_kind,
             "minimal_meaningful_effect": self.minimal_meaningful_effect,
+            "minimal_meaningful_effect_justification": (
+                self.minimal_meaningful_effect_justification
+            ),
             "comparison": self.comparison,
+            "status_reason": self.status_reason,
+            "reevaluate_when": self.reevaluate_when,
+            "design": dict(self.design),
         }
 
     @classmethod
@@ -488,6 +521,12 @@ class Hypothesis:
             canary_kind=canary_kind,
             minimal_meaningful_effect=minimal_effect,
             comparison=comparison,
+            status_reason=str(payload.get("status_reason") or payload.get("reason") or ""),
+            reevaluate_when=str(payload.get("reevaluate_when") or ""),
+            minimal_meaningful_effect_justification=str(
+                payload.get("minimal_meaningful_effect_justification") or ""
+            ),
+            design=dict(payload.get("design") or {}),
         )
 
 
@@ -924,6 +963,10 @@ def build_preregistration(
         "canary": bool(hypothesis.canary),
         "canary_kind": hypothesis.canary_kind,
         "minimal_meaningful_effect": hypothesis.minimal_meaningful_effect,
+        "minimal_meaningful_effect_justification": (
+            hypothesis.minimal_meaningful_effect_justification
+        ),
+        "design": dict(hypothesis.design),
         "comparison": hypothesis.comparison,
         "power": dict(power or {}),
         "criteria_version": criteria_version(hypothesis.criteria),
@@ -978,6 +1021,23 @@ def validate_preregistration(entry: Mapping[str, Any]) -> list[str]:
                 problems.append("criteria v2 alpha must be in (0, 1)")
             if criteria.get("fold_rule") not in {"all_positive", "majority_positive", "none"}:
                 problems.append("criteria v2 has an unknown fold_rule")
+            if criteria_version(criteria) >= 3:
+                target = str(criteria.get("target") or "")
+                declared = entry.get("minimal_meaningful_effect")
+                justification = str(
+                    entry.get("minimal_meaningful_effect_justification") or ""
+                ).strip()
+                if target not in ECONOMIC_TARGETS:
+                    if declared is None:
+                        problems.append(
+                            "criteria v3 non-economic target needs a hand-set "
+                            "minimal_meaningful_effect"
+                        )
+                    elif not justification:
+                        problems.append(
+                            "criteria v3 hand-set minimal_meaningful_effect needs "
+                            "a one-line justification"
+                        )
         elif int(criteria.get("tickers_beating_min", 0)) < 1:
             problems.append("criteria missing tickers_beating_min")
     return problems
@@ -1173,6 +1233,11 @@ def evaluate_criteria(
         elif not promote_payload.get("passed"):
             gate = promote_payload.get("reasons") or ["promotion gate failed"]
             reasons.append("promotion gate failed: " + "; ".join(str(r) for r in gate))
+        elif not (promote_payload.get("champion_comparison") or {}).get("passed"):
+            reasons.append(
+                "promotion requires a passing pooled paired comparison over the "
+                "champion retrained on the pre-cutoff slice"
+            )
         else:
             metrics["promotion"] = {
                 "passed": True,
@@ -1186,22 +1251,6 @@ def evaluate_criteria(
         "reasons": reasons,
         "metrics": metrics,
     }
-
-
-def _resolution_block(pooled: Mapping[str, Any] | None) -> str | None:
-    """A blocked reason when the bootstrap cannot resolve the requested tail."""
-    if not isinstance(pooled, Mapping):
-        return None
-    if pooled.get("resolution_ok") is True:
-        return None
-    if pooled.get("insufficient"):
-        detail = pooled.get("resolution_reason") or "too few blocks or resamples"
-        return f"insufficient-resolution: {detail}"
-    if "resolution_ok" not in pooled:
-        # A payload produced before the resolution check existed is not
-        # retroactively invalid; only an explicit failure blocks.
-        return None
-    return None
 
 
 def wilson_interval(
@@ -1248,9 +1297,12 @@ def paired_rule(
     *,
     alpha: float,
     fold_rule: str,
+    version: int = CRITERIA_VERSION,
 ) -> tuple[bool, list[str]]:
-    """Public alias for the v2 paired rule (used by calibration commands)."""
-    return _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+    """Public alias for the paired rule (used by calibration commands)."""
+    return _paired_rule(
+        pooled, alpha=alpha, fold_rule=fold_rule, version=version
+    )
 
 
 def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
@@ -1304,12 +1356,63 @@ def contract_violation(lab_payload: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def pooled_interval_for_version(
+    pooled: Mapping[str, Any] | None, version: int
+) -> Mapping[str, Any] | None:
+    """The CI a criteria version was written against.
+
+    Version 2 keeps the percentile block-bootstrap interval it was
+    pre-registered with. Version 3+ uses the corrected effective-sample t
+    interval. The lab computes both so the record is comparable.
+    """
+    if not isinstance(pooled, Mapping):
+        return pooled
+    if int(version) >= 3:
+        return pooled
+    low = pooled.get("legacy_percentile_ci_low")
+    high = pooled.get("legacy_percentile_ci_high")
+    if low is None and high is None:
+        return pooled
+    return {**pooled, "ci_low": low, "ci_high": high, "interval": "percentile"}
+
+
+def _resolution_block(
+    pooled: Mapping[str, Any] | None, *, version: int = CRITERIA_VERSION
+) -> str | None:
+    """A blocked reason when the CI cannot be certified for this design."""
+    if not isinstance(pooled, Mapping):
+        return None
+    if int(version) >= 3:
+        if pooled.get("resolution_ok") is True:
+            return None
+        if pooled.get("insufficient_blocks"):
+            detail = pooled.get("resolution_reason") or "too few effective blocks"
+            return f"insufficient-blocks: {detail}"
+        if pooled.get("insufficient"):
+            detail = pooled.get("resolution_reason") or "too few rows"
+            return f"insufficient-resolution: {detail}"
+        return None
+    # v2 keeps the percentile rule's own sufficiency test.
+    legacy = pooled.get("legacy_resolution_ok")
+    if legacy is True:
+        return None
+    if legacy is False:
+        detail = pooled.get("legacy_resolution_reason") or "legacy interval unresolved"
+        return f"insufficient-resolution: {detail}"
+    if legacy is None and pooled.get("insufficient"):
+        detail = pooled.get("resolution_reason") or "interval unresolved"
+        return f"insufficient-resolution: {detail}"
+    return None
+
+
 def _paired_rule(
     pooled: Mapping[str, Any] | None,
     *,
     alpha: float,
     fold_rule: str,
+    version: int = CRITERIA_VERSION,
 ) -> tuple[bool, list[str]]:
+    pooled = pooled_interval_for_version(pooled, version)
     """The v2 statistical rule, applied identically to the candidate and controls."""
     reasons: list[str] = []
     if not isinstance(pooled, Mapping):
@@ -1374,13 +1477,14 @@ def _evaluate_criteria_v2(
     """
     criteria = dict(prereg.get("criteria") or {})
     kind = str(criteria.get("kind", "improvement"))
+    version = criteria_version(criteria)
     alpha_family = float(criteria.get("alpha", 0.05))
     trial_index = int(prereg.get("trial_index") or 1)
     alpha = alpha_for_trial(alpha_family, trial_index)
     fold_rule = str(criteria.get("fold_rule", "all_positive"))
     reasons: list[str] = []
     metrics: dict[str, Any] = {
-        "criteria_version": 2,
+        "criteria_version": version,
         "alpha": alpha,
         "alpha_family": alpha_family,
         "alpha_trial": alpha,
@@ -1480,7 +1584,7 @@ def _evaluate_criteria_v2(
     if lab_payload.get("canary"):
         # The canary is deliberately run with shuffled labels: it must fail.
         pooled = lab_payload.get("pooled")
-        blocked = _resolution_block(pooled)
+        blocked = _resolution_block(pooled, version=version)
         if blocked is not None:
             return {
                 "passed": False,
@@ -1488,7 +1592,9 @@ def _evaluate_criteria_v2(
                 "reasons": [blocked],
                 "metrics": {**metrics, "pooled": pooled},
             }
-        passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+        passed, rule_reasons = _paired_rule(
+            pooled, alpha=alpha, fold_rule=fold_rule, version=version
+        )
         metrics["canary"] = True
         metrics["pooled"] = pooled
         if passed:
@@ -1505,9 +1611,21 @@ def _evaluate_criteria_v2(
             "metrics": metrics,
         }
 
+    comparison = str(prereg.get("comparison") or "baseline")
+    if comparison == "champion" and str(lab_payload.get("comparison") or "baseline") != "champion":
+        return {
+            "passed": False,
+            "outcome": "blocked",
+            "reasons": [
+                "the hypothesis requires a champion comparison but the lab "
+                "reported a baseline comparison"
+            ],
+            "metrics": metrics,
+        }
     pooled = lab_payload.get("pooled")
     metrics["pooled"] = pooled
-    blocked = _resolution_block(pooled)
+    metrics["comparison"] = comparison
+    blocked = _resolution_block(pooled, version=version)
     if blocked is not None:
         return {
             "passed": False,
@@ -1515,7 +1633,9 @@ def _evaluate_criteria_v2(
             "reasons": [blocked],
             "metrics": metrics,
         }
-    passed, rule_reasons = _paired_rule(pooled, alpha=alpha, fold_rule=fold_rule)
+    passed, rule_reasons = _paired_rule(
+        pooled, alpha=alpha, fold_rule=fold_rule, version=version
+    )
     reasons.extend(rule_reasons)
 
     # Controls are mandatory for an improvement claim. A passing *shuffle* is
@@ -1541,7 +1661,10 @@ def _evaluate_criteria_v2(
             for variant in variants:
                 control_pooled = variant.get("pooled") or variant
                 control_passed, _ = _paired_rule(
-                    control_pooled, alpha=alpha, fold_rule=fold_rule
+                    control_pooled,
+                    alpha=alpha,
+                    fold_rule=fold_rule,
+                    version=version,
                 )
                 label = (
                     f"{name}:{variant.get('shift_bars') or variant.get('seed')}"
