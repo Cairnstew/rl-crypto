@@ -1274,6 +1274,8 @@ def run_primary_evaluate(
         str(float(criteria.get("control_quantile") or 0.95)),
         "--baseline",
         str(criteria.get("baseline") or "strongest"),
+        "--comparison",
+        str(prereg.get("comparison") or "baseline"),
     ]
     extra = [str(item) for item in experiment.get("extraLabArgs") or []]
     args.extend(extra)
@@ -1323,6 +1325,8 @@ def run_sweep(ctx: Context, prereg: Mapping[str, Any]) -> dict[str, Any] | None:
         primary_config_name(experiment),
         "--baseline",
         str((prereg_criteria or {}).get("baseline") or "strongest"),
+        "--comparison",
+        str(prereg.get("comparison") or "baseline"),
     ]
     return run_lab(ctx, "sweep", args, label="lab-sweep")
 
@@ -4375,9 +4379,11 @@ def cmd_calibrate_baselines(args: argparse.Namespace) -> int:
         f"- protected hash: {payload['protected_hash']}",
         "",
         "| target | ticker | metric | model | constant | seasonal | persistence |"
-        " strongest | skill vs constant | skill vs seasonal | skill vs persistence |",
+        " ewma | har | strongest | skill vs constant | skill vs seasonal |"
+        " skill vs persistence | skill vs ewma | skill vs har |",
         "| ------ | ------ | ------ | ----- | -------- | -------- | ----------- |"
-        " --------- | ----------------- | ----------------- | -------------------- |",
+        " ---- | --- | --------- | ----------------- | ----------------- |"
+        " -------------------- | -------------- | ------------- |",
     ]
     for row in payload["rows"]:
         if "error" in row:
@@ -4398,10 +4404,14 @@ def cmd_calibrate_baselines(args: argparse.Namespace) -> int:
             f"{fmt_metric(baselines.get('constant'))} | "
             f"{fmt_metric(baselines.get('seasonal'))} | "
             f"{fmt_metric(baselines.get('persistence'))} | "
+            f"{fmt_metric(baselines.get('ewma'))} | "
+            f"{fmt_metric(baselines.get('har'))} | "
             f"{row.get('baseline_mode')} | "
             f"{fmt(skill.get('constant'))} | "
             f"{fmt(skill.get('seasonal'))} | "
-            f"{fmt(skill.get('persistence'))} |"
+            f"{fmt(skill.get('persistence'))} | "
+            f"{fmt(skill.get('ewma'))} | "
+            f"{fmt(skill.get('har'))} |"
         )
     lines.append("")
     lines.append(
@@ -4581,22 +4591,50 @@ def cmd_calibrate_controls(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_calibrate_coverage(args: argparse.Namespace) -> int:
-    from rl_crypto.power import calibrate_coverage
-
-    alphas = [
-        float(part) for part in str(args.alphas).replace(",", " ").split() if part.strip()
+def _float_list(value: str) -> list[float]:
+    return [
+        float(part) for part in str(value).replace(",", " ").split() if part.strip()
     ]
-    result = calibrate_coverage(
-        n_rows=int(args.rows),
-        block_bars=int(args.block_bars),
-        alphas=alphas,
-        draws=int(args.draws),
-        simulations=int(args.simulations),
-        autocorrelation=float(args.autocorrelation),
-        effect=float(args.effect),
-        seed=int(args.seed),
-    )
+
+
+def _int_list(value: str) -> list[int]:
+    return [
+        int(part) for part in str(value).replace(",", " ").split() if part.strip()
+    ]
+
+
+def cmd_calibrate_coverage(args: argparse.Namespace) -> int:
+    from rl_crypto.power import calibrate_coverage, calibrate_coverage_grid
+
+    alphas = _float_list(args.alphas)
+    rows = _int_list(args.rows)
+    rhos = _float_list(args.autocorrelation)
+    block_counts = _int_list(args.block_counts)
+    grid = len(rows) > 1 or len(rhos) > 1 or len(block_counts) > 1
+    if grid:
+        result = calibrate_coverage_grid(
+            rows=rows,
+            autocorrelations=rhos,
+            block_counts=block_counts,
+            alphas=alphas,
+            draws=int(args.draws),
+            simulations=int(args.simulations),
+            seed=int(args.seed),
+            compare_percentile=bool(args.compare_percentile),
+        )
+    else:
+        result = calibrate_coverage(
+            n_rows=rows[0],
+            block_bars=int(args.block_bars),
+            block_counts=block_counts,
+            alphas=alphas,
+            draws=int(args.draws),
+            simulations=int(args.simulations),
+            autocorrelation=rhos[0],
+            effect=float(args.effect),
+            seed=int(args.seed),
+            compare_percentile=bool(args.compare_percentile),
+        )
     root = repo_root()
     protected = protected_digest(root)
     payload = {
@@ -4608,36 +4646,41 @@ def cmd_calibrate_coverage(args: argparse.Namespace) -> int:
     run_dir = _calibration_dir(args, "calibrate-coverage")
     payload["run_dir"] = str(run_dir)
     _write_json(run_dir / "calibrate-coverage.json", payload)
+    cells = payload.get("cells") or payload.get("rows") or []
     lines = [
         "# CI coverage calibration",
         "",
         f"- protected hash: {payload['protected_hash']}",
-        f"- rows: {payload['n_rows']} | blocks: {payload['n_blocks']}"
-        f" | block bars: {payload['block_bars']}",
-        f"- block autocorrelation: {payload['autocorrelation']}"
-        f" | true effect: {payload['effect']}",
-        f"- simulations: {args.simulations} | bootstrap draws: {args.draws}",
+        f"- method: {payload.get('method')} (df = {payload.get('df_rule')})",
+        f"- minimum effective blocks: {payload.get('min_effective_blocks')}",
+        f"- simulations per cell: {payload.get('simulations')}",
+        f"- claim: **{payload.get('claim')}**",
+        f"- failing cells: {len(payload.get('failing_cells') or [])}"
+        f" | refused underpowered cells: {len(payload.get('refused_cells') or [])}",
         "",
-        "| alpha | coverage | excludes zero |",
-        "| ----- | -------- | ------------- |",
+        "| rows | rho | blocks | alpha | coverage | excess | MC 2se | status |",
+        "| ---- | --- | ------ | ----- | -------- | ------ | ------ | ------ |",
     ]
-    for row in payload["alphas"].values():
+    for row in cells:
+        coverage = row.get("coverage")
+        excess = row.get("excess")
+        tolerance = row.get("tolerance")
         lines.append(
-            f"| {row['alpha']:.4g} | {row['coverage']:.4f} | "
-            f"{row['excludes_zero']:.4f} |"
+            f"| {row.get('n_rows')} | {row.get('autocorrelation')} | "
+            f"{row.get('block_count')} | {row.get('alpha')} | "
+            f"{'—' if coverage is None else f'{coverage:.4f}'} | "
+            f"{'—' if excess is None else f'{excess:.4f}'} | "
+            f"{'—' if tolerance is None else f'{tolerance:.4f}'} | "
+            f"{row.get('status')} |"
         )
-    uniformity = payload.get("p_value_uniformity") or {}
-    lines.extend(
-        [
-            "",
-            f"p-value uniformity: n={uniformity.get('n')} "
-            f"mean={uniformity.get('mean')} "
-            f"chi-square={uniformity.get('chi_square')}",
-            f"bins: {uniformity.get('counts')}",
-            "",
-            "Coverage should be at least 1 - alpha; at a zero effect the "
-            "exclude-zero rate should be at or below alpha.",
-        ]
+    lines.append("")
+    if payload.get("legacy_percentile_comparison"):
+        pass
+    lines.append(
+        "Coverage should be at least 1 - alpha. A cell is refused when it has "
+        "fewer than the calibrated minimum effective blocks; a non-refused cell "
+        "fails if its excess rate is above alpha by more than two Monte-Carlo "
+        "standard errors, or if it undercovers by the same margin."
     )
     (run_dir / "calibrate-coverage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     payload["markdown"] = str(run_dir / "calibrate-coverage.md")
@@ -4647,6 +4690,167 @@ def cmd_calibrate_coverage(args: argparse.Namespace) -> int:
     print("\n".join(lines))
     print(f"\nartifact: {run_dir}")
     return 0
+
+
+def canary_refresh(
+    root: Path,
+    *,
+    config: Mapping[str, Any],
+    queue: Sequence[Hypothesis],
+    run_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run both mechanical canaries and append verdicts to the canary record.
+
+    No LLM, no worktree, no pre-registration/results ledger entries: canaries
+    are harness checks, never trials. A provisional canary is a harness failure
+    (the shuffled labels produced skill, or a leaky feature passed as skill) and
+    is recorded as a harness_void so normal runs stop.
+    """
+    canaries = [hypothesis for hypothesis in queue if hypothesis.canary]
+    if not canaries:
+        raise SystemExit("no canary hypotheses in experiments/hypotheses.json")
+    protected = protected_digest(root)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    base = run_dir or (default_run_root() / "canaries")
+    outcomes: list[dict[str, Any]] = []
+    for hypothesis in canaries:
+        run_id = f"{stamp}-{hypothesis.id.lower()}"
+        ctx = Context(
+            root=root,
+            config=dict(config),
+            executor="mechanical",
+            trigger="canary-refresh",
+            run_id=run_id,
+            run_dir=base / run_id,
+            hypothesis=hypothesis,
+            lineage=hypothesis.stable_lineage,
+            seed=int(config.get("seed") or 0),
+        )
+        ctx.run_dir.mkdir(parents=True, exist_ok=True)
+        prereg: dict[str, Any] = {
+            "id": f"canary-{hypothesis.canary_kind}",
+            "kind": "preregister",
+            "run_id": run_id,
+            "hypothesis_id": hypothesis.id,
+            "title": hypothesis.title,
+            "family": "canary",
+            "lineage": hypothesis.stable_lineage,
+            "trial_index": 1,
+            "hypothesis_trial_index": 1,
+            "criteria_version": criteria_version(hypothesis.criteria),
+            "criteria": hypothesis.criteria,
+            "experiment": hypothesis.experiment,
+            "comparison": hypothesis.comparison,
+            "minimal_meaningful_effect": None,
+            "design": {},
+            "power": {},
+            "holdout_start": None,
+            "protected": protected,
+            "trigger": "canary-refresh",
+        }
+        ctx.prereg = prereg
+        if hypothesis.canary_kind == "null":
+            payload = run_primary_evaluate(ctx, prereg, controls="shuffle")
+            control = ((payload or {}).get("controls") or {}).get("shuffle") or {}
+            pooled = control.get("pooled") or {}
+            if not pooled:
+                verdict = {
+                    "passed": False,
+                    "outcome": "blocked",
+                    "reasons": ["null canary shuffle control did not run"],
+                    "metrics": {},
+                }
+            else:
+                scored = {**(payload or {}), "canary": True, "pooled": pooled}
+                verdict = evaluate_criteria(prereg, scored)
+        else:
+            payload = run_primary_evaluate(ctx, prereg, controls="both")
+            if payload is None:
+                verdict = {
+                    "passed": False,
+                    "outcome": "blocked",
+                    "reasons": ["positive canary produced no lab result"],
+                    "metrics": {},
+                }
+            else:
+                verdict = evaluate_criteria(prereg, payload)
+        if verdict.get("outcome") == "provisional":
+            kind = hypothesis.canary_kind
+            append_entry(
+                ctx.ledger,
+                {
+                    "kind": "harness_void",
+                    "run_id": run_id,
+                    "hypothesis_id": hypothesis.id,
+                    "reason": (
+                        f"{kind} canary produced provisional skill; the harness "
+                        "is void until a human clears it"
+                    ),
+                },
+            )
+            verdict = {
+                "passed": False,
+                "outcome": "invalid",
+                "reasons": [f"{kind} canary reached provisional: harness void"],
+                "metrics": verdict.get("metrics") or {},
+            }
+        artifact = ctx.artifacts.get("lab-evaluate")
+        record = record_verdict(ctx, prereg, artifact, verdict)
+        outcomes.append(
+            {
+                "canary": hypothesis.canary_kind,
+                "hypothesis_id": hypothesis.id,
+                "run_id": run_id,
+                "outcome": record.get("outcome"),
+                "passed": record.get("passed"),
+                "reasons": record.get("reasons") or [],
+                "protected_hash": record.get("protected_hash"),
+                "artifact": artifact,
+                "ledger_id": record.get("id"),
+            }
+        )
+    entries = read_ledger(root / "experiments" / "ledger.jsonl")
+    canary_entries = read_canary(root / "experiments" / CANARY_FILENAME)
+    scoreboard = render_scoreboard(entries, canary_entries=canary_entries)
+    canary_line = next(
+        (
+            line
+            for line in scoreboard.splitlines()
+            if line.startswith("- canary:")
+        ),
+        "- canary: **MISSING**",
+    )
+    return {
+        "action": "canary-refresh",
+        "protected_hash": protected["hash"],
+        "date": iso(),
+        "outcomes": outcomes,
+        "scoreboard_line": canary_line,
+        "passed": all(item["outcome"] in {"negative", "invalid"} for item in outcomes),
+    }
+
+
+def cmd_canary_refresh(args: argparse.Namespace) -> int:
+    root = repo_root()
+    config = load_config(root)
+    queue = load_queue(root / "experiments" / "hypotheses.json")
+    run_dir = (
+        Path(args.run_dir).expanduser().resolve() if args.run_dir else None
+    )
+    payload = canary_refresh(root, config=config, queue=queue, run_dir=run_dir)
+    artifact_dir = run_dir or (default_run_root() / "canaries")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(artifact_dir / "canary-refresh.json", payload)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    for item in payload["outcomes"]:
+        print(
+            f"{item['canary']:>8}: {item['outcome']:>8} "
+            f"(protected {str(item['protected_hash'])[:12]})"
+        )
+    print(payload["scoreboard_line"])
+    return 0 if payload["passed"] else 2
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -4718,26 +4922,79 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def design_scaled_mde(
+    pilot_mde: float | None,
+    *,
+    pilot_rows: int,
+    block_bars: int,
+    tickers: Sequence[str],
+    design: Mapping[str, Any],
+    bars_per_ticker: int,
+) -> dict[str, Any]:
+    """Scale a pilot MDE to the design's expected effective sample size.
+
+    ``design`` may declare ``kind`` (panel/history/pilot), ``tickers``,
+    ``barsPerTicker`` and ``tickerCorrelation``. The cross-ticker correlation
+    is a discount, never a credit: pooling correlated assets is not counted as
+    independent information. Every assumption is returned so the
+    pre-registration can print it.
+    """
+    design_kind = str(design.get("kind") or "pilot")
+    pilot_effective = max(1, math.ceil(int(pilot_rows) / max(1, int(block_bars))))
+    design_tickers = int(design.get("tickers") or len(tickers) or 1)
+    design_bars = int(design.get("barsPerTicker") or max(int(bars_per_ticker), 1))
+    cross_correlation = float(design.get("tickerCorrelation", 0.5))
+    effective_tickers = design_tickers / (
+        1.0 + (design_tickers - 1) * max(0.0, min(0.99, cross_correlation))
+    )
+    design_rows = design_bars * effective_tickers
+    design_effective = max(1, math.ceil(design_rows / max(1, int(block_bars))))
+    scale = (
+        math.sqrt(pilot_effective / design_effective) if design_effective else 1.0
+    )
+    scaled = float(pilot_mde) * scale if pilot_mde is not None else None
+    return {
+        "kind": design_kind,
+        "scale": float(scale),
+        "pilot_mde": pilot_mde,
+        "design_scaled_mde": scaled,
+        "pilot_rows": int(pilot_rows),
+        "pilot_effective_blocks": pilot_effective,
+        "design_rows": design_rows,
+        "design_effective_blocks": design_effective,
+        "assumptions": [
+            f"pilot rows pooled across {len(tickers)} ticker(s): {pilot_rows}",
+            f"pilot block width: {block_bars} bars; pilot effective blocks: {pilot_effective}",
+            f"design tickers: {design_tickers}; bars per ticker: {design_bars}",
+            f"cross-ticker correlation assumed: {cross_correlation:.2f}",
+            f"design effective tickers (correlation-discounted): {effective_tickers:.2f}",
+            f"design rows: {design_rows:.0f}; design effective blocks: {design_effective}",
+            "same per-row paired variance and serial correlation as the pilot",
+            "the new model/panel does not change the outcome variance per row",
+        ],
+    }
+
+
 def estimate_power(
     root: Path,
     config: Mapping[str, Any],
     hypothesis: Hypothesis,
     prereg: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Estimate the design's MDE at the pre-registered trial alpha.
+    """Estimate the pilot MDE, then scale it to the proposed design.
 
-    A cheap causal pilot: train the pre-registered primary config on each
-    walk-forward fold of the pre-cutoff slice and collect the paired
-    improvement series. The time-block bootstrap's standard error gives the
-    smallest effect the design can detect at the target power. For a
-    ``comparison: champion`` hypothesis the series is candidate-vs-retrained-
-    champion instead of candidate-vs-baseline.
+    The pilot is a cheap causal walk-forward of the pre-registered primary
+    config on the current pre-cutoff archive. Its MDE is the noise of *this*
+    sample. A panel or longer-history hypothesis is gated on the **design-
+    scaled** MDE: the pilot variance is rescaled by the expected effective
+    sample size (tickers, bars per ticker, and a cross-ticker correlation
+    discount). Both numbers and every assumption are recorded in the
+    pre-registration. The minimal meaningful effect is derived from economics
+    for directional/return targets; non-economic targets must declare a
+    hand-set value with a one-line justification.
     """
     criteria = dict(prereg.get("criteria") or {})
     experiment = dict(prereg.get("experiment") or {})
-    minimal = prereg.get("minimal_meaningful_effect")
-    if minimal is None:
-        return {"checked": False, "reason": "no minimal_meaningful_effect declared"}
     if hypothesis.canary or str(criteria.get("kind")) == "diagnostic":
         return {"checked": False, "reason": "canary/diagnostic does not need power"}
     target = str(criteria.get("target") or "fwd_direction")
@@ -4749,10 +5006,16 @@ def estimate_power(
     try:
         import numpy as np
 
-        from rl_crypto.power import minimum_detectable_effect
+        from rl_crypto.power import (
+            economic_minimal_meaningful_effect,
+            minimum_detectable_effect,
+        )
     except ImportError as exc:  # pragma: no cover - environment failure
         return {"checked": False, "reason": f"power module unavailable: {exc}"}
-    lab = load_model_lab(root)
+    try:
+        lab = load_model_lab(root)
+    except (OSError, ImportError) as exc:
+        return {"checked": False, "reason": f"model lab unavailable: {exc}"}
     config_obj = lab.Config(
         name=primary_config_name(experiment),
         feature_names=lab.resolve_feature_names(feature_set),
@@ -4760,6 +5023,7 @@ def estimate_power(
         horizon=horizon,
     )
     budgets = config.get("budgets") or {}
+    scope = config.get("scope") or {}
     tickers = [str(ticker) for ticker in experiment.get("tickers") or []]
     folds = int(experiment.get("folds") or budgets.get("folds", 4))
     block_bars = int(budgets.get("bootstrapBlockBars", 24))
@@ -4769,6 +5033,8 @@ def estimate_power(
     )
     baseline_values: list[float] = []
     champion_values: list[float] = []
+    return_values: list[float] = []
+    bars_per_ticker: int = 0
     per_ticker: dict[str, Any] = {}
     for ticker in tickers:
         rows, _ = lab.filter_rows_before(
@@ -4777,6 +5043,11 @@ def estimate_power(
         samples = lab.build_samples(
             rows, horizon=horizon, interval_seconds=lab.INTERVAL_SECONDS
         )
+        bars_per_ticker = max(bars_per_ticker, len(samples))
+        for sample in samples:
+            value = sample.targets.get("fwd_return")
+            if value is not None:
+                return_values.append(float(value))
         splits = lab.walk_forward(
             samples, folds=folds, horizon=horizon, targets=[target]
         )
@@ -4840,6 +5111,16 @@ def estimate_power(
                 else None
             ),
         }
+    chosen_values = champion_values if comparison == "champion" else baseline_values
+    if len(chosen_values) < 2:
+        return {
+            "checked": False,
+            "reason": "the pilot produced fewer than two paired observations",
+            "per_ticker": per_ticker,
+        }
+    pilot = minimum_detectable_effect(
+        chosen_values, alpha=alpha, block_bars=block_bars
+    )
     baseline_power = minimum_detectable_effect(
         baseline_values, alpha=alpha, block_bars=block_bars
     )
@@ -4848,20 +5129,97 @@ def estimate_power(
         if comparison == "champion" and champion_values
         else None
     )
-    chosen = champion_power if comparison == "champion" else baseline_power
-    mde = chosen.get("mde") if chosen else None
+    sigma = float(np.std(return_values, ddof=1)) if len(return_values) > 1 else 0.0
+
+    declared_effect = prereg.get("minimal_meaningful_effect")
+    justification = str(
+        prereg.get("minimal_meaningful_effect_justification") or ""
+    ).strip()
+    economics: dict[str, Any] | None = None
+    if target in {"fwd_direction", "fwd_return"}:
+        economics = economic_minimal_meaningful_effect(
+            target,
+            sigma=sigma,
+            fee_bps=float(
+                experiment.get("feeBps") or scope.get("feeBps", 10.0)
+            ),
+            slippage_bps=float(
+                experiment.get("slippageBps") or scope.get("slippageBps", 5.0)
+            ),
+            threshold=float(
+                experiment.get("threshold") or scope.get("threshold", 0.55)
+            ),
+        )
+        if economics is None:
+            return {
+                "checked": False,
+                "reason": "could not estimate per-bar sigma for the economics MME",
+                "per_ticker": per_ticker,
+            }
+        mme = float(economics["minimal_meaningful_effect"])
+        mme_source = "economics"
+    else:
+        if declared_effect is None:
+            return {
+                "checked": False,
+                "reason": (
+                    f"non-economic target {target!r} needs a hand-set "
+                    "minimal_meaningful_effect"
+                ),
+                "per_ticker": per_ticker,
+            }
+        if not justification:
+            return {
+                "checked": False,
+                "reason": (
+                    f"non-economic target {target!r} hand-set MME needs a "
+                    "one-line justification"
+                ),
+                "per_ticker": per_ticker,
+            }
+        mme = float(declared_effect)
+        mme_source = "hand-set"
+
+    design = dict(prereg.get("design") or {})
+    pilot_mde = pilot.get("mde")
+    scaled = design_scaled_mde(
+        pilot_mde,
+        pilot_rows=int(pilot.get("n") or 0),
+        block_bars=block_bars,
+        tickers=tickers,
+        design=design,
+        bars_per_ticker=bars_per_ticker,
+    )
+    design_kind = str(scaled["kind"])
+    scaled_mde = scaled["design_scaled_mde"]
+    if design_kind in {"panel", "history"}:
+        gate_mde = scaled_mde
+        basis = "design-scaled"
+    else:
+        gate_mde = pilot_mde
+        basis = "pilot"
+    underpowered = bool(
+        gate_mde is not None and float(gate_mde) > float(mme)
+    )
     return {
         "checked": True,
         "comparison": comparison,
         "target": target,
         "alpha": alpha,
-        "minimal_meaningful_effect": float(minimal),
+        "minimal_meaningful_effect": float(mme),
+        "minimal_meaningful_effect_source": mme_source,
+        "minimal_meaningful_effect_justification": justification,
+        "economics": economics,
+        "sigma": sigma,
+        "pilot_mde": pilot_mde,
+        "design_scaled_mde": scaled_mde,
+        "mde": gate_mde,
+        "mde_basis": basis,
+        "design": scaled,
+        "pilot": pilot,
         "baseline": baseline_power,
         "champion": champion_power,
-        "mde": mde,
-        "underpowered": bool(
-            mde is not None and float(mde) > float(minimal)
-        ),
+        "underpowered": underpowered,
         "per_ticker": per_ticker,
     }
 
@@ -4996,13 +5354,51 @@ def cmd_run(args: argparse.Namespace) -> int:
         feature_version=FEATURE_VERSION,
         protected=protected_digest(root),
     )
-    if run_type != "harness-change" and not args.force:
+    if (
+        run_type != "harness-change"
+        and not args.force
+        and criteria_version(hypothesis.criteria) >= 2
+    ):
         power_report = estimate_power(root, config, hypothesis, prereg)
         prereg["power"] = power_report
+        if power_report.get("minimal_meaningful_effect") is not None:
+            prereg["minimal_meaningful_effect"] = power_report[
+                "minimal_meaningful_effect"
+            ]
         _write_json(ctx.artifact("power.json"), power_report)
-        if power_report.get("underpowered"):
+        if (
+            not power_report.get("checked")
+            and str((hypothesis.criteria or {}).get("kind")) == "improvement"
+            and criteria_version(hypothesis.criteria) >= 3
+            and not hypothesis.canary
+        ):
             reason = (
-                "underpowered: the design's minimum detectable effect "
+                "power: "
+                + str(power_report.get("reason") or "power could not be estimated")
+                + "; no trial is consumed"
+            )
+            append_entry(
+                ctx.ledger,
+                {
+                    "kind": "blocked",
+                    "run_id": run_id,
+                    "hypothesis_id": hypothesis.id,
+                    "stage": "preregister",
+                    "reason": reason,
+                    "underpowered": True,
+                    "power": power_report,
+                },
+            )
+            if args.json:
+                print(json.dumps({"outcome": "blocked", "reason": reason}, indent=2))
+            else:
+                print(reason)
+            return 2
+        if power_report.get("underpowered"):
+            basis = power_report.get("mde_basis") or "pilot"
+            reason = (
+                "underpowered: the "
+                f"{basis} minimum detectable effect "
                 f"{power_report.get('mde')} exceeds the minimal meaningful effect "
                 f"{power_report.get('minimal_meaningful_effect')} at "
                 f"alpha={power_report.get('alpha')}; no trial is consumed"
@@ -5667,14 +6063,18 @@ def build_parser() -> argparse.ArgumentParser:
         "calibrate-coverage",
         help="offline: CI coverage under known-zero block-autocorrelated draws",
     )
-    cal_coverage.add_argument("--rows", type=int, default=600)
+    cal_coverage.add_argument("--rows", default="600")
     cal_coverage.add_argument("--block-bars", type=int, default=24)
+    cal_coverage.add_argument(
+        "--block-counts", default="12,16,20,24,32,50,100"
+    )
     cal_coverage.add_argument("--alphas", default="0.01,0.05,0.1,0.2")
     cal_coverage.add_argument("--draws", type=int, default=1000)
-    cal_coverage.add_argument("--simulations", type=int, default=400)
-    cal_coverage.add_argument("--autocorrelation", type=float, default=0.8)
+    cal_coverage.add_argument("--simulations", type=int, default=2000)
+    cal_coverage.add_argument("--autocorrelation", default="0.8")
     cal_coverage.add_argument("--effect", type=float, default=0.0)
     cal_coverage.add_argument("--seed", type=int, default=0)
+    cal_coverage.add_argument("--compare-percentile", action="store_true")
     cal_coverage.add_argument("--run-dir", default=None)
     cal_coverage.add_argument("--json", action="store_true")
     cal_coverage.set_defaults(func=cmd_calibrate_coverage)
@@ -5759,6 +6159,14 @@ def build_parser() -> argparse.ArgumentParser:
     cal_leaks.add_argument("--run-dir", default=None)
     cal_leaks.add_argument("--json", action="store_true")
     cal_leaks.set_defaults(func=cmd_calibrate_leaks)
+
+    canary = sub.add_parser(
+        "canary-refresh",
+        help="run the null and positive canaries mechanically; never a trial",
+    )
+    canary.add_argument("--run-dir", default=None)
+    canary.add_argument("--json", action="store_true")
+    canary.set_defaults(func=cmd_canary_refresh)
 
     verify = sub.add_parser("verify", help="forward-test status and bundle freshness")
     verify.add_argument("--run-dir", default=None)

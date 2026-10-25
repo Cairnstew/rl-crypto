@@ -2139,3 +2139,143 @@ def test_auditor_check_reports_recall_and_false_blocks(tmp_path, monkeypatch):
     assert payload["counts"]["clean"] == 4
     assert payload["recall"] == 1.0
     assert payload["false_block_rate"] == 0.0
+
+
+def test_design_scaled_mde_pools_tickers_and_history_with_printed_assumptions():
+    pilot = tool.design_scaled_mde(
+        0.01,
+        pilot_rows=3000,
+        block_bars=24,
+        tickers=["BTC/USD", "ETH/USD", "SOL/USD"],
+        design={
+            "kind": "history",
+            "tickers": 3,
+            "barsPerTicker": 8760,
+            "tickerCorrelation": 0.5,
+        },
+        bars_per_ticker=1000,
+    )
+    assert pilot["kind"] == "history"
+    assert pilot["design_rows"] == pytest.approx(8760 * 1.5)
+    assert pilot["design_scaled_mde"] < 0.01
+    assert any("cross-ticker correlation" in line for line in pilot["assumptions"])
+
+
+def test_design_scaling_never_credits_correlated_tickers_as_independent():
+    uncorrelated = tool.design_scaled_mde(
+        0.01,
+        pilot_rows=3000,
+        block_bars=24,
+        tickers=["BTC/USD"],
+        design={"kind": "panel", "tickers": 3, "barsPerTicker": 1000, "tickerCorrelation": 0.0},
+        bars_per_ticker=1000,
+    )
+    correlated = tool.design_scaled_mde(
+        0.01,
+        pilot_rows=3000,
+        block_bars=24,
+        tickers=["BTC/USD"],
+        design={"kind": "panel", "tickers": 3, "barsPerTicker": 1000, "tickerCorrelation": 0.5},
+        bars_per_ticker=1000,
+    )
+    assert correlated["design_scaled_mde"] > uncorrelated["design_scaled_mde"]
+
+
+def test_deferred_underpowered_hypotheses_are_not_selected():
+    from rl_crypto.experiments import Hypothesis, select_hypothesis
+
+    deferred = Hypothesis.from_dict(
+        {
+            **_hypothesis("H3"),
+            "status": "deferred-underpowered",
+            "status_reason": "pilot effect far below the economics MME",
+            "reevaluate_when": "a longer horizon lowers the MME",
+        }
+    )
+    open_hypothesis = Hypothesis.from_dict(_hypothesis("H1", needs=[]))
+    assert select_hypothesis([deferred, open_hypothesis], []) is open_hypothesis
+    assert select_hypothesis([deferred], []) is None
+
+
+def test_canary_refresh_appends_only_to_the_canary_record(tmp_path, monkeypatch):
+    canary_hypotheses = []
+    for kind in ("null", "positive"):
+        payload = _hypothesis(f"H0-canary-{kind}")
+        payload["family"] = "canary"
+        payload["canary"] = True
+        payload["canary_kind"] = kind
+        payload["experiment"] = {
+            "action": "evaluate",
+            "tickers": ["BTC/USD"],
+            "targets": ["fwd_direction"],
+            "featureSet": "all",
+            "modelSet": "reference",
+            "horizon": 1,
+            "folds": 4,
+            "maxConfigs": 1,
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+        }
+        payload["criteria"] = {
+            "kind": "improvement",
+            "criteria_version": 3,
+            "target": "fwd_direction",
+            "primary": {"featureSet": "all", "modelSet": "reference", "horizon": 1},
+            "alpha": 0.05,
+            "fold_rule": "all_positive",
+            "require_controls": True,
+            "require_multiple_tickers": False,
+            "requires_promote": False,
+        }
+        canary_hypotheses.append(payload)
+    root = _repo(tmp_path, canary_hypotheses[0])
+    (root / "experiments" / "hypotheses.json").write_text(
+        json.dumps({"hypotheses": canary_hypotheses}), encoding="utf-8"
+    )
+    _env(monkeypatch, root, tmp_path, fake_opencode=False, canaries=False)
+    ledger_before = (root / "experiments" / "ledger.jsonl").read_text()
+
+    negative = {
+        "mean_improvement": -0.01,
+        "ci_low": -0.02,
+        "ci_high": 0.0,
+        "n": 100,
+        "alpha": 0.025,
+        "fold_improvements": [-0.01] * 4,
+        "resolution_ok": True,
+    }
+    positive_payload = {
+        "action": "evaluate",
+        "primary": "all+reference+h1",
+        "results": [{"ticker": "BTC/USD"}],
+        "pooled": negative,
+        "controls": {"shuffle": {"pooled": negative}},
+        "leak_detected": True,
+        "leak_features": [{"feature": "leak_next_bar_return", "target": "fwd_return", "correlation": 1.0}],
+        "comparison": "baseline",
+    }
+
+    def fake_run(ctx, prereg, **kwargs):
+        if ctx.hypothesis.canary_kind == "null":
+            return {
+                **positive_payload,
+                "leak_detected": False,
+                "leak_features": [],
+            }
+        return positive_payload
+
+    monkeypatch.setattr(tool, "run_primary_evaluate", fake_run)
+    from rl_crypto.experiments import CANARY_FILENAME, read_canary
+
+    result = tool.canary_refresh(
+        root,
+        config=tool.load_config(root),
+        queue=tool.load_queue(root / "experiments" / "hypotheses.json"),
+        run_dir=tmp_path / "canaries",
+    )
+    assert result["passed"] is True
+    assert [item["outcome"] for item in result["outcomes"]] == ["negative", "invalid"]
+    assert (root / "experiments" / "ledger.jsonl").read_text() == ledger_before
+    canaries = read_canary(root / "experiments" / CANARY_FILENAME)
+    assert [entry["canary_kind"] for entry in canaries] == ["null", "positive"]
+    assert all(entry["protected_hash"] for entry in canaries)
+    assert result["scoreboard_line"].startswith("- canary:")
