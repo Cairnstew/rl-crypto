@@ -1027,7 +1027,7 @@
 {"close": 1.0175, "high": 1.0227, "low": 0.9984, "open": 0.9985, "ticker": "FIL/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 111550.613}
 {"close": 1.0167, "high": 1.0211, "low": 1.0086, "open": 1.0173, "ticker": "FIL/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 68808.773}
 {"close": 1.0189, "high": 1.0205, "low": 1.0089, "open": 1.0169, "ticker": "FIL/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 95070.44}
-{"close": 1.0289000000000001, "high": 1.0388000000000002, "low": 1.0186, "open": 1.01915, "ticker": "FIL/USD", "timestamp": "2026-09-25T11:00:00Z", "volume": 118160.46829103999}
+{"close": 1.0298, "high": 1.0396, "low": 1.0182, "open": 1.0193, "ticker": "FIL/USD", "timestamp": "2026-09-25T11:00:00Z", "volume": 162957.8}
 {"close": 1.0263499999999999, "high": 1.0344, "low": 1.0114, "open": 1.0307, "ticker": "FIL/USD", "timestamp": "2026-09-25T12:00:00Z", "volume": 73714.59846672}
 {"close": 1.01635, "high": 1.0335999999999999, "low": 1.00765, "open": 1.0244, "ticker": "FIL/USD", "timestamp": "2026-09-25T13:00:00Z", "volume": 89109.05953613}
 {"close": 1.0179, "high": 1.0194, "low": 0.9936499999999999, "open": 1.0161, "ticker": "FIL/USD", "timestamp": "2026-09-25T14:00:00Z", "volume": 91175.642800975}
@@ -1747,4 +1747,5 @@
 {"close": 0.91405, "high": 0.9222, "low": 0.91, "open": 0.92215, "ticker": "FIL/USD", "timestamp": "2026-10-25T08:00:00Z", "volume": 9842.973533825}
 {"close": 0.916, "high": 0.916, "low": 0.9056500000000001, "open": 0.91265, "ticker": "FIL/USD", "timestamp": "2026-10-25T09:00:00Z", "volume": 82610.224851655}
 {"close": 0.9126000000000001, "high": 0.91815, "low": 0.90925, "open": 0.9164, "ticker": "FIL/USD", "timestamp": "2026-10-25T10:00:00Z", "volume": 31146.845927535}
-{"close": 0.9134500000000001, "high": 0.9143, "low": 0.9097500000000001, "open": 0.9137, "ticker": "FIL/USD", "timestamp": "2026-10-25T11:00:00Z", "volume": 6804.7717435899995}
+{"close": 0.9174500000000001, "high": 0.91815, "low": 0.9087000000000001, "open": 0.9137, "ticker": "FIL/USD", "timestamp": "2026-10-25T11:00:00Z", "volume": 37075.678324105}
+{"close": 0.91495, "high": 0.9195500000000001, "low": 0.91425, "open": 0.9171, "ticker": "FIL/USD", "timestamp": "2026-10-25T12:00:00Z", "volume": 3289.797571175}
