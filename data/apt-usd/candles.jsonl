@@ -1022,11 +1022,11 @@
 {"close": 0.7968, "high": 0.7983, "low": 0.7904, "open": 0.7931, "ticker": "APT/USD", "timestamp": "2026-09-25T03:00:00Z", "volume": 46274.515}
 {"close": 0.8046, "high": 0.8093, "low": 0.7923, "open": 0.7965, "ticker": "APT/USD", "timestamp": "2026-09-25T04:00:00Z", "volume": 25965.833}
 {"close": 0.804, "high": 0.807, "low": 0.7992, "open": 0.8043, "ticker": "APT/USD", "timestamp": "2026-09-25T05:00:00Z", "volume": 21984.126}
-{"close": 0.8043, "high": 0.81, "low": 0.802, "open": 0.80365, "ticker": "APT/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 23869.13778251}
-{"close": 0.80745, "high": 0.8108, "low": 0.8007, "open": 0.80455, "ticker": "APT/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 39615.398472545}
-{"close": 0.8264, "high": 0.8279, "low": 0.8079000000000001, "open": 0.808, "ticker": "APT/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 49674.50396736}
-{"close": 0.8332999999999999, "high": 0.83725, "low": 0.82055, "open": 0.8255, "ticker": "APT/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 68079.709530345}
-{"close": 0.8288, "high": 0.83395, "low": 0.8246, "open": 0.8329500000000001, "ticker": "APT/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 62465.466682975006}
+{"close": 0.8043, "high": 0.81, "low": 0.8016, "open": 0.804, "ticker": "APT/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 35089.311}
+{"close": 0.8074, "high": 0.8112, "low": 0.8005, "open": 0.8046, "ticker": "APT/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 68369.056}
+{"close": 0.8259, "high": 0.828, "low": 0.8082, "open": 0.8084, "ticker": "APT/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 78202.36}
+{"close": 0.8331, "high": 0.837, "low": 0.8209, "open": 0.8256, "ticker": "APT/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 81156.641}
+{"close": 0.8287, "high": 0.8339, "low": 0.825, "open": 0.8333, "ticker": "APT/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 99661.668}
 {"close": 0.8418, "high": 0.8482000000000001, "low": 0.8277, "open": 0.8281499999999999, "ticker": "APT/USD", "timestamp": "2026-09-25T11:00:00Z", "volume": 93023.572438655}
 {"close": 0.8453999999999999, "high": 0.8563, "low": 0.8323499999999999, "open": 0.8423, "ticker": "APT/USD", "timestamp": "2026-09-25T12:00:00Z", "volume": 101538.88441110501}
 {"close": 0.8409, "high": 0.8528, "low": 0.83395, "open": 0.845, "ticker": "APT/USD", "timestamp": "2026-09-25T13:00:00Z", "volume": 65449.847090045}
@@ -1742,4 +1742,9 @@
 {"close": 0.7124, "high": 0.71545, "low": 0.7119, "open": 0.71305, "ticker": "APT/USD", "timestamp": "2026-10-25T03:00:00Z", "volume": 3795.531543}
 {"close": 0.71285, "high": 0.7139, "low": 0.7113, "open": 0.71285, "ticker": "APT/USD", "timestamp": "2026-10-25T04:00:00Z", "volume": 6640.40624235}
 {"close": 0.7069, "high": 0.713, "low": 0.70545, "open": 0.71285, "ticker": "APT/USD", "timestamp": "2026-10-25T05:00:00Z", "volume": 7567.207509039999}
-{"close": 0.703, "high": 0.7054499999999999, "low": 0.70165, "open": 0.7053499999999999, "ticker": "APT/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 4986.316806405}
+{"close": 0.6994, "high": 0.7054499999999999, "low": 0.69735, "open": 0.7053499999999999, "ticker": "APT/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 13339.927233800001}
+{"close": 0.70195, "high": 0.70255, "low": 0.6974499999999999, "open": 0.6990000000000001, "ticker": "APT/USD", "timestamp": "2026-10-25T07:00:00Z", "volume": 8237.13161952}
+{"close": 0.6901999999999999, "high": 0.7009000000000001, "low": 0.6888, "open": 0.70085, "ticker": "APT/USD", "timestamp": "2026-10-25T08:00:00Z", "volume": 17982.84499288}
+{"close": 0.6948, "high": 0.69485, "low": 0.6877, "open": 0.6917, "ticker": "APT/USD", "timestamp": "2026-10-25T09:00:00Z", "volume": 5140.40226876}
+{"close": 0.69075, "high": 0.6948, "low": 0.69065, "open": 0.69445, "ticker": "APT/USD", "timestamp": "2026-10-25T10:00:00Z", "volume": 10321.286168}
+{"close": 0.6927000000000001, "high": 0.69395, "low": 0.6898, "open": 0.6916, "ticker": "APT/USD", "timestamp": "2026-10-25T11:00:00Z", "volume": 59930.2034785}

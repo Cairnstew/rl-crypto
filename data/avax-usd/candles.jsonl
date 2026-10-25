@@ -1034,11 +1034,11 @@
 {"close": 10.179, "high": 10.209, "low": 10.1, "open": 10.193, "ticker": "AVAX/USD", "timestamp": "2026-09-25T03:00:00Z", "volume": 35609.09855297}
 {"close": 10.222, "high": 10.3, "low": 10.167, "open": 10.178, "ticker": "AVAX/USD", "timestamp": "2026-09-25T04:00:00Z", "volume": 41264.87090236}
 {"close": 10.199, "high": 10.252, "low": 10.165, "open": 10.229, "ticker": "AVAX/USD", "timestamp": "2026-09-25T05:00:00Z", "volume": 23154.15978463}
-{"close": 10.1625, "high": 10.2285, "low": 10.1285, "open": 10.1995, "ticker": "AVAX/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 23709.416657399997}
-{"close": 10.21, "high": 10.2295, "low": 10.0775, "open": 10.159500000000001, "ticker": "AVAX/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 35200.273439335}
-{"close": 10.3755, "high": 10.3885, "low": 10.178, "open": 10.211, "ticker": "AVAX/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 48264.98113925}
-{"close": 10.436, "high": 10.4845, "low": 10.337, "open": 10.377500000000001, "ticker": "AVAX/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 64001.852751935}
-{"close": 10.4025, "high": 10.4915, "low": 10.344999999999999, "open": 10.436, "ticker": "AVAX/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 71926.73960709}
+{"close": 10.16, "high": 10.232, "low": 10.127, "open": 10.198, "ticker": "AVAX/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 34258.35300854}
+{"close": 10.209, "high": 10.23, "low": 10.076, "open": 10.157, "ticker": "AVAX/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 58580.47244542}
+{"close": 10.377, "high": 10.39, "low": 10.171, "open": 10.21, "ticker": "AVAX/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 58090.34454269}
+{"close": 10.433, "high": 10.491, "low": 10.335, "open": 10.378, "ticker": "AVAX/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 48807.8059719}
+{"close": 10.406, "high": 10.519, "low": 10.344, "open": 10.433, "ticker": "AVAX/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 114578.79979367}
 {"close": 10.585, "high": 10.693, "low": 10.392, "open": 10.399999999999999, "ticker": "AVAX/USD", "timestamp": "2026-09-25T11:00:00Z", "volume": 91523.710045605}
 {"close": 10.5775, "high": 10.74, "low": 10.4415, "open": 10.588, "ticker": "AVAX/USD", "timestamp": "2026-09-25T12:00:00Z", "volume": 127530.94140463}
 {"close": 10.3955, "high": 10.600999999999999, "low": 10.303, "open": 10.579, "ticker": "AVAX/USD", "timestamp": "2026-09-25T13:00:00Z", "volume": 67134.26461463}
@@ -1754,4 +1754,9 @@
 {"close": 8.9595, "high": 8.9965, "low": 8.954, "open": 8.965, "ticker": "AVAX/USD", "timestamp": "2026-10-25T03:00:00Z", "volume": 1766.871151585}
 {"close": 8.947, "high": 8.964500000000001, "low": 8.945, "open": 8.959, "ticker": "AVAX/USD", "timestamp": "2026-10-25T04:00:00Z", "volume": 1653.3585530199998}
 {"close": 8.8695, "high": 8.958, "low": 8.853, "open": 8.9465, "ticker": "AVAX/USD", "timestamp": "2026-10-25T05:00:00Z", "volume": 6264.6996838}
-{"close": 8.869, "high": 8.8725, "low": 8.842500000000001, "open": 8.869, "ticker": "AVAX/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 6196.959786215}
+{"close": 8.818999999999999, "high": 8.873000000000001, "low": 8.804, "open": 8.869, "ticker": "AVAX/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 12438.097222665001}
+{"close": 8.8675, "high": 8.8795, "low": 8.815000000000001, "open": 8.823, "ticker": "AVAX/USD", "timestamp": "2026-10-25T07:00:00Z", "volume": 1560.7441956}
+{"close": 8.798, "high": 8.87, "low": 8.777000000000001, "open": 8.868500000000001, "ticker": "AVAX/USD", "timestamp": "2026-10-25T08:00:00Z", "volume": 2697.8301748100002}
+{"close": 8.8, "high": 8.810500000000001, "low": 8.7355, "open": 8.807, "ticker": "AVAX/USD", "timestamp": "2026-10-25T09:00:00Z", "volume": 4098.049305935}
+{"close": 8.778500000000001, "high": 8.805, "low": 8.753, "open": 8.8005, "ticker": "AVAX/USD", "timestamp": "2026-10-25T10:00:00Z", "volume": 2837.344881855}
+{"close": 8.8125, "high": 8.818999999999999, "low": 8.7795, "open": 8.8005, "ticker": "AVAX/USD", "timestamp": "2026-10-25T11:00:00Z", "volume": 1522.88931395}

@@ -1035,11 +1035,11 @@
 {"close": 772.81, "high": 774.75, "low": 770.73, "open": 773.23, "ticker": "BNB/USD", "timestamp": "2026-09-25T03:00:00Z", "volume": 345.89013}
 {"close": 773.38, "high": 774.05, "low": 771.01, "open": 772.8, "ticker": "BNB/USD", "timestamp": "2026-09-25T04:00:00Z", "volume": 199.666}
 {"close": 774.81, "high": 775.01, "low": 772.47, "open": 773.41, "ticker": "BNB/USD", "timestamp": "2026-09-25T05:00:00Z", "volume": 73.30268}
-{"close": 773.12, "high": 775.8199999999999, "low": 772.825, "open": 774.565, "ticker": "BNB/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 43.82026}
-{"close": 773.4549999999999, "high": 774.205, "low": 770.735, "open": 773.065, "ticker": "BNB/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 60.46012}
-{"close": 774.94, "high": 776.59, "low": 773.5, "open": 773.5, "ticker": "BNB/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 79.28443}
-{"close": 776.74, "high": 779.625, "low": 775.0550000000001, "open": 775.2650000000001, "ticker": "BNB/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 189.54440499999998}
-{"close": 776.7149999999999, "high": 777.355, "low": 774.28, "open": 776.7, "ticker": "BNB/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 100.95957}
+{"close": 773.16, "high": 775.96, "low": 772.75, "open": 774.39, "ticker": "BNB/USD", "timestamp": "2026-09-25T06:00:00Z", "volume": 67.09118}
+{"close": 773.38, "high": 774.21, "low": 770.78, "open": 773.07, "ticker": "BNB/USD", "timestamp": "2026-09-25T07:00:00Z", "volume": 69.12703}
+{"close": 774.89, "high": 776.47, "low": 773.76, "open": 773.76, "ticker": "BNB/USD", "timestamp": "2026-09-25T08:00:00Z", "volume": 75.59192}
+{"close": 776.79, "high": 779.55, "low": 775.02, "open": 775.44, "ticker": "BNB/USD", "timestamp": "2026-09-25T09:00:00Z", "volume": 176.91412}
+{"close": 776.75, "high": 777.32, "low": 774.28, "open": 776.69, "ticker": "BNB/USD", "timestamp": "2026-09-25T10:00:00Z", "volume": 113.42234}
 {"close": 779.325, "high": 786.895, "low": 776.6, "open": 776.77, "ticker": "BNB/USD", "timestamp": "2026-09-25T11:00:00Z", "volume": 495.87061500000004}
 {"close": 777.645, "high": 780.2149999999999, "low": 774.135, "open": 779.5, "ticker": "BNB/USD", "timestamp": "2026-09-25T12:00:00Z", "volume": 190.27671500000002}
 {"close": 773.97, "high": 778.4200000000001, "low": 771.0899999999999, "open": 777.2049999999999, "ticker": "BNB/USD", "timestamp": "2026-09-25T13:00:00Z", "volume": 149.93610999999999}
@@ -1755,4 +1755,9 @@
 {"close": 744.585, "high": 744.84, "low": 742.995, "open": 744.1700000000001, "ticker": "BNB/USD", "timestamp": "2026-10-25T03:00:00Z", "volume": 25.998185}
 {"close": 747.3199999999999, "high": 747.77, "low": 744.535, "open": 744.625, "ticker": "BNB/USD", "timestamp": "2026-10-25T04:00:00Z", "volume": 37.47087}
 {"close": 742.89, "high": 747.565, "low": 742.585, "open": 747.165, "ticker": "BNB/USD", "timestamp": "2026-10-25T05:00:00Z", "volume": 45.10006}
-{"close": 743.2449999999999, "high": 744.7750000000001, "low": 741.63, "open": 742.75, "ticker": "BNB/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 34.411535}
+{"close": 741.155, "high": 744.7750000000001, "low": 740.815, "open": 742.75, "ticker": "BNB/USD", "timestamp": "2026-10-25T06:00:00Z", "volume": 43.8719}
+{"close": 743.7, "high": 744.7950000000001, "low": 741.21, "open": 741.28, "ticker": "BNB/USD", "timestamp": "2026-10-25T07:00:00Z", "volume": 36.468445}
+{"close": 738.5050000000001, "high": 743.685, "low": 737.95, "open": 743.5450000000001, "ticker": "BNB/USD", "timestamp": "2026-10-25T08:00:00Z", "volume": 173.60567500000002}
+{"close": 736.51, "high": 739.0150000000001, "low": 734.51, "open": 738.6800000000001, "ticker": "BNB/USD", "timestamp": "2026-10-25T09:00:00Z", "volume": 110.84489500000001}
+{"close": 737.0699999999999, "high": 738.175, "low": 736.12, "open": 736.53, "ticker": "BNB/USD", "timestamp": "2026-10-25T10:00:00Z", "volume": 52.190039999999996}
+{"close": 740.575, "high": 740.965, "low": 737.89, "open": 737.89, "ticker": "BNB/USD", "timestamp": "2026-10-25T11:00:00Z", "volume": 31.341859999999997}
