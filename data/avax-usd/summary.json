@@ -1,13 +1,13 @@
 {
   "schema": "rl-crypto/pipeline/3",
   "ticker": "AVAX/USD",
-  "generated_at": "2026-10-25T16:16:08Z",
+  "generated_at": "2026-10-25T16:40:48Z",
   "timeframe": "1h",
   "horizon": 1,
   "feature_version": "rl-crypto/features/2",
   "fetch_window": {
-    "start": "2026-08-26T16:16:08Z",
-    "end": "2026-10-25T16:16:08Z"
+    "start": "2026-08-26T16:40:48Z",
+    "end": "2026-10-25T16:40:48Z"
   },
   "archive": {
     "rows": 1767,
@@ -33,14 +33,14 @@
       "holdout": {
         "n_samples": 348,
         "metrics": {
-          "rmse": 0.007793355852815128,
-          "mae": 0.005420566816229359,
-          "r2": -0.02536512183956985
+          "rmse": 0.007792128198404967,
+          "mae": 0.005415550882087712,
+          "r2": -0.025296151762380426
         },
         "baseline": {
-          "rmse": 0.007733532344103673,
-          "mae": 0.005421101625809872,
-          "r2": -0.009683685703106848
+          "rmse": 0.0077320936967308984,
+          "mae": 0.0054160856916682255,
+          "r2": -0.009558211193748223
         },
         "beats_baseline": false
       },
@@ -79,14 +79,14 @@
       "holdout": {
         "n_samples": 348,
         "metrics": {
-          "rmse": 1.1591856913378882,
-          "mae": 0.9047590673831802,
-          "r2": -0.1025592475776651
+          "rmse": 1.1586721596545946,
+          "mae": 0.9037644978843961,
+          "r2": -0.1015932979089662
         },
         "baseline": {
-          "rmse": 1.1042820993124947,
-          "mae": 0.8235859723141248,
-          "r2": -0.0005895830738289476
+          "rmse": 1.10425303199663,
+          "mae": 0.8234004932645762,
+          "r2": -0.0005466492820960234
         },
         "beats_baseline": false
       },
@@ -102,14 +102,14 @@
       "holdout": {
         "n_samples": 348,
         "metrics": {
-          "rmse": 0.708079794824734,
-          "mae": 0.5649336696205334,
-          "r2": 0.23078870985637479
+          "rmse": 0.7022935648087797,
+          "mae": 0.562601523870697,
+          "r2": 0.2385610149147963
         },
         "baseline": {
-          "rmse": 0.809976908567649,
-          "mae": 0.6447746644748803,
-          "r2": -0.006529532293976903
+          "rmse": 0.8072790456679487,
+          "mae": 0.6424425187250439,
+          "r2": -0.006109130380768324
         },
         "beats_baseline": true
       },
@@ -147,13 +147,13 @@
     "signal": null,
     "confidence": null,
     "predictions": {
-      "fwd_return": -0.0020573606011643824,
+      "fwd_return": -0.001514055250895885,
       "fwd_direction": 0.0,
-      "fwd_volatility": 0.0009486476992731726,
-      "fwd_volume_ratio": 0.00630903539252789
+      "fwd_volatility": 0.0011829766484753482,
+      "fwd_volume_ratio": 0.0051459810473238055
     },
     "probabilities": {
-      "fwd_direction": 0.43716063440941605
+      "fwd_direction": 0.4412211115523834
     },
     "notes": [
       "signal withheld: fwd_direction did not beat the baseline out of sample",
@@ -164,15 +164,15 @@
     "fetched": true,
     "market_ok": true,
     "news_ok": true,
-    "price": 8.869,
-    "latest_sentiment": 0.2217,
+    "price": 8.8865,
+    "latest_sentiment": 0.0295,
     "notes": []
   },
   "notes": [
     "dropped 6 constant feature(s) with no variation in training data: sentiment, sentiment_delta, sentiment_ewma_6, articles_log, novelty, has_news",
-    "fwd_return: out-of-sample rmse=0.00779 vs baseline 0.00773 (-0.77% vs baseline) — does not beat it (348 held-out rows, need 1% to count as skill)",
+    "fwd_return: out-of-sample rmse=0.00779 vs baseline 0.00773 (-0.78% vs baseline) — does not beat it (348 held-out rows, need 1% to count as skill)",
     "fwd_direction: out-of-sample log_loss=0.69171 vs baseline 0.69447 (+0.40% vs baseline) — does not beat it (348 held-out rows, need 1% to count as skill)",
-    "fwd_volatility: out-of-sample log-space rmse=1.15919 vs baseline 1.10428 (-4.97% vs baseline) — does not beat it (348 held-out rows, need 1% to count as skill)",
-    "fwd_volume_ratio: out-of-sample rmse=0.70808 vs baseline 0.80998 (+12.58% vs baseline) — beats it (348 held-out rows, need 1% to count as skill)"
+    "fwd_volatility: out-of-sample log-space rmse=1.15867 vs baseline 1.10425 (-4.93% vs baseline) — does not beat it (348 held-out rows, need 1% to count as skill)",
+    "fwd_volume_ratio: out-of-sample rmse=0.70229 vs baseline 0.80728 (+13.00% vs baseline) — beats it (348 held-out rows, need 1% to count as skill)"
   ]
 }
