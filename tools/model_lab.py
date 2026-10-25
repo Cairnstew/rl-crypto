@@ -52,6 +52,10 @@ from rl_crypto.ml.tier1 import (
 )
 from rl_crypto.ml.training_config import apply_promotion
 from rl_crypto.models import to_iso, utcnow
+from rl_crypto.power import (
+    MIN_EFFECTIVE_BLOCKS,
+    effective_sample_t_interval_grouped,
+)
 from rl_crypto.samples import Sample, build_samples
 from rl_crypto.structural import perturbation_invariance, truncation_invariance
 from rl_crypto.targets import TARGET_KINDS, TARGET_NAMES, label_purge
@@ -72,6 +76,22 @@ MIN_BOOTSTRAP_BLOCKS = 24
 #: A percentile bootstrap resolves quantiles at ``1 / B``; a two-sided tail of
 #: ``alpha / 2`` needs at least two order statistics in that tail.
 RESOLUTION_ORDER_STATS = 2
+
+#: Baselines compared for every target. EWMA and HAR are volatility baselines:
+#: they predict a forward realised-volatility label from a causal volatility
+#: proxy (the trailing realised vol already in the feature row).
+BASELINE_MODES: tuple[str, ...] = (
+    "constant",
+    "seasonal",
+    "persistence",
+    "ewma",
+    "har",
+)
+
+#: EWMA span (bars) for the volatility baseline.
+EWMA_SPAN = 24
+#: HAR rolling windows (bars): 1h, 24h, 168h.
+HAR_WINDOWS = (1, 24, 168)
 
 MODEL_SETS: dict[str, dict[str, str]] = {
     "reference": {
@@ -494,6 +514,124 @@ def _persistence_series(
     return out
 
 
+def _volatility_proxy(sample: Sample) -> float | None:
+    """A causal per-row volatility proxy, from features only.
+
+    ``vol_3``/``vol_6`` are realised stdevs of past returns and are already
+    causal. When both are missing (early rows), the absolute last return is a
+    coarse fallback; if that is missing too, the row is skipped rather than
+    imputed.
+    """
+    for name in ("vol_3", "vol_6"):
+        value = sample.features.get(name)
+        if value is not None and float(value) > 0.0:
+            return float(value)
+    ret = sample.features.get("ret_1")
+    if ret is not None:
+        return abs(float(ret)) if abs(float(ret)) > 0.0 else None
+    return None
+
+
+def _rolling_mean(values: Sequence[float | None], index: int, window: int) -> float | None:
+    start = max(0, index - max(1, int(window)) + 1)
+    usable = [values[j] for j in range(start, index + 1) if values[j] is not None]
+    if not usable:
+        return None
+    return float(np.mean(usable))
+
+
+def _ewma_predictions(
+    combined: Sequence[Sample],
+    *,
+    spans: int = EWMA_SPAN,
+) -> list[float | None]:
+    """Causal EWMA of the volatility proxy, in log space when possible."""
+    out: list[float | None] = []
+    state: float | None = None
+    decay = 1.0 - 1.0 / max(2, int(spans))
+    for sample in combined:
+        proxy = _volatility_proxy(sample)
+        if proxy is None:
+            out.append(math.exp(state) if state is not None else None)
+            continue
+        log_value = math.log(proxy)
+        state = log_value if state is None else decay * state + (1.0 - decay) * log_value
+        out.append(math.exp(state))
+    return out
+
+
+def _har_predictions(
+    train: Sequence[Sample],
+    test: Sequence[Sample],
+    target: str,
+    *,
+    space: str,
+) -> list[float] | None:
+    """Fit a HAR-style regression on causal 1h/24h/168h volatility means.
+
+    The predictors are trailing means of the causal volatility proxy; the
+    response is the target (log target in log space). The fit uses only training
+    rows. If there are too few complete rows or the design is singular, it
+    returns ``None`` so the caller can fall back to a rolling mean.
+    """
+    kind = TARGET_KINDS.get(target)
+    if kind is not None and kind != "regression":
+        return None
+    combined = list(train) + list(test)
+    log_space = space == "log"
+    proxies = [_volatility_proxy(sample) for sample in combined]
+    transformed = [
+        (math.log(value) if log_space and value is not None and value > 0.0 else value)
+        for value in proxies
+    ]
+    features: list[list[float] | None] = []
+    for index in range(len(combined)):
+        row = [
+            _rolling_mean(transformed, index, window) for window in HAR_WINDOWS
+        ]
+        features.append(row if all(value is not None for value in row) else None)
+    train_rows: list[tuple[list[float], float]] = []
+    for index, sample in enumerate(combined[: len(train)]):
+        vector = features[index]
+        truth = sample.targets.get(target)
+        if vector is None or truth is None:
+            continue
+        value = float(truth)
+        if log_space:
+            if value <= 0.0:
+                continue
+            value = math.log(value)
+        train_rows.append(([1.0, *[float(v) for v in vector]], value))
+    if len(train_rows) < 30:
+        return None
+    design = np.asarray([row for row, _ in train_rows], dtype=float)
+    response = np.asarray([value for _, value in train_rows], dtype=float)
+    try:
+        coefficients, *_ = np.linalg.lstsq(design, response, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(coefficients)):
+        return None
+    predictions: list[float] = []
+    for index in range(len(train), len(combined)):
+        vector = features[index]
+        if vector is None:
+            # Fall back to the 24h rolling mean (the HAR weekly component is
+            # unavailable) so a row is not silently dropped.
+            fallback = _rolling_mean(transformed, index, 24)
+            if fallback is None:
+                fallback = _rolling_mean(transformed, index, 1)
+            if fallback is None:
+                return None
+            predictions.append(math.exp(fallback) if log_space else fallback)
+            continue
+        value = float(
+            np.dot(coefficients, np.asarray([1.0, *[float(v) for v in vector]]))
+        )
+        predictions.append(math.exp(value) if log_space else value)
+    return predictions
+
+
 def baseline_predictions(
     mode: str,
     kind: str,
@@ -520,6 +658,33 @@ def baseline_predictions(
         return _persistence_series(
             target, train, test, reach=label_purge(target, horizon)
         )
+    if mode == "ewma":
+        combined = list(train) + list(test)
+        series = _ewma_predictions(combined)
+        fallback = float(
+            _from_space(_constant_baseline(kind, train, target, space), space)
+        )
+        return [
+            float(value) if value is not None else fallback
+            for value in series[len(train) :]
+        ]
+    if mode == "har":
+        predictions = _har_predictions(train, test, target, space=space)
+        if predictions is not None:
+            return predictions
+        # Deterministic fallback: the 24h causal rolling mean.
+        combined = list(train) + list(test)
+        proxies = [_volatility_proxy(sample) for sample in combined]
+        out: list[float] = []
+        for index in range(len(train), len(combined)):
+            value = _rolling_mean(proxies, index, 24)
+            if value is None:
+                value = _rolling_mean(proxies, index, 1)
+            if value is None:
+                value = _constant_baseline(kind, train, target, space)
+                value = _from_space(float(value), space)
+            out.append(float(value))
+        return out
     raise SystemExit(f"unknown baseline {mode!r}")
 
 
@@ -548,10 +713,10 @@ def _baseline_losses(
     space: str,
     horizon: int,
 ) -> dict[str, float]:
-    """Mean baseline loss on ``test`` for each of the three baselines."""
+    """Mean baseline loss on ``test`` for each declared baseline."""
     out: dict[str, float] = {}
     truth_values = [sample.targets.get(target) for sample in test]
-    for mode in ("constant", "seasonal", "persistence"):
+    for mode in BASELINE_MODES:
         predictions = baseline_predictions(
             mode, kind, train, test, target, space=space, horizon=horizon
         )
@@ -632,7 +797,7 @@ def evaluate_target(
     # Report skill against all three baselines; the verdict uses the strongest.
     baselines: dict[str, Any] = {}
     skill_vs: dict[str, float | None] = {}
-    for mode in ("constant", "seasonal", "persistence"):
+    for mode in BASELINE_MODES:
         predictions = baseline_predictions(
             mode, kind, train, test_rows, target, space=space, horizon=horizon
         )
@@ -778,7 +943,7 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
     beats = [bool(r["beats"]) for r in records]
     baseline_modes = [str(r.get("baseline_mode")) for r in records if r.get("baseline_mode")]
     baselines: dict[str, float | None] = {}
-    for mode in ("constant", "seasonal", "persistence"):
+    for mode in BASELINE_MODES:
         values = [
             float(r["baselines"][mode])
             for r in records
@@ -787,7 +952,7 @@ def aggregate_target(records: Sequence[dict[str, Any]]) -> dict[str, Any] | None
         ]
         baselines[mode] = float(np.mean(values)) if values else None
     skill_vs: dict[str, float | None] = {}
-    for mode in ("constant", "seasonal", "persistence"):
+    for mode in BASELINE_MODES:
         values = [
             float(r["skill_vs"][mode])
             for r in records
@@ -963,81 +1128,140 @@ def bootstrap_pooled(
     seed: int,
     block_bars: int,
     bootstrap_samples: int,
+    interval: str = "effective-sample-t",
 ) -> dict[str, Any]:
-    """Time-block bootstrap over pooled paired improvements.
+    """Pooled paired improvement with a corrected CI.
+
+    The active rule is an effective-sample Student-t interval: the lag-1
+    autocorrelation is charged through the effective sample size and the
+    critical value uses ``n_eff - 1`` degrees of freedom. It replaces the
+    percentile block bootstrap, which undercovered in the calibration grid.
+    The legacy percentile interval is still computed (``interval="percentile"``
+    or via ``legacy_percentile_*``) for comparison only.
 
     Blocks never span tickers, so the correlation between BTC/ETH/SOL is not
-    laundered into extra independent observations. The point estimate is the
-    mean over every pooled row; the interval comes from resampling whole
-    consecutive blocks with replacement.
+    laundered into extra independent observations. The block count is still
+    reported as the design diagnostic, and the gate refuses below
+    ``MIN_EFFECTIVE_BLOCKS`` effective blocks.
     """
-    blocks: list[list[float]] = []
+    series_by_ticker = {
+        str(ticker): [float(row["improvement"]) for row in rows]
+        for ticker, rows in rows_by_ticker.items()
+    }
     per_ticker: dict[str, Any] = {}
-    for ticker, rows in rows_by_ticker.items():
-        values = [float(row["improvement"]) for row in rows]
+    for ticker, values in series_by_ticker.items():
         if values:
-            per_ticker[str(ticker)] = {
+            per_ticker[ticker] = {
                 "n": len(values),
                 "mean_improvement": float(np.mean(values)),
             }
-        width = max(1, int(block_bars))
+    ess = effective_sample_t_interval_grouped(
+        [values for values in series_by_ticker.values() if values],
+        alpha=float(alpha),
+        block_bars=int(block_bars),
+    )
+    width = max(1, int(ess.get("block_bars") or block_bars))
+    blocks: list[list[float]] = []
+    for values in series_by_ticker.values():
         for start in range(0, len(values), width):
             block = values[start : start + width]
             if block:
                 blocks.append(block)
     pooled_values = [value for block in blocks for value in block]
+    tail = max(float(alpha), 1e-12) / 2.0
+    required_samples = max(1000, math.ceil(RESOLUTION_ORDER_STATS / tail))
     result: dict[str, Any] = {
         "n": len(pooled_values),
         "blocks": len(blocks),
-        "block_bars": int(block_bars),
+        "block_bars": width,
+        "requested_block_bars": int(block_bars),
         "bootstrap_samples": int(bootstrap_samples),
         "seed": int(seed),
         "alpha": float(alpha),
         "mean_improvement": float(np.mean(pooled_values)) if pooled_values else None,
         "ci_low": None,
         "ci_high": None,
+        "interval": interval,
+        "tail": tail,
+        "required_samples": required_samples,
+        "min_effective_blocks": MIN_EFFECTIVE_BLOCKS,
         "per_ticker": per_ticker,
     }
-    # Resolution: can B draws place the required order statistics in both
-    # tails? Below that the boundary is interpolated noise, not a quantile.
-    tail = max(float(alpha), 1e-12) / 2.0
-    required_samples = max(
-        1000, math.ceil(RESOLUTION_ORDER_STATS / tail)
+    result.update(
+        {
+            "eff_n": ess.get("eff_n"),
+            "df": ess.get("df"),
+            "rho": ess.get("rho"),
+            "rho_adjusted": ess.get("rho_adjusted"),
+            "min_blocks": MIN_EFFECTIVE_BLOCKS,
+        }
     )
-    result["tail"] = tail
-    result["required_samples"] = required_samples
-    result["resolution_ok"] = (
-        int(bootstrap_samples) >= required_samples
-        and len(blocks) >= MIN_BOOTSTRAP_BLOCKS
+    result["resolution_ok"] = bool(
+        ess.get("sufficient") and len(pooled_values) >= 60
+    )
+    if not ess.get("sufficient"):
+        result["insufficient"] = True
+        result["insufficient_blocks"] = True
+        result["resolution_reason"] = (
+            f"only {float(ess.get('eff_n') or 0.0):.1f} effective blocks "
+            f"(need {MIN_EFFECTIVE_BLOCKS}); {len(blocks)} raw blocks of "
+            f"{int(block_bars)} bars"
+        )
+        return result
+    if len(pooled_values) < 60:
+        result["insufficient"] = True
+        result["resolution_reason"] = (
+            f"only {len(pooled_values)} pooled rows (need 60)"
+        )
+        return result
+    legacy_ok = (
+        len(blocks) >= MIN_BOOTSTRAP_BLOCKS
         and len(pooled_values) >= 60
+        and int(bootstrap_samples) >= required_samples
     )
-    result["min_blocks"] = MIN_BOOTSTRAP_BLOCKS
-    # Too few blocks makes the percentile interval anti-conservative; refuse to
-    # manufacture a CI from a handful of blocks.
-    if len(blocks) < MIN_BOOTSTRAP_BLOCKS or len(pooled_values) < 60:
+    result["legacy_resolution_ok"] = legacy_ok
+    result["legacy_min_blocks"] = MIN_BOOTSTRAP_BLOCKS
+    if not legacy_ok:
+        result["legacy_insufficient"] = True
+        if len(blocks) < MIN_BOOTSTRAP_BLOCKS:
+            result["legacy_resolution_reason"] = (
+                f"only {len(blocks)} time blocks (need {MIN_BOOTSTRAP_BLOCKS})"
+            )
+        elif len(pooled_values) < 60:
+            result["legacy_resolution_reason"] = (
+                f"only {len(pooled_values)} pooled rows (need 60)"
+            )
+        else:
+            result["legacy_resolution_reason"] = (
+                f"{bootstrap_samples} resamples cannot resolve alpha={alpha:g} "
+                f"(need {required_samples})"
+            )
+    if interval == "percentile" and not legacy_ok:
         result["insufficient"] = True
-        result["resolution_reason"] = (
-            f"only {len(blocks)} time blocks (need {MIN_BOOTSTRAP_BLOCKS})"
-        )
+        result["resolution_reason"] = result["legacy_resolution_reason"]
         return result
-    if int(bootstrap_samples) < required_samples:
-        result["insufficient"] = True
-        result["resolution_reason"] = (
-            f"{bootstrap_samples} resamples cannot resolve alpha={alpha:g} "
-            f"(need {required_samples})"
+    if pooled_values:
+        sums = np.asarray([float(np.sum(block)) for block in blocks], dtype=float)
+        counts = np.asarray([len(block) for block in blocks], dtype=float)
+        rng = np.random.default_rng(int(seed))
+        picks = rng.integers(
+            0, len(blocks), size=(int(bootstrap_samples), len(blocks))
         )
-        return result
-    # Resample block means and counts, not the flattened rows: the statistic is
-    # identical and a 10k-draw CI over hundreds of blocks stays cheap.
-    sums = np.asarray([float(np.sum(block)) for block in blocks], dtype=float)
-    counts = np.asarray([len(block) for block in blocks], dtype=float)
-    rng = np.random.default_rng(int(seed))
-    picks = rng.integers(0, len(blocks), size=(int(bootstrap_samples), len(blocks)))
-    drawn_sums = sums[picks].sum(axis=1)
-    drawn_counts = counts[picks].sum(axis=1)
-    means = drawn_sums / drawn_counts
-    result["ci_low"] = float(np.quantile(means, alpha / 2.0))
-    result["ci_high"] = float(np.quantile(means, 1.0 - alpha / 2.0))
+        means = sums[picks].sum(axis=1) / counts[picks].sum(axis=1)
+        result["legacy_percentile_ci_low"] = float(
+            np.quantile(means, alpha / 2.0)
+        )
+        result["legacy_percentile_ci_high"] = float(
+            np.quantile(means, 1.0 - alpha / 2.0)
+        )
+    if interval == "percentile":
+        result["ci_low"] = result.get("legacy_percentile_ci_low")
+        result["ci_high"] = result.get("legacy_percentile_ci_high")
+    else:
+        result["ci_low"] = ess.get("ci_low")
+        result["ci_high"] = ess.get("ci_high")
+        result["se"] = ess.get("se")
+        result["critical"] = ess.get("critical")
     return result
 
 
@@ -1447,6 +1671,30 @@ def detect_leaks(
     return leaks
 
 
+def _retrained_champion(
+    champion: Any, train: Sequence[Sample], target: str
+) -> Tier1Bundle:
+    """Retrain the champion configuration on exactly this training slice."""
+    model_names = {
+        target: str(champion.targets[target].model.to_dict().get("kind") or "ridge")
+    }
+    return train_tier1(
+        train,
+        horizon=champion.horizon,
+        feature_names=champion.feature_names,
+        targets=[target],
+        model_names=model_names,
+        holdout_fraction=0.0,
+    )
+
+
+def _load_champion(ticker: str) -> Tier1Bundle | None:
+    try:
+        return load_bundle(default_bundle_path(ticker, directory=ROOT / "models"))
+    except FileNotFoundError:
+        return None
+
+
 def evaluate_control_ticker(
     ticker: str,
     config: Config,
@@ -1472,6 +1720,7 @@ def evaluate_control_ticker(
     position: str = "long-only",
     fee_bps: float = 10.0,
     slippage_bps: float = 5.0,
+    comparison: str = "baseline",
 ) -> dict[str, Any]:
     """One walk-forward pass with an optional planted signal and control.
 
@@ -1482,6 +1731,7 @@ def evaluate_control_ticker(
     """
     rows, _ = filter_rows_before(load_ticker_rows(ticker), holdout_start)
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    champion = _load_champion(ticker) if comparison == "champion" else None
     planted: dict[str, Any] | None = None
     lookahead_meta: dict[str, Any] | None = None
     if plant_strength:
@@ -1585,9 +1835,15 @@ def evaluate_control_ticker(
             model_names=config.model_names,
             holdout_fraction=0.0,
         )
-        rows_out = paired_target_rows(
-            bundle, target, train, test, baseline=baseline, horizon=config.horizon
-        )
+        if champion is not None and target in champion.targets:
+            retrained = _retrained_champion(champion, train, target)
+            rows_out = paired_between_bundles(
+                bundle, retrained, target, test, horizon=config.horizon
+            )
+        else:
+            rows_out = paired_target_rows(
+                bundle, target, train, test, baseline=baseline, horizon=config.horizon
+            )
         paired.extend(rows_out)
         values = [float(row["improvement"]) for row in rows_out]
         fold_improvements.append(float(np.mean(values)) if values else None)
@@ -1651,6 +1907,7 @@ def evaluate_ticker(
     leak_feature: str | None = None,
     baseline: str = "strongest",
     seed: int = 0,
+    comparison: str = "baseline",
 ) -> dict[str, Any]:
     """Walk-forward metrics plus a threshold x cost policy grid.
 
@@ -1666,6 +1923,13 @@ def evaluate_ticker(
     threshold_list = _unique(list(thresholds or [threshold]))
     cost_list = _unique(list(cost_levels or [(fee_bps, slippage_bps)]))
     samples = build_samples(rows, horizon=config.horizon, interval_seconds=INTERVAL_SECONDS)
+    champion = _load_champion(ticker) if comparison == "champion" else None
+    if comparison == "champion" and champion is None:
+        return {
+            "ticker": ticker,
+            "error": f"no deployed champion bundle for {ticker}",
+            "comparison": comparison,
+        }
     if leak_feature:
         samples = inject_leaky_feature(samples, leak_feature)
     # Check against every target, not only the requested ones: a feature
@@ -1712,14 +1976,20 @@ def evaluate_ticker(
             if record is not None:
                 target_records[target].append(record)
         if paired_target is not None:
-            rows_out = paired_target_rows(
-                bundle,
-                paired_target,
-                train,
-                test,
-                baseline=baseline,
-                horizon=config.horizon,
-            )
+            if champion is not None and paired_target in champion.targets:
+                retrained = _retrained_champion(champion, train, paired_target)
+                rows_out = paired_between_bundles(
+                    bundle, retrained, paired_target, test, horizon=config.horizon
+                )
+            else:
+                rows_out = paired_target_rows(
+                    bundle,
+                    paired_target,
+                    train,
+                    test,
+                    baseline=baseline,
+                    horizon=config.horizon,
+                )
             paired.extend(rows_out)
             values = [float(row["improvement"]) for row in rows_out]
             fold_improvements.append(float(np.mean(values)) if values else None)
@@ -1791,6 +2061,7 @@ def evaluate_ticker(
             "always_long": list(always_pos),
             "returns": list(returns),
         },
+        "comparison": comparison,
         "paired_target": paired_target,
         "paired": {
             "n": len(paired_values),
@@ -1985,6 +2256,7 @@ def _controls_for(
     control_quantile: float = DEFAULT_CONTROL_QUANTILE,
     baseline: str = "constant",
     leak_feature: str | None = None,
+    comparison: str = "baseline",
 ) -> dict[str, Any]:
     """Build the pre-registered control distribution.
 
@@ -2012,6 +2284,7 @@ def _controls_for(
                 baseline=baseline,
                 structural=False,
                 leak_feature=leak_feature,
+                comparison=comparison,
             )
             for ticker in tickers
         }
@@ -2229,6 +2502,7 @@ def evaluate_action(args: argparse.Namespace) -> int:
             leak_feature=leak_feature,
             baseline=getattr(args, "baseline", "strongest"),
             seed=int(args.seed),
+            comparison=getattr(args, "comparison", "baseline"),
         )
         for ticker in tickers
     ]
@@ -2276,12 +2550,14 @@ def evaluate_action(args: argparse.Namespace) -> int:
             ),
             baseline=getattr(args, "baseline", "strongest"),
             leak_feature=leak_feature,
+            comparison=getattr(args, "comparison", "baseline"),
         )
     payload = {
         "action": "evaluate",
         "config": config.as_dict(),
         "primary": config.name,
         "primary_target": primary_target,
+        "comparison": getattr(args, "comparison", "baseline"),
         "targets": list(targets),
         "holdout_start": args.holdout_start,
         "diagnostic_full_archive": bool(args.full_archive),
@@ -2452,6 +2728,7 @@ def sweep_action(args: argparse.Namespace) -> int:
                 primary_target=primary_target,
                 baseline=getattr(args, "baseline", "strongest"),
                 seed=int(args.seed),
+                comparison=getattr(args, "comparison", "baseline"),
             )
             result["primary"] = config.name == primary_config
             result["rank"] = _rank_key(result, primary_target)
@@ -2716,6 +2993,7 @@ def promote_action(args: argparse.Namespace) -> int:
         _bundle_view(current, samples, targets, **common) if current is not None else None
     )
     champion_view = deployed_view
+    champion_bundle: Tier1Bundle | None = None
     comparison_basis = "deployed-bundle"
     if current is not None and args.champion_retrain and args.holdout_start:
         # The deployed bundle may have trained on the holdout. Retrain its
@@ -2739,7 +3017,49 @@ def promote_action(args: argparse.Namespace) -> int:
         champion_view = _bundle_view(champion_bundle, samples, targets, **common)
         comparison_basis = "retrained-champion"
     primary = "fwd_direction" if "fwd_direction" in targets else targets[0]
+    champion_comparison: dict[str, Any] | None = None
+    champion_targets = getattr(champion_bundle, "targets", None) or {}
+    if champion_bundle is not None and primary in champion_targets:
+        paired_rows = paired_between_bundles(
+            candidate,
+            champion_bundle,
+            primary,
+            samples[split:],
+            horizon=candidate.horizon,
+        )
+        champion_comparison = bootstrap_pooled(
+            {ticker: paired_rows},
+            alpha=float(getattr(args, "alpha", 0.05)),
+            seed=int(getattr(args, "seed", 0)),
+            block_bars=int(getattr(args, "bootstrap_block", 24)),
+            bootstrap_samples=int(getattr(args, "bootstrap_samples", 1000)),
+        )
+        values = [float(row["improvement"]) for row in paired_rows]
+        champion_comparison["fold_improvements"] = [float(np.mean(values))] if values else []
+        passed = (
+            not champion_comparison.get("insufficient")
+            and champion_comparison.get("mean_improvement") is not None
+            and float(champion_comparison["mean_improvement"]) > 0.0
+            and champion_comparison.get("ci_low") is not None
+            and float(champion_comparison["ci_low"]) > 0.0
+            and all(float(value) > 0.0 for value in champion_comparison["fold_improvements"])
+        )
+        champion_comparison["passed"] = passed
     reasons = promotion_gate(cand_view, champion_view, primary)
+    if champion_comparison is None:
+        reasons.append(
+            "promotion requires a pooled paired improvement over the champion "
+            "retrained on the pre-cutoff slice"
+        )
+    elif not champion_comparison.get("passed"):
+        detail = champion_comparison.get("resolution_reason")
+        if detail:
+            reasons.append(f"champion comparison unresolved: {detail}")
+        else:
+            reasons.append(
+                "candidate did not beat the retrained champion with the pooled "
+                "paired interval"
+            )
     if candidate.feature_version != FEATURE_VERSION:
         reasons.append(
             f"candidate feature_version {candidate.feature_version!r} != {FEATURE_VERSION!r}"
@@ -2774,6 +3094,7 @@ def promote_action(args: argparse.Namespace) -> int:
         "candidate_view": cand_view,
         "champion_view": champion_view,
         "deployed_view": deployed_view,
+        "champion_comparison": champion_comparison,
         "recommendation": recommendation,
         "conservative_note": (
             "The deployed bundle may have been trained on data that includes this "
@@ -3010,8 +3331,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--bootstrap-block", type=int, default=24)
         p.add_argument(
             "--baseline",
-            choices=("constant", "seasonal", "persistence", "strongest"),
+            choices=(*BASELINE_MODES, "strongest"),
             default="strongest",
+        )
+        p.add_argument(
+            "--comparison",
+            choices=("baseline", "champion"),
+            default="baseline",
+            help="compare against the strongest baseline or the retrained champion",
         )
         p.add_argument("--json", action="store_true")
         p.add_argument("--limit", type=int, default=20)
@@ -3086,6 +3413,9 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--position", choices=("long-only", "long-short"), default="long-only")
     promote.add_argument("--fee-bps", type=float, default=10.0)
     promote.add_argument("--slippage-bps", type=float, default=5.0)
+    promote.add_argument("--alpha", type=float, default=0.05)
+    promote.add_argument("--bootstrap-block", type=int, default=24)
+    promote.add_argument("--bootstrap-samples", type=int, default=1000)
     promote.add_argument("--apply", action="store_true")
     promote.add_argument("--json", action="store_true")
     promote.set_defaults(func=promote_action)

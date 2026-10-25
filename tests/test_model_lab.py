@@ -534,7 +534,33 @@ def test_promote_apply_records_the_durable_training_config(tmp_path, monkeypatch
         lab, "load_bundle", lambda path: candidate if "candidate" in str(path) else current
     )
     monkeypatch.setattr(lab, "default_bundle_path", lambda ticker, directory: Path("current.json"))
-    monkeypatch.setattr(lab, "train_tier1", lambda train, **kwargs: types.SimpleNamespace())
+    def fake_train(train, **kwargs):
+        return types.SimpleNamespace(
+            targets={
+                "fwd_direction": types.SimpleNamespace(
+                    model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+                )
+            }
+        )
+
+    monkeypatch.setattr(lab, "train_tier1", fake_train)
+    monkeypatch.setattr(
+        lab,
+        "paired_between_bundles",
+        lambda *args, **kwargs: [{"timestamp": "t", "improvement": 0.01} for _ in range(30)],
+    )
+    monkeypatch.setattr(
+        lab,
+        "bootstrap_pooled",
+        lambda *args, **kwargs: {
+            "mean_improvement": 0.01,
+            "ci_low": 0.005,
+            "ci_high": 0.015,
+            "fold_improvements": [0.01],
+            "insufficient": False,
+            "resolution_ok": True,
+        },
+    )
     monkeypatch.setattr(
         lab,
         "_bundle_view",
@@ -561,6 +587,9 @@ def test_promote_apply_records_the_durable_training_config(tmp_path, monkeypatch
         position="long-only",
         fee_bps=10.0,
         slippage_bps=5.0,
+        alpha=0.05,
+        bootstrap_block=24,
+        bootstrap_samples=1000,
         apply=True,
         json=True,
     )
@@ -745,14 +774,14 @@ def test_strongest_baseline_is_chosen_on_the_training_slice():
     chosen = lab.choose_strongest_baseline(
         "regression", train, "fwd_volume_ratio", space="raw", horizon=1
     )
-    assert chosen in {"constant", "seasonal", "persistence"}
+    assert chosen in {"constant", "seasonal", "persistence", "ewma", "har"}
     # Choosing after replacing the outer test data with nonsense must not move.
     assert chosen == lab.choose_strongest_baseline(
         "regression", train, "fwd_volume_ratio", space="raw", horizon=1
     )
 
 
-def test_evaluate_target_reports_skill_against_all_three_baselines():
+def test_evaluate_target_reports_skill_against_all_five_baselines():
     from rl_crypto.ml.tier1 import train_tier1
 
     samples = _calendar_samples(260)
@@ -769,9 +798,10 @@ def test_evaluate_target_reports_skill_against_all_three_baselines():
         bundle, "fwd_volume_ratio", train, test, baseline="strongest", horizon=1
     )
     assert record is not None
-    assert set(record["skill_vs"]) == {"constant", "seasonal", "persistence"}
-    assert record["baseline_mode"] in {"constant", "seasonal", "persistence"}
-    assert set(record["baselines"]) == {"constant", "seasonal", "persistence"}
+    expected = {"constant", "seasonal", "persistence", "ewma", "har"}
+    assert set(record["skill_vs"]) == expected
+    assert record["baseline_mode"] in expected
+    assert set(record["baselines"]) == expected
 
 
 def test_control_ticker_reports_after_cost_economics_for_classification(tmp_path, monkeypatch):
@@ -805,3 +835,172 @@ def test_control_ticker_reports_after_cost_economics_for_classification(tmp_path
     assert economics["model"]["bars"] > 0
     assert "momentum" in economics
     assert result["structural"]["ok"] is True
+
+
+def _vol_samples(n: int = 400) -> list[Sample]:
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    out = []
+    for index in range(n):
+        proxy = float(abs(rng.normal(0.004, 0.001)))
+        out.append(
+            Sample(
+                timestamp=f"2026-01-{1 + index // 24:02d}T{index % 24:02d}:00:00Z",
+                features={"vol_3": proxy, "ret_1": proxy},
+                targets={"fwd_volatility": proxy * (1.0 + 0.1 * (index % 3 - 1))},
+            )
+        )
+    return out
+
+
+def test_ewma_and_har_volatility_baselines_are_causal():
+    samples = _vol_samples(500)
+    train, test = samples[:350], samples[350:]
+    perturbed = [
+        Sample(
+            timestamp=sample.timestamp,
+            features={**sample.features, "vol_3": 1.0},
+            targets={**sample.targets, "fwd_volatility": 1.0},
+        )
+        if index >= 400
+        else sample
+        for index, sample in enumerate(test)
+    ]
+    for mode in ("ewma", "har"):
+        first = lab.baseline_predictions(
+            mode,
+            "regression",
+            train,
+            test,
+            "fwd_volatility",
+            space="log",
+            horizon=1,
+        )
+        second = lab.baseline_predictions(
+            mode,
+            "regression",
+            train,
+            perturbed,
+            "fwd_volatility",
+            space="log",
+            horizon=1,
+        )
+        # Predictions before the perturbed future rows must be identical.
+        assert first[:40] == pytest.approx(second[:40])
+        assert all(value > 0.0 for value in first)
+
+
+def test_bootstrap_pooled_refuses_an_underidentified_persistent_series():
+    series = [0.01 + (0.0001 if index % 2 else -0.0001) for index in range(240)]
+    rows = {"BTC/USD": [{"timestamp": str(i), "improvement": value} for i, value in enumerate(series)]}
+    pooled = lab.bootstrap_pooled(
+        rows, alpha=0.05, seed=0, block_bars=24, bootstrap_samples=1000
+    )
+    assert pooled["insufficient"] is True
+    assert pooled["insufficient_blocks"] is True
+    assert "effective blocks" in pooled["resolution_reason"]
+    assert pooled["ci_low"] is None
+
+
+def test_promotion_requires_a_passing_champion_comparison(tmp_path, monkeypatch):
+    import importlib.util
+    import types
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location(
+        "model_lab_champion_gate",
+        Path(__file__).resolve().parents[1] / "tools" / "model_lab.py",
+    )
+    assert spec is not None and spec.loader is not None
+    lab2 = importlib.util.module_from_spec(spec)
+    sys.modules["model_lab_champion_gate"] = lab2
+    spec.loader.exec_module(lab2)
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    cutoff = (start + timedelta(hours=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    samples = [
+        types.SimpleNamespace(
+            timestamp=(start + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            features={},
+            targets={"fwd_direction": 1.0},
+        )
+        for index in range(130)
+    ]
+    model = types.SimpleNamespace(
+        model=types.SimpleNamespace(to_dict=lambda: {"kind": "logistic"})
+    )
+    candidate = types.SimpleNamespace(
+        horizon=1,
+        feature_version="rl-crypto/features/2",
+        feature_names=["ret_1"],
+        targets={"fwd_direction": model},
+    )
+    current = types.SimpleNamespace(
+        horizon=1,
+        feature_names=["ret_1"],
+        targets={"fwd_direction": model},
+    )
+    monkeypatch.setattr(lab2, "ROOT", tmp_path)
+    monkeypatch.setattr(lab2, "load_ticker_rows", lambda ticker: samples)
+    monkeypatch.setattr(lab2, "build_samples", lambda rows, **kwargs: tuple(samples))
+    monkeypatch.setattr(
+        lab2,
+        "load_bundle",
+        lambda path: candidate if "candidate" in str(path) else current,
+    )
+    monkeypatch.setattr(
+        lab2, "default_bundle_path", lambda ticker, directory: Path("current.json")
+    )
+    monkeypatch.setattr(
+        lab2, "train_tier1", lambda train, **kwargs: types.SimpleNamespace(targets=current.targets)
+    )
+    monkeypatch.setattr(
+        lab2,
+        "_bundle_view",
+        lambda bundle, samples, targets, **kwargs: {
+            "targets": {"fwd_direction": {"beats": True, "model": 0.5}},
+            "economic": {"model": {"trades": 20, "sharpe": 0.5, "max_drawdown": -0.1}},
+        },
+    )
+    monkeypatch.setattr(lab2, "promotion_gate", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        lab2,
+        "paired_between_bundles",
+        lambda *args, **kwargs: [{"timestamp": "t", "improvement": -0.01} for _ in range(30)],
+    )
+    monkeypatch.setattr(
+        lab2,
+        "bootstrap_pooled",
+        lambda *args, **kwargs: {
+            "mean_improvement": -0.01,
+            "ci_low": -0.02,
+            "ci_high": 0.0,
+            "fold_improvements": [-0.01],
+            "insufficient": False,
+            "resolution_ok": True,
+        },
+    )
+    monkeypatch.setattr(lab2, "_save", lambda action, payload: Path("artifact.json"))
+    monkeypatch.setattr(lab2, "LAB_DIR", tmp_path / "lab")
+
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("{}", encoding="utf-8")
+    args = types.SimpleNamespace(
+        candidate=str(candidate_path),
+        tickers=["BTC/USD"],
+        ticker="BTC/USD",
+        targets=["fwd_direction"],
+        holdout_start=cutoff,
+        champion_retrain=True,
+        threshold=0.55,
+        position="long-only",
+        fee_bps=10.0,
+        slippage_bps=5.0,
+        alpha=0.05,
+        bootstrap_block=24,
+        bootstrap_samples=1000,
+        apply=False,
+        json=True,
+    )
+    assert lab2.promote_action(args) == 0
