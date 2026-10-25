@@ -195,6 +195,11 @@ def cmd_train(args: argparse.Namespace) -> int:
     targets = args.target or list(TARGET_NAMES)
     bundle = train_tier1(samples, horizon=args.horizon, targets=targets)
 
+    # Opt-in stricter trust gate (default OFF; see ml/trust_gate.py).
+    from .ml.trust_gate import gate_bundle
+
+    bundle = gate_bundle(bundle, samples)
+
     path = Path(args.output) if args.output else default_bundle_path(args.ticker)
     from .ml.store import save_bundle
 
