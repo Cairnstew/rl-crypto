@@ -50,6 +50,7 @@ from rl_crypto.ml import attach_predictions, outlook_for_rows
 from rl_crypto.ml.store import default_bundle_path, save_bundle
 from rl_crypto.ml.tier1 import train_tier1
 from rl_crypto.ml.training_config import load_training_config
+from rl_crypto.ml.trust_gate import gate_bundle
 from rl_crypto.models import Dataset, DatasetRow, UnifiedRecord, to_iso, utcnow
 from rl_crypto.tickers import parse_tickers
 from rl_crypto.unify import build_unified
@@ -172,6 +173,10 @@ def run_pipeline(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         feature_names=training.feature_names,
         model_names=training.model_names or None,
     )
+    # Opt-in stricter trust gate (default OFF; see ml/trust_gate.py). Switched on,
+    # a target must beat the strongest simple baseline (seasonal activity, HAR
+    # volatility) rather than a constant before it may emit a signal.
+    bundle = gate_bundle(bundle, samples, feature_names=training.feature_names)
 
     # Live snapshot (market + live news) fused with an outlook from the newest
     # archived bar.
