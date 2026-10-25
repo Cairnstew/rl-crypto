@@ -2,13 +2,13 @@
 
 <!-- Generated from experiments/ledger.jsonl; never hand-edit. -->
 
-- ledger entries: **20**
+- ledger entries: **21**
 - preregistrations: **5**
 - verdicts: **3**
 - provisional: **0** | confirmed: **0** | refuted: **0** | invalid: **0** | inconclusive: **0**
 - refuted-to-provisional: **n/a**
 - harness: **ok**
-- canary: **pass @ f3fdc7a781f99c937a8ecf4b1b573b732bd5ce40648d949a5f4cd2f7843ed98a 2026-10-25**
+- canary: **pass @ 4095ca99a60b6fe0703ac68e3feacf70ac754c5cbf38c5b84ca3a4345ce6ba28 2026-10-25**
 
 A negative verdict is a completed experiment: it closes that hypothesis
 lineage. Re-running it needs new data, a new feature class, or a fixed
