@@ -1058,8 +1058,8 @@
 {"close": 14.026, "high": 14.111, "low": 13.927, "open": 13.997, "ticker": "LINK/USD", "timestamp": "2026-09-26T03:00:00Z", "volume": 49800.57}
 {"close": 14.147, "high": 14.191, "low": 14.033, "open": 14.034, "ticker": "LINK/USD", "timestamp": "2026-09-26T04:00:00Z", "volume": 109941.27}
 {"close": 14.016, "high": 14.152, "low": 13.971, "open": 14.149, "ticker": "LINK/USD", "timestamp": "2026-09-26T05:00:00Z", "volume": 57008.38}
-{"close": 13.992305000000002, "high": 14.053875, "low": 13.95319, "open": 14.01984, "ticker": "LINK/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 37435.028505805}
-{"close": 14.078315, "high": 14.12295, "low": 13.98158, "open": 13.990075000000001, "ticker": "LINK/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 26864.602942819998}
+{"close": 13.992, "high": 14.055, "low": 13.959, "open": 14.015, "ticker": "LINK/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 46341.86}
+{"close": 14.079, "high": 14.126, "low": 13.982, "open": 13.992, "ticker": "LINK/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 47673.14}
 {"close": 14.058, "high": 14.189845, "low": 14.000725, "open": 14.082165, "ticker": "LINK/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 42417.199996135}
 {"close": 14.02851, "high": 14.105329999999999, "low": 13.937764999999999, "open": 14.065375, "ticker": "LINK/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 28790.924149314997}
 {"close": 14.25531, "high": 14.30726, "low": 14.029505, "open": 14.032005, "ticker": "LINK/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 92349.88695423}
@@ -1778,4 +1778,6 @@
 {"close": 11.311145, "high": 11.409195, "low": 11.25104, "open": 11.313945, "ticker": "LINK/USD", "timestamp": "2026-10-26T03:00:00Z", "volume": 9659.907065424999}
 {"close": 11.414155000000001, "high": 11.415655000000001, "low": 11.302375, "open": 11.313785, "ticker": "LINK/USD", "timestamp": "2026-10-26T04:00:00Z", "volume": 9939.57065291}
 {"close": 11.445725, "high": 11.457699999999999, "low": 11.413654999999999, "open": 11.41684, "ticker": "LINK/USD", "timestamp": "2026-10-26T05:00:00Z", "volume": 4970.12749464}
-{"close": 11.37998, "high": 11.46298, "low": 11.373765, "open": 11.447679999999998, "ticker": "LINK/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 4155.391637615}
+{"close": 11.370875, "high": 11.46298, "low": 11.3386, "open": 11.447679999999998, "ticker": "LINK/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 11932.264608665}
+{"close": 11.34891, "high": 11.410475, "low": 11.30967, "open": 11.379465, "ticker": "LINK/USD", "timestamp": "2026-10-26T07:00:00Z", "volume": 10004.348286225}
+{"close": 11.347855, "high": 11.350825, "low": 11.256195, "open": 11.339855, "ticker": "LINK/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 4716.182140405}

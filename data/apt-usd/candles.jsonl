@@ -1046,8 +1046,8 @@
 {"close": 0.8481, "high": 0.8565, "low": 0.8464, "open": 0.8559, "ticker": "APT/USD", "timestamp": "2026-09-26T03:00:00Z", "volume": 40716.552}
 {"close": 0.8533, "high": 0.8634, "low": 0.8477, "open": 0.848, "ticker": "APT/USD", "timestamp": "2026-09-26T04:00:00Z", "volume": 47449.325}
 {"close": 0.8435, "high": 0.8544, "low": 0.8427, "open": 0.854, "ticker": "APT/USD", "timestamp": "2026-09-26T05:00:00Z", "volume": 80641.364}
-{"close": 0.84405, "high": 0.84875, "low": 0.8416999999999999, "open": 0.84325, "ticker": "APT/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 13527.741818085}
-{"close": 0.8463499999999999, "high": 0.8488, "low": 0.84215, "open": 0.8431500000000001, "ticker": "APT/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 23836.43496503}
+{"close": 0.8435, "high": 0.8489, "low": 0.8412, "open": 0.8442, "ticker": "APT/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 21106.236}
+{"close": 0.8457, "high": 0.849, "low": 0.8418, "open": 0.8434, "ticker": "APT/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 26090.792}
 {"close": 0.8452500000000001, "high": 0.8499, "low": 0.8424499999999999, "open": 0.8452500000000001, "ticker": "APT/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 32216.251168675}
 {"close": 0.8433999999999999, "high": 0.84595, "low": 0.8383, "open": 0.84485, "ticker": "APT/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 27578.321353735002}
 {"close": 0.8579, "high": 0.8581, "low": 0.8449, "open": 0.8449, "ticker": "APT/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 44587.312357949995}
@@ -1766,4 +1766,6 @@
 {"close": 0.6905, "high": 0.7017, "low": 0.6898, "open": 0.6983, "ticker": "APT/USD", "timestamp": "2026-10-26T03:00:00Z", "volume": 16076.261786820001}
 {"close": 0.70105, "high": 0.70105, "low": 0.6940500000000001, "open": 0.69565, "ticker": "APT/USD", "timestamp": "2026-10-26T04:00:00Z", "volume": 30119.720781250002}
 {"close": 0.6998500000000001, "high": 0.7038500000000001, "low": 0.6998500000000001, "open": 0.7018, "ticker": "APT/USD", "timestamp": "2026-10-26T05:00:00Z", "volume": 37548.039883000005}
-{"close": 0.6919, "high": 0.6971, "low": 0.6919, "open": 0.6971, "ticker": "APT/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 709.4865876700001}
+{"close": 0.6912, "high": 0.6971, "low": 0.6859, "open": 0.6971, "ticker": "APT/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 31268.306753425}
+{"close": 0.6878, "high": 0.6913499999999999, "low": 0.6841, "open": 0.69085, "ticker": "APT/USD", "timestamp": "2026-10-26T07:00:00Z", "volume": 6611.990994399999}
+{"close": 0.6887, "high": 0.68965, "low": 0.6857, "open": 0.68605, "ticker": "APT/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 1865.13569594}

@@ -1058,8 +1058,8 @@
 {"close": 71.697, "high": 73.093, "low": 71.602, "open": 72.768, "ticker": "LTC/USD", "timestamp": "2026-09-26T03:00:00Z", "volume": 14341.74056451}
 {"close": 72.273, "high": 72.407, "low": 71.591, "open": 71.697, "ticker": "LTC/USD", "timestamp": "2026-09-26T04:00:00Z", "volume": 9456.43442167}
 {"close": 72.037, "high": 72.375, "low": 71.607, "open": 72.305, "ticker": "LTC/USD", "timestamp": "2026-09-26T05:00:00Z", "volume": 6928.45269453}
-{"close": 72.869, "high": 73.0275, "low": 71.92, "open": 72.024, "ticker": "LTC/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 7287.453242905}
-{"close": 73.708, "high": 73.9995, "low": 72.739, "open": 72.8745, "ticker": "LTC/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 7880.810628845}
+{"close": 72.878, "high": 73.005, "low": 71.91, "open": 72.028, "ticker": "LTC/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 10117.89152956}
+{"close": 73.696, "high": 73.999, "low": 72.728, "open": 72.889, "ticker": "LTC/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 11824.81720457}
 {"close": 73.74350000000001, "high": 73.9885, "low": 72.9545, "open": 73.66900000000001, "ticker": "LTC/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 6478.21969653}
 {"close": 74.286, "high": 74.4925, "low": 73.43549999999999, "open": 73.7535, "ticker": "LTC/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 13683.444000020001}
 {"close": 73.42099999999999, "high": 74.99000000000001, "low": 72.77, "open": 74.2715, "ticker": "LTC/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 27092.649835905002}
@@ -1778,4 +1778,6 @@
 {"close": 56.133, "high": 56.659499999999994, "low": 55.909, "open": 56.241, "ticker": "LTC/USD", "timestamp": "2026-10-26T03:00:00Z", "volume": 2104.0531012250003}
 {"close": 56.604, "high": 56.606, "low": 56.1105, "open": 56.1135, "ticker": "LTC/USD", "timestamp": "2026-10-26T04:00:00Z", "volume": 4058.294852005}
 {"close": 56.664500000000004, "high": 56.7685, "low": 56.426, "open": 56.6105, "ticker": "LTC/USD", "timestamp": "2026-10-26T05:00:00Z", "volume": 1608.7679414549998}
-{"close": 56.4045, "high": 56.713499999999996, "low": 56.388000000000005, "open": 56.679500000000004, "ticker": "LTC/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 276.403589365}
+{"close": 56.447500000000005, "high": 56.713499999999996, "low": 56.257999999999996, "open": 56.679500000000004, "ticker": "LTC/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 1082.39070732}
+{"close": 56.1875, "high": 56.5865, "low": 55.989, "open": 56.418, "ticker": "LTC/USD", "timestamp": "2026-10-26T07:00:00Z", "volume": 1720.69530799}
+{"close": 56.203, "high": 56.274, "low": 55.9105, "open": 56.195499999999996, "ticker": "LTC/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 663.7558253249999}
