@@ -1053,8 +1053,8 @@
 {"close": 772.75, "high": 773.34, "low": 771.29, "open": 773.06, "ticker": "BNB/USD", "timestamp": "2026-09-25T21:00:00Z", "volume": 53.06084}
 {"close": 776.3, "high": 776.93, "low": 773.01, "open": 773.01, "ticker": "BNB/USD", "timestamp": "2026-09-25T22:00:00Z", "volume": 64.70163}
 {"close": 776.86, "high": 777.62, "low": 776.04, "open": 776.42, "ticker": "BNB/USD", "timestamp": "2026-09-25T23:00:00Z", "volume": 36.87608}
-{"close": 775.8, "high": 777.885, "low": 774.745, "open": 777.02, "ticker": "BNB/USD", "timestamp": "2026-09-26T00:00:00Z", "volume": 79.56289}
-{"close": 775.78, "high": 776.9300000000001, "low": 775.39, "open": 775.75, "ticker": "BNB/USD", "timestamp": "2026-09-26T01:00:00Z", "volume": 61.175034999999994}
+{"close": 775.68, "high": 777.8, "low": 774.76, "open": 776.9, "ticker": "BNB/USD", "timestamp": "2026-09-26T00:00:00Z", "volume": 97.5467}
+{"close": 775.57, "high": 776.98, "low": 775.41, "open": 775.7, "ticker": "BNB/USD", "timestamp": "2026-09-26T01:00:00Z", "volume": 87.5123}
 {"close": 775.0699999999999, "high": 776.675, "low": 774.7, "open": 775.525, "ticker": "BNB/USD", "timestamp": "2026-09-26T02:00:00Z", "volume": 32.184555}
 {"close": 774.365, "high": 775.88, "low": 773.995, "open": 774.94, "ticker": "BNB/USD", "timestamp": "2026-09-26T03:00:00Z", "volume": 47.338375}
 {"close": 774.2750000000001, "high": 775.2349999999999, "low": 773.2, "open": 774.43, "ticker": "BNB/USD", "timestamp": "2026-09-26T04:00:00Z", "volume": 63.8193}
@@ -1773,4 +1773,6 @@
 {"close": 737.475, "high": 739.775, "low": 737.2149999999999, "open": 739.6500000000001, "ticker": "BNB/USD", "timestamp": "2026-10-25T21:00:00Z", "volume": 56.26925}
 {"close": 740.105, "high": 741.7, "low": 737.69, "open": 737.87, "ticker": "BNB/USD", "timestamp": "2026-10-25T22:00:00Z", "volume": 30.31489}
 {"close": 737.615, "high": 740.315, "low": 734.9300000000001, "open": 740.055, "ticker": "BNB/USD", "timestamp": "2026-10-25T23:00:00Z", "volume": 66.36086}
-{"close": 739.1700000000001, "high": 739.565, "low": 736.72, "open": 737.71, "ticker": "BNB/USD", "timestamp": "2026-10-26T00:00:00Z", "volume": 96.86864}
+{"close": 739.625, "high": 740.3050000000001, "low": 736.72, "open": 737.71, "ticker": "BNB/USD", "timestamp": "2026-10-26T00:00:00Z", "volume": 148.21527}
+{"close": 737.34, "high": 741.7750000000001, "low": 733.435, "open": 740.2249999999999, "ticker": "BNB/USD", "timestamp": "2026-10-26T01:00:00Z", "volume": 105.42327499999999}
+{"close": 734.995, "high": 739.485, "low": 734.9200000000001, "open": 737.15, "ticker": "BNB/USD", "timestamp": "2026-10-26T02:00:00Z", "volume": 30.267195}
