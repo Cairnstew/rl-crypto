@@ -1050,9 +1050,9 @@
 {"close": 1.5681, "high": 1.5792, "low": 1.5631, "open": 1.5642, "ticker": "XRP/USD", "timestamp": "2026-09-25T18:00:00Z", "volume": 6928632.550821}
 {"close": 1.572, "high": 1.5749, "low": 1.5625, "open": 1.5681, "ticker": "XRP/USD", "timestamp": "2026-09-25T19:00:00Z", "volume": 6312620.579464}
 {"close": 1.5608, "high": 1.5746, "low": 1.56, "open": 1.5719, "ticker": "XRP/USD", "timestamp": "2026-09-25T20:00:00Z", "volume": 6598959.660142}
-{"close": 1.55146, "high": 1.56209, "low": 1.5503900000000002, "open": 1.560335, "ticker": "XRP/USD", "timestamp": "2026-09-25T21:00:00Z", "volume": 2944719.662260015}
-{"close": 1.56841, "high": 1.57183, "low": 1.548555, "open": 1.551225, "ticker": "XRP/USD", "timestamp": "2026-09-25T22:00:00Z", "volume": 1953488.22925873}
-{"close": 1.568225, "high": 1.572775, "low": 1.566265, "open": 1.568485, "ticker": "XRP/USD", "timestamp": "2026-09-25T23:00:00Z", "volume": 1120788.650082645}
+{"close": 1.5514, "high": 1.5621, "low": 1.5504, "open": 1.5605, "ticker": "XRP/USD", "timestamp": "2026-09-25T21:00:00Z", "volume": 4155176.969975}
+{"close": 1.5686, "high": 1.5719, "low": 1.5484, "open": 1.5509, "ticker": "XRP/USD", "timestamp": "2026-09-25T22:00:00Z", "volume": 3170819.456952}
+{"close": 1.5683, "high": 1.5726, "low": 1.5661, "open": 1.5686, "ticker": "XRP/USD", "timestamp": "2026-09-25T23:00:00Z", "volume": 1510359.193281}
 {"close": 1.5636100000000002, "high": 1.5689199999999999, "low": 1.5547, "open": 1.56845, "ticker": "XRP/USD", "timestamp": "2026-09-26T00:00:00Z", "volume": 1710228.9902427949}
 {"close": 1.57593, "high": 1.5805500000000001, "low": 1.5628600000000001, "open": 1.5634, "ticker": "XRP/USD", "timestamp": "2026-09-26T01:00:00Z", "volume": 3729000.53207278}
 {"close": 1.56467, "high": 1.5768550000000001, "low": 1.5640450000000001, "open": 1.575965, "ticker": "XRP/USD", "timestamp": "2026-09-26T02:00:00Z", "volume": 1833576.276026865}
@@ -1770,4 +1770,7 @@
 {"close": 1.298905, "high": 1.303845, "low": 1.29806, "open": 1.30369, "ticker": "XRP/USD", "timestamp": "2026-10-25T18:00:00Z", "volume": 858166.9728273}
 {"close": 1.29873, "high": 1.3007, "low": 1.29717, "open": 1.29881, "ticker": "XRP/USD", "timestamp": "2026-10-25T19:00:00Z", "volume": 707582.380190345}
 {"close": 1.29879, "high": 1.299845, "low": 1.29606, "open": 1.29862, "ticker": "XRP/USD", "timestamp": "2026-10-25T20:00:00Z", "volume": 680659.18691366}
-{"close": 1.29328, "high": 1.299585, "low": 1.292695, "open": 1.2986849999999999, "ticker": "XRP/USD", "timestamp": "2026-10-25T21:00:00Z", "volume": 943647.8462834901}
+{"close": 1.2911199999999998, "high": 1.299585, "low": 1.289385, "open": 1.2986849999999999, "ticker": "XRP/USD", "timestamp": "2026-10-25T21:00:00Z", "volume": 1476527.957381275}
+{"close": 1.2981500000000001, "high": 1.30104, "low": 1.29102, "open": 1.29136, "ticker": "XRP/USD", "timestamp": "2026-10-25T22:00:00Z", "volume": 515047.44002916996}
+{"close": 1.294745, "high": 1.2987250000000001, "low": 1.283915, "open": 1.297905, "ticker": "XRP/USD", "timestamp": "2026-10-25T23:00:00Z", "volume": 1162272.351215335}
+{"close": 1.293595, "high": 1.2987799999999998, "low": 1.29314, "open": 1.294405, "ticker": "XRP/USD", "timestamp": "2026-10-26T00:00:00Z", "volume": 251778.89347434998}
