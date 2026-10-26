@@ -1060,9 +1060,9 @@
 {"close": 1.8713, "high": 1.8888, "low": 1.8538, "open": 1.873, "ticker": "ATOM/USD", "timestamp": "2026-09-26T17:00:00Z", "volume": 95664.21}
 {"close": 1.8529, "high": 1.8735, "low": 1.8461, "open": 1.8733, "ticker": "ATOM/USD", "timestamp": "2026-09-26T18:00:00Z", "volume": 28588.61}
 {"close": 1.8449, "high": 1.8544, "low": 1.842, "open": 1.8529, "ticker": "ATOM/USD", "timestamp": "2026-09-26T19:00:00Z", "volume": 23096.95}
-{"close": 1.83565, "high": 1.8497, "low": 1.8201, "open": 1.8451499999999998, "ticker": "ATOM/USD", "timestamp": "2026-09-26T20:00:00Z", "volume": 13606.158569739999}
-{"close": 1.8564500000000002, "high": 1.86335, "low": 1.83385, "open": 1.83415, "ticker": "ATOM/USD", "timestamp": "2026-09-26T21:00:00Z", "volume": 10785.791974824999}
-{"close": 1.86165, "high": 1.86775, "low": 1.85515, "open": 1.85515, "ticker": "ATOM/USD", "timestamp": "2026-09-26T22:00:00Z", "volume": 14424.227534770002}
+{"close": 1.8349, "high": 1.8501, "low": 1.8207, "open": 1.8475, "ticker": "ATOM/USD", "timestamp": "2026-09-26T20:00:00Z", "volume": 20706.19}
+{"close": 1.856, "high": 1.8632, "low": 1.8349, "open": 1.8349, "ticker": "ATOM/USD", "timestamp": "2026-09-26T21:00:00Z", "volume": 13307.13}
+{"close": 1.861, "high": 1.8685, "low": 1.855, "open": 1.855, "ticker": "ATOM/USD", "timestamp": "2026-09-26T22:00:00Z", "volume": 23166.4}
 {"close": 1.8666, "high": 1.86965, "low": 1.8593, "open": 1.8606500000000001, "ticker": "ATOM/USD", "timestamp": "2026-09-26T23:00:00Z", "volume": 9715.2065577}
 {"close": 1.84115, "high": 1.8645999999999998, "low": 1.8386, "open": 1.86445, "ticker": "ATOM/USD", "timestamp": "2026-09-27T00:00:00Z", "volume": 10004.33658827}
 {"close": 1.85845, "high": 1.8593000000000002, "low": 1.83975, "open": 1.84035, "ticker": "ATOM/USD", "timestamp": "2026-09-27T01:00:00Z", "volume": 17551.61039194}
@@ -1780,4 +1780,7 @@
 {"close": 1.64995, "high": 1.65845, "low": 1.6418, "open": 1.64295, "ticker": "ATOM/USD", "timestamp": "2026-10-26T17:00:00Z", "volume": 8933.358386355}
 {"close": 1.6320000000000001, "high": 1.6511, "low": 1.6305, "open": 1.6493, "ticker": "ATOM/USD", "timestamp": "2026-10-26T18:00:00Z", "volume": 4255.952726955}
 {"close": 1.6349, "high": 1.64265, "low": 1.6279, "open": 1.6301, "ticker": "ATOM/USD", "timestamp": "2026-10-26T19:00:00Z", "volume": 12491.65101666}
-{"close": 1.6327500000000001, "high": 1.63805, "low": 1.6320999999999999, "open": 1.6320999999999999, "ticker": "ATOM/USD", "timestamp": "2026-10-26T20:00:00Z", "volume": 2567.79161599}
+{"close": 1.6299000000000001, "high": 1.63805, "low": 1.6287500000000001, "open": 1.6320999999999999, "ticker": "ATOM/USD", "timestamp": "2026-10-26T20:00:00Z", "volume": 3383.694238055}
+{"close": 1.6409, "high": 1.6456, "low": 1.6268500000000001, "open": 1.63335, "ticker": "ATOM/USD", "timestamp": "2026-10-26T21:00:00Z", "volume": 4179.841370579999}
+{"close": 1.6323500000000002, "high": 1.64015, "low": 1.63145, "open": 1.6381000000000001, "ticker": "ATOM/USD", "timestamp": "2026-10-26T22:00:00Z", "volume": 9521.46806188}
+{"close": 1.6259000000000001, "high": 1.6292, "low": 1.62325, "open": 1.6277, "ticker": "ATOM/USD", "timestamp": "2026-10-26T23:00:00Z", "volume": 571.96436274}
