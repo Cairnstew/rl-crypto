@@ -1048,11 +1048,11 @@
 {"close": 4.8979, "high": 4.9343, "low": 4.859, "open": 4.8894, "ticker": "NEAR/USD", "timestamp": "2026-09-26T05:00:00Z", "volume": 312214.559}
 {"close": 4.9283, "high": 4.9692, "low": 4.8865, "open": 4.8987, "ticker": "NEAR/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 183997.161}
 {"close": 4.8632, "high": 4.9534, "low": 4.8401, "open": 4.9294, "ticker": "NEAR/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 195988.662}
-{"close": 4.8321000000000005, "high": 4.89255, "low": 4.825699999999999, "open": 4.86095, "ticker": "NEAR/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 205501.634723995}
-{"close": 4.870150000000001, "high": 4.9047, "low": 4.80005, "open": 4.8335, "ticker": "NEAR/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 299487.246800775}
-{"close": 4.90215, "high": 4.97195, "low": 4.860950000000001, "open": 4.8711, "ticker": "NEAR/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 209215.92211559502}
-{"close": 4.89685, "high": 4.9657, "low": 4.890000000000001, "open": 4.90005, "ticker": "NEAR/USD", "timestamp": "2026-09-26T11:00:00Z", "volume": 154247.891392925}
-{"close": 4.85295, "high": 4.94825, "low": 4.806649999999999, "open": 4.89645, "ticker": "NEAR/USD", "timestamp": "2026-09-26T12:00:00Z", "volume": 357144.200435045}
+{"close": 4.8314, "high": 4.8952, "low": 4.8251, "open": 4.8616, "ticker": "NEAR/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 288855.657}
+{"close": 4.8708, "high": 4.9036, "low": 4.8001, "open": 4.8338, "ticker": "NEAR/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 457496.424}
+{"close": 4.903, "high": 4.973, "low": 4.86, "open": 4.8722, "ticker": "NEAR/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 218738.872}
+{"close": 4.8976, "high": 4.9666, "low": 4.8897, "open": 4.9026, "ticker": "NEAR/USD", "timestamp": "2026-09-26T11:00:00Z", "volume": 235900.781}
+{"close": 4.8526, "high": 4.9511, "low": 4.8077, "open": 4.8979, "ticker": "NEAR/USD", "timestamp": "2026-09-26T12:00:00Z", "volume": 490625.059}
 {"close": 4.82085, "high": 4.85845, "low": 4.76625, "open": 4.85475, "ticker": "NEAR/USD", "timestamp": "2026-09-26T13:00:00Z", "volume": 354171.312188635}
 {"close": 4.84505, "high": 4.85025, "low": 4.81165, "open": 4.8210999999999995, "ticker": "NEAR/USD", "timestamp": "2026-09-26T14:00:00Z", "volume": 150433.447270595}
 {"close": 4.84805, "high": 4.8772, "low": 4.8193, "open": 4.84575, "ticker": "NEAR/USD", "timestamp": "2026-09-26T15:00:00Z", "volume": 260726.79937157}
@@ -1768,4 +1768,9 @@
 {"close": 4.50975, "high": 4.5367, "low": 4.49605, "open": 4.50705, "ticker": "NEAR/USD", "timestamp": "2026-10-26T05:00:00Z", "volume": 77457.04177664}
 {"close": 4.46475, "high": 4.5191, "low": 4.4391, "open": 4.5114, "ticker": "NEAR/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 88402.403474005}
 {"close": 4.4668, "high": 4.4887, "low": 4.4318, "open": 4.46675, "ticker": "NEAR/USD", "timestamp": "2026-10-26T07:00:00Z", "volume": 43206.797497915}
-{"close": 4.4838000000000005, "high": 4.496449999999999, "low": 4.4437999999999995, "open": 4.4646, "ticker": "NEAR/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 38821.470718505}
+{"close": 4.52925, "high": 4.56695, "low": 4.4437999999999995, "open": 4.4646, "ticker": "NEAR/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 104226.84301866}
+{"close": 4.54465, "high": 4.5605, "low": 4.5066500000000005, "open": 4.5283, "ticker": "NEAR/USD", "timestamp": "2026-10-26T09:00:00Z", "volume": 167850.08424733498}
+{"close": 4.52365, "high": 4.5682, "low": 4.51565, "open": 4.5448, "ticker": "NEAR/USD", "timestamp": "2026-10-26T10:00:00Z", "volume": 108114.94316103999}
+{"close": 4.57865, "high": 4.5918, "low": 4.498, "open": 4.523, "ticker": "NEAR/USD", "timestamp": "2026-10-26T11:00:00Z", "volume": 186207.40755216498}
+{"close": 4.5518, "high": 4.59585, "low": 4.54425, "open": 4.5756499999999996, "ticker": "NEAR/USD", "timestamp": "2026-10-26T12:00:00Z", "volume": 93829.18561314}
+{"close": 4.5482, "high": 4.5493, "low": 4.54715, "open": 4.548, "ticker": "NEAR/USD", "timestamp": "2026-10-26T13:00:00Z", "volume": 221.50305334}

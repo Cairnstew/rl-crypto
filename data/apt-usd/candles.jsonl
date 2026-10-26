@@ -1048,11 +1048,11 @@
 {"close": 0.8435, "high": 0.8544, "low": 0.8427, "open": 0.854, "ticker": "APT/USD", "timestamp": "2026-09-26T05:00:00Z", "volume": 80641.364}
 {"close": 0.8435, "high": 0.8489, "low": 0.8412, "open": 0.8442, "ticker": "APT/USD", "timestamp": "2026-09-26T06:00:00Z", "volume": 21106.236}
 {"close": 0.8457, "high": 0.849, "low": 0.8418, "open": 0.8434, "ticker": "APT/USD", "timestamp": "2026-09-26T07:00:00Z", "volume": 26090.792}
-{"close": 0.8452500000000001, "high": 0.8499, "low": 0.8424499999999999, "open": 0.8452500000000001, "ticker": "APT/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 32216.251168675}
-{"close": 0.8433999999999999, "high": 0.84595, "low": 0.8383, "open": 0.84485, "ticker": "APT/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 27578.321353735002}
-{"close": 0.8579, "high": 0.8581, "low": 0.8449, "open": 0.8449, "ticker": "APT/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 44587.312357949995}
-{"close": 0.8526, "high": 0.85875, "low": 0.8526, "open": 0.8575999999999999, "ticker": "APT/USD", "timestamp": "2026-09-26T11:00:00Z", "volume": 70153.712450425}
-{"close": 0.84955, "high": 0.85675, "low": 0.84745, "open": 0.8519, "ticker": "APT/USD", "timestamp": "2026-09-26T12:00:00Z", "volume": 44420.75002314}
+{"close": 0.8453, "high": 0.8502, "low": 0.8421, "open": 0.8454, "ticker": "APT/USD", "timestamp": "2026-09-26T08:00:00Z", "volume": 51215.078}
+{"close": 0.843, "high": 0.8469, "low": 0.839, "open": 0.8459, "ticker": "APT/USD", "timestamp": "2026-09-26T09:00:00Z", "volume": 30035.695}
+{"close": 0.8579, "high": 0.8583, "low": 0.8442, "open": 0.8442, "ticker": "APT/USD", "timestamp": "2026-09-26T10:00:00Z", "volume": 41592.409}
+{"close": 0.8521, "high": 0.859, "low": 0.8521, "open": 0.8583, "ticker": "APT/USD", "timestamp": "2026-09-26T11:00:00Z", "volume": 59806.213}
+{"close": 0.8512, "high": 0.8581, "low": 0.847, "open": 0.852, "ticker": "APT/USD", "timestamp": "2026-09-26T12:00:00Z", "volume": 85382.14}
 {"close": 0.85745, "high": 0.86505, "low": 0.8494999999999999, "open": 0.8504, "ticker": "APT/USD", "timestamp": "2026-09-26T13:00:00Z", "volume": 109718.499080365}
 {"close": 0.87225, "high": 0.87225, "low": 0.8559, "open": 0.8576, "ticker": "APT/USD", "timestamp": "2026-09-26T14:00:00Z", "volume": 70730.45903389}
 {"close": 0.88, "high": 0.8888, "low": 0.8707, "open": 0.87235, "ticker": "APT/USD", "timestamp": "2026-09-26T15:00:00Z", "volume": 142705.75703213998}
@@ -1768,4 +1768,9 @@
 {"close": 0.6998500000000001, "high": 0.7038500000000001, "low": 0.6998500000000001, "open": 0.7018, "ticker": "APT/USD", "timestamp": "2026-10-26T05:00:00Z", "volume": 37548.039883000005}
 {"close": 0.6912, "high": 0.6971, "low": 0.6859, "open": 0.6971, "ticker": "APT/USD", "timestamp": "2026-10-26T06:00:00Z", "volume": 31268.306753425}
 {"close": 0.6878, "high": 0.6913499999999999, "low": 0.6841, "open": 0.69085, "ticker": "APT/USD", "timestamp": "2026-10-26T07:00:00Z", "volume": 6611.990994399999}
-{"close": 0.6887, "high": 0.68965, "low": 0.6857, "open": 0.68605, "ticker": "APT/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 1865.13569594}
+{"close": 0.6997, "high": 0.701, "low": 0.6857, "open": 0.68605, "ticker": "APT/USD", "timestamp": "2026-10-26T08:00:00Z", "volume": 7589.75919594}
+{"close": 0.6948000000000001, "high": 0.6995, "low": 0.6948000000000001, "open": 0.6975, "ticker": "APT/USD", "timestamp": "2026-10-26T09:00:00Z", "volume": 7064.7578247500005}
+{"close": 0.6944, "high": 0.69575, "low": 0.6933, "open": 0.6943, "ticker": "APT/USD", "timestamp": "2026-10-26T10:00:00Z", "volume": 30740.6401054}
+{"close": 0.69815, "high": 0.69925, "low": 0.6919500000000001, "open": 0.69485, "ticker": "APT/USD", "timestamp": "2026-10-26T11:00:00Z", "volume": 12929.414263235001}
+{"close": 0.6981999999999999, "high": 0.6996, "low": 0.6960500000000001, "open": 0.6963, "ticker": "APT/USD", "timestamp": "2026-10-26T12:00:00Z", "volume": 8418.887975865}
+{"close": 0.69775, "high": 0.69775, "low": 0.69775, "open": 0.69775, "ticker": "APT/USD", "timestamp": "2026-10-26T13:00:00Z", "volume": 2.5}
