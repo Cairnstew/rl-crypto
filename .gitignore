@@ -22,6 +22,9 @@ dist/
 htmlcov/
 .ruff_cache/
 
+# Local model-improvement worktrees (run artifacts live outside the repo)
+.model-improve/
+
 # Nix
 result
 result-*
