@@ -1,46 +1,46 @@
 {
   "schema": "rl-crypto/pipeline/3",
   "ticker": "DOGE/USD",
-  "generated_at": "2026-10-27T07:52:41Z",
+  "generated_at": "2026-10-27T10:48:38Z",
   "timeframe": "1h",
   "horizon": 1,
   "feature_version": "rl-crypto/features/2",
   "fetch_window": {
-    "start": "2026-08-28T07:52:41Z",
-    "end": "2026-10-27T07:52:41Z"
+    "start": "2026-08-28T10:48:38Z",
+    "end": "2026-10-27T10:48:38Z"
   },
   "archive": {
-    "rows": 1806,
+    "rows": 1809,
     "candles_path": "/home/runner/work/rl-crypto/rl-crypto/rl-crypto/data/doge-usd/candles.jsonl",
     "spans": [
       "2026-08-13T02:00:00Z",
-      "2026-10-27T07:00:00Z"
+      "2026-10-27T10:00:00Z"
     ]
   },
   "samples": {
-    "total": 1806,
-    "feature_complete": 1783,
-    "holdout": 356
+    "total": 1809,
+    "feature_complete": 1786,
+    "holdout": 357
   },
   "targets": {
     "fwd_return": {
       "in_sample": {
-        "rmse": 0.00786855356305589,
-        "mae": 0.00494782352137666,
-        "r2": 0.010530470633789313
+        "rmse": 0.007869798428515826,
+        "mae": 0.004949847593556201,
+        "r2": 0.010666590015959265
       },
       "metric_space": "raw",
       "holdout": {
-        "n_samples": 356,
+        "n_samples": 357,
         "metrics": {
-          "rmse": 0.0060290291065742485,
-          "mae": 0.004204728917199342,
-          "r2": -0.04349660217962925
+          "rmse": 0.005988683526750407,
+          "mae": 0.004178072848026857,
+          "r2": -0.04447897980398663
         },
         "baseline": {
-          "rmse": 0.005921428996565674,
-          "mae": 0.004050304639671164,
-          "r2": -0.006582394844220962
+          "rmse": 0.005876207489554096,
+          "mae": 0.0040222534863498865,
+          "r2": -0.005613794948389428
         },
         "beats_baseline": false
       },
@@ -48,22 +48,22 @@
     },
     "fwd_direction": {
       "in_sample": {
-        "accuracy": 0.5469845722300141,
-        "log_loss": 0.6857097063524913,
-        "base_rate": 0.5070126227208976
+        "accuracy": 0.5504201680672269,
+        "log_loss": 0.685760299838295,
+        "base_rate": 0.5063025210084033
       },
       "metric_space": "raw",
       "holdout": {
-        "n_samples": 356,
+        "n_samples": 357,
         "metrics": {
-          "accuracy": 0.49719101123595505,
-          "log_loss": 0.7019640498894569,
-          "base_rate": 0.5
+          "accuracy": 0.49019607843137253,
+          "log_loss": 0.7015667774845387,
+          "base_rate": 0.5014005602240896
         },
         "baseline": {
-          "accuracy": 0.5,
-          "log_loss": 0.6932455439895264,
-          "base_rate": 0.5
+          "accuracy": 0.5014005602240896,
+          "log_loss": 0.6931913203028834,
+          "base_rate": 0.5014005602240896
         },
         "beats_baseline": false
       },
@@ -71,22 +71,22 @@
     },
     "fwd_volatility": {
       "in_sample": {
-        "rmse": 1.2868825515386386,
-        "mae": 0.9228538601207864,
-        "r2": 0.11280926522827384
+        "rmse": 1.2874946410502892,
+        "mae": 0.9234593703816087,
+        "r2": 0.11120608590012848
       },
       "metric_space": "log",
       "holdout": {
         "n_samples": 356,
         "metrics": {
-          "rmse": 1.3529874226070553,
-          "mae": 1.110330257033282,
-          "r2": -0.12730528836120336
+          "rmse": 1.3494122970805664,
+          "mae": 1.1034203144831267,
+          "r2": -0.1117772612905279
         },
         "baseline": {
-          "rmse": 1.2809547522885414,
-          "mae": 0.9351792196363878,
-          "r2": -0.010465765003982108
+          "rmse": 1.2883548380545293,
+          "mae": 0.9368158409371757,
+          "r2": -0.01344327616626928
         },
         "beats_baseline": false
       },
@@ -94,22 +94,22 @@
     },
     "fwd_volume_ratio": {
       "in_sample": {
-        "rmse": 0.5859023546576176,
-        "mae": 0.453823158240419,
-        "r2": 0.216059457044937
+        "rmse": 0.5861177668569276,
+        "mae": 0.45404928220214397,
+        "r2": 0.2178167402583866
       },
       "metric_space": "raw",
       "holdout": {
-        "n_samples": 356,
+        "n_samples": 357,
         "metrics": {
-          "rmse": 0.7868874335629621,
-          "mae": 0.6215411668165434,
-          "r2": 0.15747834350778867
+          "rmse": 0.7903388311050605,
+          "mae": 0.6248888599928412,
+          "r2": 0.15137178954475672
         },
         "baseline": {
-          "rmse": 0.8657878637747575,
-          "mae": 0.6980165463339756,
-          "r2": -0.019949902943400044
+          "rmse": 0.8669786494505475,
+          "mae": 0.6985393435156081,
+          "r2": -0.021192529425147155
         },
         "beats_baseline": true
       },
@@ -147,13 +147,13 @@
     "signal": null,
     "confidence": null,
     "predictions": {
-      "fwd_return": -0.0007031182269235943,
+      "fwd_return": -0.0013480949103067276,
       "fwd_direction": 0.0,
-      "fwd_volatility": 0.0010153462952324902,
-      "fwd_volume_ratio": -0.03323512449450043
+      "fwd_volatility": 0.0011872056715122343,
+      "fwd_volume_ratio": 0.6035124522710208
     },
     "probabilities": {
-      "fwd_direction": 0.4422680434969414
+      "fwd_direction": 0.42672832778641634
     },
     "notes": [
       "signal withheld: fwd_direction did not beat the baseline out of sample",
@@ -164,15 +164,15 @@
     "fetched": true,
     "market_ok": true,
     "news_ok": true,
-    "price": 0.07744045,
-    "latest_sentiment": -0.0292,
+    "price": 0.07726125,
+    "latest_sentiment": 0.1185,
     "notes": []
   },
   "notes": [
     "dropped 6 constant feature(s) with no variation in training data: sentiment, sentiment_delta, sentiment_ewma_6, articles_log, novelty, has_news",
-    "fwd_return: out-of-sample rmse=0.00603 vs baseline 0.00592 (-1.82% vs baseline) — does not beat it (356 held-out rows, need 1% to count as skill)",
-    "fwd_direction: out-of-sample log_loss=0.70196 vs baseline 0.69325 (-1.26% vs baseline) — does not beat it (356 held-out rows, need 1% to count as skill)",
-    "fwd_volatility: out-of-sample log-space rmse=1.35299 vs baseline 1.28095 (-5.62% vs baseline) — does not beat it (356 held-out rows, need 1% to count as skill)",
-    "fwd_volume_ratio: out-of-sample rmse=0.78689 vs baseline 0.86579 (+9.11% vs baseline) — beats it (356 held-out rows, need 1% to count as skill)"
+    "fwd_return: out-of-sample rmse=0.00599 vs baseline 0.00588 (-1.91% vs baseline) — does not beat it (357 held-out rows, need 1% to count as skill)",
+    "fwd_direction: out-of-sample log_loss=0.70157 vs baseline 0.69319 (-1.21% vs baseline) — does not beat it (357 held-out rows, need 1% to count as skill)",
+    "fwd_volatility: out-of-sample log-space rmse=1.34941 vs baseline 1.28835 (-4.74% vs baseline) — does not beat it (356 held-out rows, need 1% to count as skill)",
+    "fwd_volume_ratio: out-of-sample rmse=0.79034 vs baseline 0.86698 (+8.84% vs baseline) — beats it (357 held-out rows, need 1% to count as skill)"
   ]
 }
