@@ -1090,8 +1090,8 @@
 {"close": 10.99, "high": 11.023, "low": 10.938, "open": 11.015, "ticker": "AVAX/USD", "timestamp": "2026-09-27T11:00:00Z", "volume": 37472.61023657}
 {"close": 10.907, "high": 11.037, "low": 10.896, "open": 10.99, "ticker": "AVAX/USD", "timestamp": "2026-09-27T12:00:00Z", "volume": 71778.49529763}
 {"close": 11.01, "high": 11.019, "low": 10.808, "open": 10.907, "ticker": "AVAX/USD", "timestamp": "2026-09-27T13:00:00Z", "volume": 35385.42881971}
-{"close": 10.9435, "high": 11.0305, "low": 10.8635, "open": 11.0115, "ticker": "AVAX/USD", "timestamp": "2026-09-27T14:00:00Z", "volume": 29016.068647}
-{"close": 11.017, "high": 11.0365, "low": 10.875, "open": 10.939, "ticker": "AVAX/USD", "timestamp": "2026-09-27T15:00:00Z", "volume": 30003.87582427}
+{"close": 10.95, "high": 11.033, "low": 10.855, "open": 11.012, "ticker": "AVAX/USD", "timestamp": "2026-09-27T14:00:00Z", "volume": 45382.5073053}
+{"close": 11.021, "high": 11.038, "low": 10.874, "open": 10.944, "ticker": "AVAX/USD", "timestamp": "2026-09-27T15:00:00Z", "volume": 46474.58957246}
 {"close": 10.921, "high": 11.034500000000001, "low": 10.8985, "open": 11.022, "ticker": "AVAX/USD", "timestamp": "2026-09-27T16:00:00Z", "volume": 36844.551128834995}
 {"close": 10.981, "high": 11.0095, "low": 10.9145, "open": 10.919, "ticker": "AVAX/USD", "timestamp": "2026-09-27T17:00:00Z", "volume": 22253.95432007}
 {"close": 11.046, "high": 11.0525, "low": 10.945, "open": 10.965, "ticker": "AVAX/USD", "timestamp": "2026-09-27T18:00:00Z", "volume": 30897.840089415}
@@ -1810,4 +1810,6 @@
 {"close": 8.746, "high": 8.813500000000001, "low": 8.74, "open": 8.776, "ticker": "AVAX/USD", "timestamp": "2026-10-27T11:00:00Z", "volume": 10634.361512545}
 {"close": 8.824, "high": 8.850999999999999, "low": 8.7225, "open": 8.742, "ticker": "AVAX/USD", "timestamp": "2026-10-27T12:00:00Z", "volume": 5037.716312085}
 {"close": 8.754, "high": 8.822, "low": 8.732, "open": 8.8215, "ticker": "AVAX/USD", "timestamp": "2026-10-27T13:00:00Z", "volume": 9035.57051454}
-{"close": 8.831, "high": 8.831, "low": 8.7325, "open": 8.755, "ticker": "AVAX/USD", "timestamp": "2026-10-27T14:00:00Z", "volume": 3943.4971214849998}
+{"close": 8.82, "high": 8.845, "low": 8.7325, "open": 8.755, "ticker": "AVAX/USD", "timestamp": "2026-10-27T14:00:00Z", "volume": 9405.715400595}
+{"close": 8.8475, "high": 8.872, "low": 8.779, "open": 8.818000000000001, "ticker": "AVAX/USD", "timestamp": "2026-10-27T15:00:00Z", "volume": 14177.369399415}
+{"close": 8.826, "high": 8.850000000000001, "low": 8.8225, "open": 8.8475, "ticker": "AVAX/USD", "timestamp": "2026-10-27T16:00:00Z", "volume": 3261.741650495}
