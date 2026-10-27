@@ -1066,11 +1066,11 @@
 {"close": 1.1632, "high": 1.1655, "low": 1.1552, "open": 1.1552, "ticker": "SUI/USD", "timestamp": "2026-09-26T23:00:00Z", "volume": 550801.4}
 {"close": 1.1644, "high": 1.1738, "low": 1.1602, "open": 1.1631, "ticker": "SUI/USD", "timestamp": "2026-09-27T00:00:00Z", "volume": 717803.6}
 {"close": 1.1805, "high": 1.1819, "low": 1.1602, "open": 1.164, "ticker": "SUI/USD", "timestamp": "2026-09-27T01:00:00Z", "volume": 1222477.5}
-{"close": 1.1733500000000001, "high": 1.19035, "low": 1.1716, "open": 1.18045, "ticker": "SUI/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 1822220.680735}
-{"close": 1.1704500000000002, "high": 1.1780499999999998, "low": 1.1682, "open": 1.1726, "ticker": "SUI/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 423277.24846000003}
-{"close": 1.1592500000000001, "high": 1.17045, "low": 1.15455, "open": 1.16995, "ticker": "SUI/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 627446.75357}
-{"close": 1.181, "high": 1.185, "low": 1.1578499999999998, "open": 1.1592, "ticker": "SUI/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 802954.5523399999}
-{"close": 1.19655, "high": 1.21395, "low": 1.1804000000000001, "open": 1.1809, "ticker": "SUI/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 1442523.079805}
+{"close": 1.1737, "high": 1.1908, "low": 1.1717, "open": 1.1806, "ticker": "SUI/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 2886450.3}
+{"close": 1.1704, "high": 1.1784, "low": 1.1682, "open": 1.1728, "ticker": "SUI/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 448040.2}
+{"close": 1.1591, "high": 1.1706, "low": 1.1548, "open": 1.1697, "ticker": "SUI/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 861189.1}
+{"close": 1.1811, "high": 1.1854, "low": 1.1577, "open": 1.1593, "ticker": "SUI/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 1012387.0}
+{"close": 1.1969, "high": 1.2143, "low": 1.1806, "open": 1.1811, "ticker": "SUI/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 1884698.5}
 {"close": 1.2638, "high": 1.26905, "low": 1.19565, "open": 1.19655, "ticker": "SUI/USD", "timestamp": "2026-09-27T07:00:00Z", "volume": 2971557.076355}
 {"close": 1.2657500000000002, "high": 1.28755, "low": 1.26025, "open": 1.2643499999999999, "ticker": "SUI/USD", "timestamp": "2026-09-27T08:00:00Z", "volume": 2165129.42787}
 {"close": 1.255, "high": 1.26675, "low": 1.2418, "open": 1.2657500000000002, "ticker": "SUI/USD", "timestamp": "2026-09-27T09:00:00Z", "volume": 1887694.00372}
@@ -1786,4 +1786,9 @@
 {"close": 0.91655, "high": 0.9168000000000001, "low": 0.9032, "open": 0.90935, "ticker": "SUI/USD", "timestamp": "2026-10-26T23:00:00Z", "volume": 297745.30299999996}
 {"close": 0.9151499999999999, "high": 0.92055, "low": 0.9151, "open": 0.91665, "ticker": "SUI/USD", "timestamp": "2026-10-27T00:00:00Z", "volume": 393103.78039}
 {"close": 0.9125000000000001, "high": 0.91835, "low": 0.9114, "open": 0.9147, "ticker": "SUI/USD", "timestamp": "2026-10-27T01:00:00Z", "volume": 195973.81566000002}
-{"close": 0.9119999999999999, "high": 0.91335, "low": 0.91035, "open": 0.9129, "ticker": "SUI/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 53161.140805}
+{"close": 0.9088, "high": 0.9134, "low": 0.9081, "open": 0.9129, "ticker": "SUI/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 236406.30615}
+{"close": 0.90835, "high": 0.9116, "low": 0.9033, "open": 0.909, "ticker": "SUI/USD", "timestamp": "2026-10-27T03:00:00Z", "volume": 220619.35799}
+{"close": 0.90695, "high": 0.90955, "low": 0.90635, "open": 0.9088, "ticker": "SUI/USD", "timestamp": "2026-10-27T04:00:00Z", "volume": 28835.033620000002}
+{"close": 0.91105, "high": 0.91185, "low": 0.9044, "open": 0.9072, "ticker": "SUI/USD", "timestamp": "2026-10-27T05:00:00Z", "volume": 111607.497375}
+{"close": 0.9045000000000001, "high": 0.9108499999999999, "low": 0.9036, "open": 0.91065, "ticker": "SUI/USD", "timestamp": "2026-10-27T06:00:00Z", "volume": 44950.30653}
+{"close": 0.9114, "high": 0.9134, "low": 0.9031, "open": 0.90455, "ticker": "SUI/USD", "timestamp": "2026-10-27T07:00:00Z", "volume": 91224.95198499999}

@@ -1066,11 +1066,11 @@
 {"close": 1.8664, "high": 1.87, "low": 1.8595, "open": 1.8607, "ticker": "ATOM/USD", "timestamp": "2026-09-26T23:00:00Z", "volume": 11716.61}
 {"close": 1.8419, "high": 1.8653, "low": 1.8388, "open": 1.8653, "ticker": "ATOM/USD", "timestamp": "2026-09-27T00:00:00Z", "volume": 16167.27}
 {"close": 1.8589, "high": 1.8601, "low": 1.8393, "open": 1.8405, "ticker": "ATOM/USD", "timestamp": "2026-09-27T01:00:00Z", "volume": 16995.83}
-{"close": 1.83685, "high": 1.8584, "low": 1.8362, "open": 1.8578999999999999, "ticker": "ATOM/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 7233.8406958450005}
-{"close": 1.8331499999999998, "high": 1.8381500000000002, "low": 1.8323, "open": 1.8367, "ticker": "ATOM/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 5672.6979870000005}
-{"close": 1.8186, "high": 1.8381, "low": 1.81505, "open": 1.83175, "ticker": "ATOM/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 16162.35364239}
-{"close": 1.8345, "high": 1.838, "low": 1.8198500000000002, "open": 1.8198500000000002, "ticker": "ATOM/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 9016.734958885001}
-{"close": 1.8481, "high": 1.8565, "low": 1.8326500000000001, "open": 1.8352, "ticker": "ATOM/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 17651.615315745003}
+{"close": 1.8367, "high": 1.8583, "low": 1.8365, "open": 1.8573, "ticker": "ATOM/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 5975.01}
+{"close": 1.8332, "high": 1.8383, "low": 1.8321, "open": 1.8367, "ticker": "ATOM/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 9278.28}
+{"close": 1.8189, "high": 1.8382, "low": 1.814, "open": 1.8321, "ticker": "ATOM/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 26210.09}
+{"close": 1.8344, "high": 1.8378, "low": 1.8198, "open": 1.8198, "ticker": "ATOM/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 9057.87}
+{"close": 1.8489, "high": 1.857, "low": 1.8326, "open": 1.8355, "ticker": "ATOM/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 20410.06}
 {"close": 1.9079000000000002, "high": 1.9255499999999999, "low": 1.8449499999999999, "open": 1.8484500000000001, "ticker": "ATOM/USD", "timestamp": "2026-09-27T07:00:00Z", "volume": 62235.90599879}
 {"close": 1.8914, "high": 1.91345, "low": 1.8809, "open": 1.90735, "ticker": "ATOM/USD", "timestamp": "2026-09-27T08:00:00Z", "volume": 58545.85338233999}
 {"close": 1.88765, "high": 1.89505, "low": 1.87675, "open": 1.89285, "ticker": "ATOM/USD", "timestamp": "2026-09-27T09:00:00Z", "volume": 19830.429426975}
@@ -1786,4 +1786,9 @@
 {"close": 1.6364, "high": 1.6386, "low": 1.62325, "open": 1.6277, "ticker": "ATOM/USD", "timestamp": "2026-10-26T23:00:00Z", "volume": 5488.3467829}
 {"close": 1.6366, "high": 1.64065, "low": 1.6358000000000001, "open": 1.6377, "ticker": "ATOM/USD", "timestamp": "2026-10-27T00:00:00Z", "volume": 5523.329666945}
 {"close": 1.62605, "high": 1.63835, "low": 1.6252, "open": 1.63625, "ticker": "ATOM/USD", "timestamp": "2026-10-27T01:00:00Z", "volume": 3260.01476636}
-{"close": 1.6211, "high": 1.62565, "low": 1.6211, "open": 1.62555, "ticker": "ATOM/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 407.36309801}
+{"close": 1.61375, "high": 1.62565, "low": 1.61375, "open": 1.62555, "ticker": "ATOM/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 2299.57149738}
+{"close": 1.6181, "high": 1.6199, "low": 1.60705, "open": 1.61355, "ticker": "ATOM/USD", "timestamp": "2026-10-27T03:00:00Z", "volume": 4984.57388846}
+{"close": 1.6244, "high": 1.625, "low": 1.61625, "open": 1.61695, "ticker": "ATOM/USD", "timestamp": "2026-10-27T04:00:00Z", "volume": 1706.096121045}
+{"close": 1.6292, "high": 1.6298, "low": 1.61905, "open": 1.62555, "ticker": "ATOM/USD", "timestamp": "2026-10-27T05:00:00Z", "volume": 6067.46573444}
+{"close": 1.6296499999999998, "high": 1.63475, "low": 1.6274000000000002, "open": 1.62835, "ticker": "ATOM/USD", "timestamp": "2026-10-27T06:00:00Z", "volume": 1009.640152745}
+{"close": 1.6325, "high": 1.6325, "low": 1.6236000000000002, "open": 1.6298, "ticker": "ATOM/USD", "timestamp": "2026-10-27T07:00:00Z", "volume": 6878.857242145}

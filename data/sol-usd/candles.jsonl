@@ -1079,11 +1079,11 @@
 {"close": 121.37, "high": 121.81, "low": 121.11, "open": 121.12, "ticker": "SOL/USD", "timestamp": "2026-09-26T23:00:00Z", "volume": 17508.78847783}
 {"close": 120.83, "high": 121.41, "low": 120.7, "open": 121.38, "ticker": "SOL/USD", "timestamp": "2026-09-27T00:00:00Z", "volume": 15351.46780052}
 {"close": 121.42, "high": 121.57, "low": 120.65, "open": 120.82, "ticker": "SOL/USD", "timestamp": "2026-09-27T01:00:00Z", "volume": 17676.84017274}
-{"close": 121.13, "high": 121.66, "low": 121.055, "open": 121.42, "ticker": "SOL/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 14143.794518525}
-{"close": 120.58, "high": 121.35499999999999, "low": 120.525, "open": 121.13499999999999, "ticker": "SOL/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 11963.249166579999}
-{"close": 120.155, "high": 120.84, "low": 120.09, "open": 120.57, "ticker": "SOL/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 12483.67282694}
-{"close": 121.095, "high": 121.45, "low": 120.11, "open": 120.14, "ticker": "SOL/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 14002.649829535001}
-{"close": 121.315, "high": 121.55, "low": 121.07, "open": 121.07, "ticker": "SOL/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 8368.977403134999}
+{"close": 121.13, "high": 121.66, "low": 121.06, "open": 121.42, "ticker": "SOL/USD", "timestamp": "2026-09-27T02:00:00Z", "volume": 19746.22326656}
+{"close": 120.57, "high": 121.35, "low": 120.52, "open": 121.13, "ticker": "SOL/USD", "timestamp": "2026-09-27T03:00:00Z", "volume": 19893.25250407}
+{"close": 120.14, "high": 120.85, "low": 120.09, "open": 120.56, "ticker": "SOL/USD", "timestamp": "2026-09-27T04:00:00Z", "volume": 19746.65892272}
+{"close": 121.08, "high": 121.45, "low": 120.11, "open": 120.14, "ticker": "SOL/USD", "timestamp": "2026-09-27T05:00:00Z", "volume": 19331.14434261}
+{"close": 121.31, "high": 121.55, "low": 121.06, "open": 121.06, "ticker": "SOL/USD", "timestamp": "2026-09-27T06:00:00Z", "volume": 13683.83314508}
 {"close": 124.08, "high": 124.35, "low": 121.25999999999999, "open": 121.295, "ticker": "SOL/USD", "timestamp": "2026-09-27T07:00:00Z", "volume": 50552.91873589}
 {"close": 124.07, "high": 124.92, "low": 123.93, "open": 124.1, "ticker": "SOL/USD", "timestamp": "2026-09-27T08:00:00Z", "volume": 53460.184990665}
 {"close": 124.44, "high": 124.495, "low": 123.35, "open": 124.07499999999999, "ticker": "SOL/USD", "timestamp": "2026-09-27T09:00:00Z", "volume": 37064.11566611}
@@ -1799,4 +1799,9 @@
 {"close": 100.76, "high": 100.81, "low": 99.75999999999999, "open": 100.215, "ticker": "SOL/USD", "timestamp": "2026-10-26T23:00:00Z", "volume": 11577.135853830001}
 {"close": 100.685, "high": 100.98, "low": 100.625, "open": 100.765, "ticker": "SOL/USD", "timestamp": "2026-10-27T00:00:00Z", "volume": 8051.640612215}
 {"close": 100.465, "high": 100.88499999999999, "low": 100.345, "open": 100.67, "ticker": "SOL/USD", "timestamp": "2026-10-27T01:00:00Z", "volume": 4826.22975123}
-{"close": 100.38, "high": 100.53, "low": 100.34, "open": 100.475, "ticker": "SOL/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 446.84202429}
+{"close": 100.11, "high": 100.57499999999999, "low": 100.03, "open": 100.475, "ticker": "SOL/USD", "timestamp": "2026-10-27T02:00:00Z", "volume": 4812.171874285}
+{"close": 100.015, "high": 100.235, "low": 99.815, "open": 100.10499999999999, "ticker": "SOL/USD", "timestamp": "2026-10-27T03:00:00Z", "volume": 6129.7890735050005}
+{"close": 99.97, "high": 100.06, "low": 99.795, "open": 100.02, "ticker": "SOL/USD", "timestamp": "2026-10-27T04:00:00Z", "volume": 5029.082597325}
+{"close": 100.02, "high": 100.21000000000001, "low": 99.6, "open": 99.975, "ticker": "SOL/USD", "timestamp": "2026-10-27T05:00:00Z", "volume": 8619.451906115}
+{"close": 99.42500000000001, "high": 100.03, "low": 99.285, "open": 100.02000000000001, "ticker": "SOL/USD", "timestamp": "2026-10-27T06:00:00Z", "volume": 4556.19493764}
+{"close": 99.89, "high": 99.92, "low": 99.33500000000001, "open": 99.42, "ticker": "SOL/USD", "timestamp": "2026-10-27T07:00:00Z", "volume": 3742.7747000400004}
