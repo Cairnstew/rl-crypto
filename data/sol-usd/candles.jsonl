@@ -1093,10 +1093,10 @@
 {"close": 123.16, "high": 123.67, "low": 122.32, "open": 123.33, "ticker": "SOL/USD", "timestamp": "2026-09-27T13:00:00Z", "volume": 87765.08085358}
 {"close": 121.69, "high": 123.21, "low": 121.35, "open": 123.16, "ticker": "SOL/USD", "timestamp": "2026-09-27T14:00:00Z", "volume": 54998.85662438}
 {"close": 121.75, "high": 121.88, "low": 121.26, "open": 121.67, "ticker": "SOL/USD", "timestamp": "2026-09-27T15:00:00Z", "volume": 46079.22762618}
-{"close": 121.805, "high": 122.325, "low": 121.69, "open": 121.745, "ticker": "SOL/USD", "timestamp": "2026-09-27T16:00:00Z", "volume": 19544.74036952}
-{"close": 122.045, "high": 122.17, "low": 121.7, "open": 121.805, "ticker": "SOL/USD", "timestamp": "2026-09-27T17:00:00Z", "volume": 22004.54075512}
-{"close": 123.25999999999999, "high": 123.27000000000001, "low": 121.905, "open": 122.03, "ticker": "SOL/USD", "timestamp": "2026-09-27T18:00:00Z", "volume": 23827.527591425}
-{"close": 123.01, "high": 123.4, "low": 122.845, "open": 123.255, "ticker": "SOL/USD", "timestamp": "2026-09-27T19:00:00Z", "volume": 15485.647556420001}
+{"close": 121.81, "high": 122.36, "low": 121.69, "open": 121.75, "ticker": "SOL/USD", "timestamp": "2026-09-27T16:00:00Z", "volume": 31368.44933367}
+{"close": 122.05, "high": 122.18, "low": 121.7, "open": 121.81, "ticker": "SOL/USD", "timestamp": "2026-09-27T17:00:00Z", "volume": 25690.50635165}
+{"close": 123.28, "high": 123.28, "low": 121.9, "open": 122.03, "ticker": "SOL/USD", "timestamp": "2026-09-27T18:00:00Z", "volume": 36220.18063452}
+{"close": 123.01, "high": 123.4, "low": 122.84, "open": 123.25, "ticker": "SOL/USD", "timestamp": "2026-09-27T19:00:00Z", "volume": 21194.70191058}
 {"close": 122.685, "high": 123.41, "low": 122.51, "open": 123.015, "ticker": "SOL/USD", "timestamp": "2026-09-27T20:00:00Z", "volume": 31064.784859125}
 {"close": 122.83, "high": 123.27, "low": 122.205, "open": 122.685, "ticker": "SOL/USD", "timestamp": "2026-09-27T21:00:00Z", "volume": 21211.657645085}
 {"close": 121.39500000000001, "high": 123.02000000000001, "low": 120.93, "open": 122.85499999999999, "ticker": "SOL/USD", "timestamp": "2026-09-27T22:00:00Z", "volume": 45948.62798115}
@@ -1813,4 +1813,8 @@
 {"close": 99.99000000000001, "high": 100.815, "low": 99.8, "open": 100.775, "ticker": "SOL/USD", "timestamp": "2026-10-27T13:00:00Z", "volume": 18113.736467669998}
 {"close": 100.59, "high": 100.625, "low": 99.715, "open": 99.985, "ticker": "SOL/USD", "timestamp": "2026-10-27T14:00:00Z", "volume": 11220.27453199}
 {"close": 100.815, "high": 101.14, "low": 100.28, "open": 100.59, "ticker": "SOL/USD", "timestamp": "2026-10-27T15:00:00Z", "volume": 13637.733022970002}
-{"close": 100.735, "high": 100.89, "low": 100.69, "open": 100.82, "ticker": "SOL/USD", "timestamp": "2026-10-27T16:00:00Z", "volume": 1348.5372629}
+{"close": 100.925, "high": 101.11, "low": 100.655, "open": 100.82, "ticker": "SOL/USD", "timestamp": "2026-10-27T16:00:00Z", "volume": 11666.94935739}
+{"close": 100.66, "high": 101.12, "low": 100.63, "open": 100.94, "ticker": "SOL/USD", "timestamp": "2026-10-27T17:00:00Z", "volume": 14413.8810642}
+{"close": 100.82, "high": 101.03999999999999, "low": 100.48, "open": 100.66, "ticker": "SOL/USD", "timestamp": "2026-10-27T18:00:00Z", "volume": 18383.571507765002}
+{"close": 101.025, "high": 101.22999999999999, "low": 100.81, "open": 100.815, "ticker": "SOL/USD", "timestamp": "2026-10-27T19:00:00Z", "volume": 16741.370639665}
+{"close": 101.1, "high": 101.11500000000001, "low": 100.945, "open": 101.02000000000001, "ticker": "SOL/USD", "timestamp": "2026-10-27T20:00:00Z", "volume": 593.12951733}
