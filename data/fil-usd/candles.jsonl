@@ -1088,11 +1088,11 @@
 {"close": 1.1392, "high": 1.1444, "low": 1.1296, "open": 1.1328, "ticker": "FIL/USD", "timestamp": "2026-09-27T21:00:00Z", "volume": 116433.854}
 {"close": 1.1299, "high": 1.1376, "low": 1.12, "open": 1.1376, "ticker": "FIL/USD", "timestamp": "2026-09-27T22:00:00Z", "volume": 109165.129}
 {"close": 1.14, "high": 1.1408, "low": 1.1282, "open": 1.1303, "ticker": "FIL/USD", "timestamp": "2026-09-27T23:00:00Z", "volume": 154632.904}
-{"close": 1.1303, "high": 1.1517, "low": 1.1284999999999998, "open": 1.13885, "ticker": "FIL/USD", "timestamp": "2026-09-28T00:00:00Z", "volume": 43979.209473555}
-{"close": 1.11665, "high": 1.1375, "low": 1.1139000000000001, "open": 1.1305, "ticker": "FIL/USD", "timestamp": "2026-09-28T01:00:00Z", "volume": 103034.89396787499}
-{"close": 1.1074, "high": 1.1210499999999999, "low": 1.1024500000000002, "open": 1.1157, "ticker": "FIL/USD", "timestamp": "2026-09-28T02:00:00Z", "volume": 147026.64723071}
-{"close": 1.0909, "high": 1.1146, "low": 1.08615, "open": 1.11105, "ticker": "FIL/USD", "timestamp": "2026-09-28T03:00:00Z", "volume": 353900.902724045}
-{"close": 1.1002, "high": 1.1002, "low": 1.0817999999999999, "open": 1.0905, "ticker": "FIL/USD", "timestamp": "2026-09-28T04:00:00Z", "volume": 81076.30362258}
+{"close": 1.1296, "high": 1.1524, "low": 1.128, "open": 1.1397, "ticker": "FIL/USD", "timestamp": "2026-09-28T00:00:00Z", "volume": 61152.898}
+{"close": 1.1163, "high": 1.138, "low": 1.1138, "open": 1.131, "ticker": "FIL/USD", "timestamp": "2026-09-28T01:00:00Z", "volume": 148463.895}
+{"close": 1.1078, "high": 1.1211, "low": 1.1029, "open": 1.1154, "ticker": "FIL/USD", "timestamp": "2026-09-28T02:00:00Z", "volume": 187772.269}
+{"close": 1.0928, "high": 1.1152, "low": 1.0873, "open": 1.1081, "ticker": "FIL/USD", "timestamp": "2026-09-28T03:00:00Z", "volume": 508000.192}
+{"close": 1.1004, "high": 1.1004, "low": 1.0846, "open": 1.092, "ticker": "FIL/USD", "timestamp": "2026-09-28T04:00:00Z", "volume": 123674.416}
 {"close": 1.0824500000000001, "high": 1.1018, "low": 1.0681, "open": 1.10005, "ticker": "FIL/USD", "timestamp": "2026-09-28T05:00:00Z", "volume": 91022.16992299}
 {"close": 1.0795, "high": 1.0881500000000002, "low": 1.0744500000000001, "open": 1.08325, "ticker": "FIL/USD", "timestamp": "2026-09-28T06:00:00Z", "volume": 26293.429544849998}
 {"close": 1.0643, "high": 1.087, "low": 1.0617, "open": 1.0807, "ticker": "FIL/USD", "timestamp": "2026-09-28T07:00:00Z", "volume": 51271.59170253}
@@ -1808,4 +1808,9 @@
 {"close": 0.9036, "high": 0.9113, "low": 0.89365, "open": 0.8983, "ticker": "FIL/USD", "timestamp": "2026-10-27T21:00:00Z", "volume": 23768.95942077}
 {"close": 0.9008, "high": 0.9021, "low": 0.8973, "open": 0.90005, "ticker": "FIL/USD", "timestamp": "2026-10-27T22:00:00Z", "volume": 8638.729261215001}
 {"close": 0.90665, "high": 0.9079, "low": 0.901, "open": 0.9015, "ticker": "FIL/USD", "timestamp": "2026-10-27T23:00:00Z", "volume": 21256.938578445002}
-{"close": 0.9048499999999999, "high": 0.9049, "low": 0.9037999999999999, "open": 0.9048499999999999, "ticker": "FIL/USD", "timestamp": "2026-10-28T00:00:00Z", "volume": 1197.7605995}
+{"close": 0.9107000000000001, "high": 0.9111, "low": 0.9036, "open": 0.9048499999999999, "ticker": "FIL/USD", "timestamp": "2026-10-28T00:00:00Z", "volume": 12483.869156235}
+{"close": 0.91875, "high": 0.91925, "low": 0.9067000000000001, "open": 0.90985, "ticker": "FIL/USD", "timestamp": "2026-10-28T01:00:00Z", "volume": 24872.762664985}
+{"close": 0.9142, "high": 0.9211, "low": 0.91305, "open": 0.92085, "ticker": "FIL/USD", "timestamp": "2026-10-28T02:00:00Z", "volume": 11652.585342809998}
+{"close": 0.9145000000000001, "high": 0.919, "low": 0.9124000000000001, "open": 0.9133, "ticker": "FIL/USD", "timestamp": "2026-10-28T03:00:00Z", "volume": 8544.09399003}
+{"close": 0.91305, "high": 0.9158999999999999, "low": 0.9089, "open": 0.9152, "ticker": "FIL/USD", "timestamp": "2026-10-28T04:00:00Z", "volume": 11179.9813794}
+{"close": 0.9094, "high": 0.9133, "low": 0.9094, "open": 0.9116500000000001, "ticker": "FIL/USD", "timestamp": "2026-10-28T05:00:00Z", "volume": 1510.534863745}
