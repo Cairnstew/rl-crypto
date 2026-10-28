@@ -1123,10 +1123,10 @@
 {"close": 2677.16, "high": 2679.84, "low": 2653.1, "open": 2666.61, "ticker": "ETH/USD", "timestamp": "2026-09-28T15:00:00Z", "volume": 5885.88101055}
 {"close": 2686.83, "high": 2698.05, "low": 2670.26, "open": 2676.91, "ticker": "ETH/USD", "timestamp": "2026-09-28T16:00:00Z", "volume": 6992.45824066}
 {"close": 2694.53, "high": 2720.0, "low": 2680.84, "open": 2686.32, "ticker": "ETH/USD", "timestamp": "2026-09-28T17:00:00Z", "volume": 10184.70966436}
-{"close": 2698.615, "high": 2699.05, "low": 2686.495, "open": 2694.44, "ticker": "ETH/USD", "timestamp": "2026-09-28T18:00:00Z", "volume": 2031.15577621}
-{"close": 2672.42, "high": 2699.34, "low": 2663.7349999999997, "open": 2698.6949999999997, "ticker": "ETH/USD", "timestamp": "2026-09-28T19:00:00Z", "volume": 2869.022160485}
-{"close": 2681.63, "high": 2685.3, "low": 2669.88, "open": 2672.35, "ticker": "ETH/USD", "timestamp": "2026-09-28T20:00:00Z", "volume": 2000.9985085750002}
-{"close": 2673.1, "high": 2688.56, "low": 2672.7700000000004, "open": 2681.7349999999997, "ticker": "ETH/USD", "timestamp": "2026-09-28T21:00:00Z", "volume": 1338.6799459049998}
+{"close": 2698.72, "high": 2699.11, "low": 2686.42, "open": 2694.54, "ticker": "ETH/USD", "timestamp": "2026-09-28T18:00:00Z", "volume": 2962.32750239}
+{"close": 2672.41, "high": 2699.56, "low": 2663.56, "open": 2698.65, "ticker": "ETH/USD", "timestamp": "2026-09-28T19:00:00Z", "volume": 4427.98548591}
+{"close": 2681.64, "high": 2685.48, "low": 2670.0, "open": 2672.27, "ticker": "ETH/USD", "timestamp": "2026-09-28T20:00:00Z", "volume": 3118.37314769}
+{"close": 2673.16, "high": 2688.63, "low": 2672.53, "open": 2681.72, "ticker": "ETH/USD", "timestamp": "2026-09-28T21:00:00Z", "volume": 2174.56443632}
 {"close": 2686.495, "high": 2686.53, "low": 2666.21, "open": 2673.255, "ticker": "ETH/USD", "timestamp": "2026-09-28T22:00:00Z", "volume": 1383.468680575}
 {"close": 2687.43, "high": 2693.625, "low": 2684.165, "open": 2686.45, "ticker": "ETH/USD", "timestamp": "2026-09-28T23:00:00Z", "volume": 1549.6171995949999}
 {"close": 2675.885, "high": 2694.285, "low": 2675.885, "open": 2687.46, "ticker": "ETH/USD", "timestamp": "2026-09-29T00:00:00Z", "volume": 2099.691839405}
@@ -1843,4 +1843,8 @@
 {"close": 2331.605, "high": 2337.41, "low": 2327.2799999999997, "open": 2329.9750000000004, "ticker": "ETH/USD", "timestamp": "2026-10-28T15:00:00Z", "volume": 1671.44715584}
 {"close": 2332.2799999999997, "high": 2338.215, "low": 2323.625, "open": 2331.61, "ticker": "ETH/USD", "timestamp": "2026-10-28T16:00:00Z", "volume": 2166.6161607699996}
 {"close": 2342.15, "high": 2345.1800000000003, "low": 2327.865, "open": 2332.2349999999997, "ticker": "ETH/USD", "timestamp": "2026-10-28T17:00:00Z", "volume": 1667.9983533299999}
-{"close": 2344.6099999999997, "high": 2353.545, "low": 2336.94, "open": 2342.3, "ticker": "ETH/USD", "timestamp": "2026-10-28T18:00:00Z", "volume": 2793.176017955}
+{"close": 2352.84, "high": 2365.87, "low": 2336.715, "open": 2342.3, "ticker": "ETH/USD", "timestamp": "2026-10-28T18:00:00Z", "volume": 7695.319651645}
+{"close": 2369.425, "high": 2369.76, "low": 2350.67, "open": 2352.7749999999996, "ticker": "ETH/USD", "timestamp": "2026-10-28T19:00:00Z", "volume": 3189.8558081300002}
+{"close": 2358.65, "high": 2389.76, "low": 2346.0550000000003, "open": 2369.565, "ticker": "ETH/USD", "timestamp": "2026-10-28T20:00:00Z", "volume": 5443.86152691}
+{"close": 2362.325, "high": 2369.3999999999996, "low": 2352.7250000000004, "open": 2358.625, "ticker": "ETH/USD", "timestamp": "2026-10-28T21:00:00Z", "volume": 2035.872966575}
+{"close": 2360.895, "high": 2364.765, "low": 2352.52, "open": 2362.125, "ticker": "ETH/USD", "timestamp": "2026-10-28T22:00:00Z", "volume": 1116.721521095}
