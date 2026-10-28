@@ -1100,7 +1100,7 @@
 {"close": 84532.2, "high": 84801.87, "low": 84520.28, "open": 84717.82, "ticker": "BTC/USD", "timestamp": "2026-09-27T20:00:00Z", "volume": 139.69817541}
 {"close": 84675.8, "high": 84709.08, "low": 84421.28, "open": 84532.19, "ticker": "BTC/USD", "timestamp": "2026-09-27T21:00:00Z", "volume": 109.08627914}
 {"close": 84187.88, "high": 84748.12, "low": 84120.0, "open": 84675.79, "ticker": "BTC/USD", "timestamp": "2026-09-27T22:00:00Z", "volume": 191.29705654}
-{"close": 84453.17, "high": 84523.45, "low": 84118.18, "open": 84179.64, "ticker": "BTC/USD", "timestamp": "2026-09-27T23:00:00Z", "volume": 104.76070684499999}
+{"close": 84462.14, "high": 84525.7, "low": 84113.56, "open": 84187.88, "ticker": "BTC/USD", "timestamp": "2026-09-27T23:00:00Z", "volume": 158.00147481}
 {"close": 84124.225, "high": 85026.4, "low": 84117.70499999999, "open": 84453.64, "ticker": "BTC/USD", "timestamp": "2026-09-28T00:00:00Z", "volume": 247.87571577}
 {"close": 83680.07, "high": 84208.7, "low": 83605.3, "open": 84121.66500000001, "ticker": "BTC/USD", "timestamp": "2026-09-28T01:00:00Z", "volume": 341.93920614}
 {"close": 83397.77, "high": 83774.14, "low": 83374.20000000001, "open": 83680.065, "ticker": "BTC/USD", "timestamp": "2026-09-28T02:00:00Z", "volume": 195.052857195}
@@ -1820,4 +1820,5 @@
 {"close": 80674.39, "high": 80723.05, "low": 80500.43, "open": 80707.68, "ticker": "BTC/USD", "timestamp": "2026-10-27T20:00:00Z", "volume": 154.79636119}
 {"close": 80787.065, "high": 81190.85, "low": 80531.76000000001, "open": 80674.39, "ticker": "BTC/USD", "timestamp": "2026-10-27T21:00:00Z", "volume": 347.95102991}
 {"close": 80793.735, "high": 80923.755, "low": 80704.99, "open": 80787.065, "ticker": "BTC/USD", "timestamp": "2026-10-27T22:00:00Z", "volume": 105.419264295}
-{"close": 80880.68, "high": 80890.435, "low": 80674.615, "open": 80793.735, "ticker": "BTC/USD", "timestamp": "2026-10-27T23:00:00Z", "volume": 102.83662067}
+{"close": 80800.20499999999, "high": 80924.9, "low": 80674.615, "open": 80793.735, "ticker": "BTC/USD", "timestamp": "2026-10-27T23:00:00Z", "volume": 137.010168705}
+{"close": 80637.16500000001, "high": 80800.2, "low": 80621.925, "open": 80800.2, "ticker": "BTC/USD", "timestamp": "2026-10-28T00:00:00Z", "volume": 89.39827859}
