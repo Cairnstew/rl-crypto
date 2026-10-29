@@ -1132,7 +1132,7 @@
 {"close": 1.1328, "high": 1.14, "low": 1.127, "open": 1.1366, "ticker": "SUI/USD", "timestamp": "2026-09-29T17:00:00Z", "volume": 846874.3}
 {"close": 1.1475, "high": 1.1523, "low": 1.1328, "open": 1.1328, "ticker": "SUI/USD", "timestamp": "2026-09-29T18:00:00Z", "volume": 1000654.3}
 {"close": 1.1455, "high": 1.158, "low": 1.1445, "open": 1.1478, "ticker": "SUI/USD", "timestamp": "2026-09-29T19:00:00Z", "volume": 688397.3}
-{"close": 1.1574, "high": 1.1616499999999998, "low": 1.14325, "open": 1.1457, "ticker": "SUI/USD", "timestamp": "2026-09-29T20:00:00Z", "volume": 630825.3798}
+{"close": 1.1574, "high": 1.1616, "low": 1.143, "open": 1.1457, "ticker": "SUI/USD", "timestamp": "2026-09-29T20:00:00Z", "volume": 921271.7}
 {"close": 1.15125, "high": 1.1593, "low": 1.14745, "open": 1.157, "ticker": "SUI/USD", "timestamp": "2026-09-29T21:00:00Z", "volume": 618480.854145}
 {"close": 1.14935, "high": 1.1546500000000002, "low": 1.1449500000000001, "open": 1.15225, "ticker": "SUI/USD", "timestamp": "2026-09-29T22:00:00Z", "volume": 359477.680205}
 {"close": 1.1519, "high": 1.1606, "low": 1.14405, "open": 1.14955, "ticker": "SUI/USD", "timestamp": "2026-09-29T23:00:00Z", "volume": 514064.354665}
@@ -1852,4 +1852,5 @@
 {"close": 0.9355, "high": 0.9468, "low": 0.9278, "open": 0.946, "ticker": "SUI/USD", "timestamp": "2026-10-29T17:00:00Z", "volume": 611967.309485}
 {"close": 0.93055, "high": 0.9365, "low": 0.92435, "open": 0.9356, "ticker": "SUI/USD", "timestamp": "2026-10-29T18:00:00Z", "volume": 285463.76236}
 {"close": 0.92835, "high": 0.9326000000000001, "low": 0.9268000000000001, "open": 0.9309499999999999, "ticker": "SUI/USD", "timestamp": "2026-10-29T19:00:00Z", "volume": 483498.346445}
-{"close": 0.88795, "high": 0.9290499999999999, "low": 0.85915, "open": 0.92875, "ticker": "SUI/USD", "timestamp": "2026-10-29T20:00:00Z", "volume": 4565365.79605}
+{"close": 0.87415, "high": 0.9290499999999999, "low": 0.85915, "open": 0.92875, "ticker": "SUI/USD", "timestamp": "2026-10-29T20:00:00Z", "volume": 5084507.37138}
+{"close": 0.88315, "high": 0.90025, "low": 0.8704000000000001, "open": 0.87385, "ticker": "SUI/USD", "timestamp": "2026-10-29T21:00:00Z", "volume": 1982387.9410100002}
